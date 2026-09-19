@@ -122,3 +122,12 @@ uv run ak5 demo
 uv run pytest backend/tests
 ```
 19개의 모든 테스트 케이스(Lexorank 보간/리밸런싱, Actor 식별 및 검색, 티켓 수명주기, 계층형 서브태스크 위임, SSE 이벤트 버스, MCP 툴셋, CLI 명령어)가 통과합니다.
+
+---
+
+## 6. 사용방법 매뉴얼 & Agent Skill 안내
+
+* **상세 사용자 및 운영 매뉴얼:** [MANUAL.md](file:///home/fritzprix/my_works/ak5/MANUAL.md) (또는 [docs/MANUAL.md](file:///home/fritzprix/my_works/ak5/docs/MANUAL.md))
+* **에이전트 하네스용 Skill 정의:** [skills/ak5/SKILL.md](file:///home/fritzprix/my_works/ak5/skills/ak5/SKILL.md)
+  * Antigravity, Claude, Cursor 등의 자율 에이전트 하네스에서 `ak5` CLI 및 MCP 툴을 직접 호출하여 자율 분업을 수행할 수 있도록 절차와 러너 스크립트([harness_setup.sh](file:///home/fritzprix/my_works/ak5/skills/ak5/scripts/harness_setup.sh))가 포함되어 있습니다.
+

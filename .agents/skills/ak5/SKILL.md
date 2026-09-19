@@ -1,0 +1,1 @@
+../../../skills/ak5/SKILL.md
