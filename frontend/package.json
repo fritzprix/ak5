@@ -1,7 +1,22 @@
 {
-  "name": "ak5-frontend",
-  "version": "0.1.0",
-  "private": true,
+  "name": "ak5",
+  "version": "1.0.0",
+  "description": "AK5: Agent-Orchestrated Kanban Web Dashboard & Client SDK",
+  "bin": {
+    "ak5": "./bin/cli.js"
+  },
+  "keywords": [
+    "ak5",
+    "kanban",
+    "ai-agents",
+    "mcp",
+    "nextjs",
+    "orchestration",
+    "multi-agent",
+    "dnd-kit"
+  ],
+  "author": "AK5 Team",
+  "license": "MIT",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

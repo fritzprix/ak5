@@ -1,9 +1,24 @@
 [project]
 name = "ak5"
-version = "0.1.0"
-description = "AK5 Backend - Agent-Orchestrated Kanban Gateway & MCP Server"
+version = "1.0.0"
+description = "AK5: Agent-Orchestrated Kanban System Gateway, MCP Server & CLI"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+authors = [
+    { name = "AK5 Team" }
+]
+keywords = ["kanban", "ai-agents", "mcp", "orchestration", "multi-agent", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -15,7 +30,13 @@ dependencies = [
     "httpx>=0.27.0",
     "sse-starlette>=2.1.0",
     "mcp>=1.0.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
 ]
+
+[project.scripts]
+ak5 = "ak5.cli.main:cli"
+ak5-mcp = "ak5.mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

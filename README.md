@@ -53,53 +53,61 @@ ak5/
 
 ---
 
-## 3. 실행 방법
+## 3. 원클릭 실행 방법 (Zero-Install: `uvx` & `npx`)
 
-### 3.1 사전 요구사항
-* Python 3.11+
-* [uv](https://github.com/astral-sh/uv)
+AK5는 설치 과정 없이 `uvx` 및 `npx` 명령어로 터미널 및 브라우저에서 즉시 실행할 수 있습니다.
+
+### 3.1 `uvx ak5` (백엔드, CLI, MCP 서버, 데모)
+별도의 Python 가상환경 설치 없이 즉시 실행됩니다:
+
+```bash
+# 1. 백엔드 게이트웨이 기동 (FastAPI + SQLite WAL + Embedded MCP)
+uvx ak5 serve
+
+# 2. 터미널 실시간 칸반 보드 뷰 (--watch)
+uvx ak5 board --watch
+
+# 3. 자율 멀티 에이전트 협업 데모 시뮬레이션
+uvx ak5 demo
+
+# 4. 가용 에이전트 역량 검색
+uvx ak5 agents --cap "image-resize"
+
+# 5. Stdio MCP 서버 실행 (Claude Desktop, Cursor 연동)
+uvx ak5 mcp
+```
+
+### 3.2 `npx ak5` (웹 대시보드 브라우저 즉시 실행)
+Node.js 환경에서 한 줄로 Next.js 15 웹 대시보드를 로컬에 띄우고 브라우저를 자동 오픈합니다:
+
+```bash
+npx ak5
+# 브라우저에서 http://localhost:3000 자동 오픈
+```
+
+---
+
+## 4. 로컬 소스코드 기반 실행 (개발자용)
+
+### 4.1 사전 요구사항
+* Python 3.11+ & [uv](https://github.com/astral-sh/uv)
 * Node.js 18+ 및 npm
 
-### 3.2 백엔드 (FastAPI & MCP Gateway) 실행
+### 4.2 로컬 개발 환경 기동
 ```bash
-# 가상환경 생성 및 의존성 설치
+# 1. 백엔드 및 CLI 의존성 설치
 uv sync
-uv pip install -e backend -e cli
+uv pip install -e backend
 
-# 백엔드 서버 기동 (기본 포트 8000)
-uv run uvicorn ak5.main:app --host 127.0.0.1 --port 8000 --reload
+# 2. 백엔드 게이트웨이 기동 (기본 포트 8000)
+uv run ak5 serve --reload
+
+# 3. 프론트엔드 기동 (별도 터미널)
+cd frontend && npm install && npm run dev
 ```
 * **Swagger API 문서:** `http://127.0.0.1:8000/docs`
-* **MCP SSE 엔드포인트:** `http://127.0.0.1:8000/mcp/sse`
-
-### 3.3 프론트엔드 (Next.js 15 Web Dashboard) 실행
-```bash
-cd frontend
-npm install
-npm run dev
-```
 * **웹 대시보드:** `http://localhost:3000`
 
-### 3.4 CLI (`ak5`) 도구 사용법
-```bash
-# 1. 액터 등록 및 로그인
-uv run ak5 login --id "agent_code_reviewer" --role "Senior Reviewer" --caps "python,rust,security"
-
-# 2. 역량 기반 에이전트 검색
-uv run ak5 agents --cap "image-resize"
-
-# 3. 작업 위임 실행
-uv run ak5 delegate TK-001 \
-    --to agent_image_worker \
-    --title "WebP 썸네일 변환기 구현" \
-    --desc "150x150 WebP 포맷 변환 함수 작성"
-
-# 4. 실시간 터미널 칸반 뷰
-uv run ak5 board --watch
-
-# 5. 자율 멀티 에이전트 협업 데모 시뮬레이션 실행
-uv run ak5 demo
-```
 
 ---
 

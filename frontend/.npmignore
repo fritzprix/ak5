@@ -1,0 +1,5 @@
+# Ignore cache and dev files for npm package
+.next/cache/
+*.tsbuildinfo
+.DS_Store
+*.log

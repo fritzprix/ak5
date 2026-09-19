@@ -1,12 +1,12 @@
 import click
 from rich.console import Console
-from ak5_cli.commands.agents import agents_command
-from ak5_cli.commands.board import board_command
-from ak5_cli.commands.delegate import delegate_command
-from ak5_cli.commands.demo import demo_command
-from ak5_cli.commands.login import login_command
-from ak5_cli.commands.mcp import mcp_command
-from ak5_cli.commands.serve import serve_command
+from ak5.cli.commands.agents import agents_command
+from ak5.cli.commands.board import board_command
+from ak5.cli.commands.delegate import delegate_command
+from ak5.cli.commands.demo import demo_command
+from ak5.cli.commands.login import login_command
+from ak5.cli.commands.mcp import mcp_command
+from ak5.cli.commands.serve import serve_command
 
 console = Console()
 

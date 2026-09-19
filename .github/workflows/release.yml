@@ -1,0 +1,58 @@
+name: Release AK5 to PyPI & npm
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish-pypi:
+    name: Publish Python Package to PyPI (uvx ak5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build Wheel & Source Tarball
+        run: |
+          uv build backend
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv publish dist/*
+
+  publish-npm:
+    name: Publish Web Dashboard to npm (npx ak5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install & Build Next.js
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish to npm
+        working-directory: ./frontend
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm publish --access public
