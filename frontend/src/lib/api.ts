@@ -1,0 +1,149 @@
+import { Board, Ticket, Actor } from "./types";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+
+let cachedToken: string | null = null;
+
+export async function getAuthToken(): Promise<string> {
+  if (cachedToken) return cachedToken;
+  try {
+    const res = await fetch(`${API_BASE}/auth/identify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        actor_id: "user_pm",
+        actor_type: "human",
+        name: "David (Lead PM)",
+        role: "PM",
+        capabilities: ["planning", "review"],
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      cachedToken = data.access_token;
+      return cachedToken!;
+    }
+  } catch (err) {
+    console.warn("Failed to auto-authenticate:", err);
+  }
+  return "";
+}
+
+export async function fetchBoard(boardId: string = "proj-core-engine"): Promise<Board> {
+  const res = await fetch(`${API_BASE}/boards/${boardId}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch board: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchActors(): Promise<Actor[]> {
+  const res = await fetch(`${API_BASE}/actors`, { cache: "no-store" });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function moveTicket(
+  ticketId: string,
+  targetColumnId: string,
+  previousTicketId?: string | null,
+  nextTicketId?: string | null
+): Promise<Ticket> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/move`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify({
+      target_column_id: targetColumnId,
+      previous_ticket_id: previousTicketId,
+      next_ticket_id: nextTicketId,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to move ticket: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function createTicket(
+  boardId: string,
+  columnId: string,
+  title: string,
+  description?: string,
+  priority: string = "medium",
+  assignedTo?: string | null
+): Promise<Ticket> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify({
+      board_id: boardId,
+      column_id: columnId,
+      title,
+      description,
+      priority,
+      assigned_to: assignedTo || null,
+      labels: ["manual"],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to create ticket: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function delegateSubtask(
+  parentTicketId: string,
+  targetActorId: string,
+  subtaskTitle: string,
+  subtaskDescription?: string,
+  priority: string = "medium"
+): Promise<Ticket> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${parentTicketId}/delegate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify({
+      target_actor_id: targetActorId,
+      subtask_title: subtaskTitle,
+      subtask_description: subtaskDescription,
+      priority,
+      labels: ["delegated"],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to delegate: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export function subscribeToBoardEvents(onEvent: (eventType: string, data: any) => void): () => void {
+  const eventSource = new EventSource(`${API_BASE}/events/stream`);
+
+  const events = ["TICKET_CREATED", "TICKET_MOVED", "TICKET_DELEGATED", "TICKET_UPDATED", "COMMENT_ADDED"];
+
+  events.forEach((evt) => {
+    eventSource.addEventListener(evt, (e: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(e.data);
+        onEvent(evt, parsed);
+      } catch (err) {
+        console.error("Failed to parse SSE event:", err);
+      }
+    });
+  });
+
+  return () => {
+    eventSource.close();
+  };
+}

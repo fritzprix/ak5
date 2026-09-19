@@ -1,0 +1,20 @@
+[project]
+name = "ak5-workspace"
+version = "0.1.0"
+description = "AK5: Agent-Orchestrated Kanban System"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+]
+
+[tool.uv.workspace]
+members = ["backend", "cli"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["backend/tests"]
+pythonpath = ["backend/src", "cli/src"]
