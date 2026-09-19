@@ -1,0 +1,39 @@
+{
+  "name": "@ak5/sdk",
+  "version": "1.0.0",
+  "description": "Official TypeScript & JavaScript SDK for AK5 (Agent-Orchestrated Kanban)",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ak5",
+    "kanban",
+    "ai-agents",
+    "mcp",
+    "sdk",
+    "typescript",
+    "client"
+  ],
+  "author": "AK5 Team",
+  "license": "MIT",
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
+  }
+}

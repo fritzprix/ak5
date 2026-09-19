@@ -1,6 +1,6 @@
 import pytest
 from click.testing import CliRunner
-from ak5_cli.main import cli
+from ak5.cli.main import cli
 
 
 def test_cli_help():
@@ -8,6 +8,8 @@ def test_cli_help():
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "AK5 (Agent K5)" in result.output
+    assert "serve" in result.output
+    assert "mcp" in result.output
     assert "login" in result.output
     assert "agents" in result.output
     assert "delegate" in result.output

@@ -85,6 +85,19 @@ npx ak5
 # 브라우저에서 http://localhost:3000 자동 오픈
 ```
 
+### 3.3 `@ak5/sdk` (TypeScript / Node.js AI 에이전트 연동용)
+Node.js 기반 AI 에이전트(LangChain.js, Vercel AI SDK 등)나 서드파티 웹앱에서 사용할 수 있는 공식 SDK:
+
+```bash
+npm install @ak5/sdk
+```
+```typescript
+import { AK5Client } from "@ak5/sdk";
+
+const ak5 = new AK5Client({ baseUrl: "http://127.0.0.1:8000/api/v1" });
+const board = await ak5.getBoard("proj-core-engine");
+```
+
 ---
 
 ## 4. 로컬 소스코드 기반 실행 (개발자용)

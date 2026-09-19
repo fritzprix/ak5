@@ -11,10 +11,10 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["backend", "cli"]
+members = ["backend"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["backend/tests"]
-pythonpath = ["backend/src", "cli/src"]
+pythonpath = ["backend/src"]
