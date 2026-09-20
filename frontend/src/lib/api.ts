@@ -1,6 +1,23 @@
-import { Board, Ticket, Actor } from "./types";
+import { Board, BoardSummary, Ticket, Actor } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+
+export function getGatewayOrigin(): string {
+  try {
+    const url = new URL(API_BASE);
+    return url.origin;
+  } catch {
+    return "http://127.0.0.1:8000";
+  }
+}
+
+export function getHealthUrl(): string {
+  return `${getGatewayOrigin()}/health`;
+}
+
+export function getEventsStreamUrl(): string {
+  return `${API_BASE}/events/stream`;
+}
 
 let cachedToken: string | null = null;
 
@@ -29,7 +46,15 @@ export async function getAuthToken(): Promise<string> {
   return "";
 }
 
-export async function fetchBoard(boardId: string = "proj-core-engine"): Promise<Board> {
+export async function fetchBoards(): Promise<BoardSummary[]> {
+  const res = await fetch(`${API_BASE}/boards`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch boards: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchBoard(boardId: string): Promise<Board> {
   const res = await fetch(`${API_BASE}/boards/${boardId}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`Failed to fetch board: ${res.statusText}`);
@@ -41,6 +66,19 @@ export async function fetchActors(): Promise<Actor[]> {
   const res = await fetch(`${API_BASE}/actors`, { cache: "no-store" });
   if (!res.ok) return [];
   return res.json();
+}
+
+async function readErrorDetail(res: Response): Promise<string> {
+  try {
+    const body: unknown = await res.json();
+    if (typeof body === "object" && body !== null && "detail" in body) {
+      const detail = Reflect.get(body, "detail");
+      if (typeof detail === "string") return detail;
+    }
+  } catch {
+    // fall through
+  }
+  return res.statusText || `HTTP ${res.status}`;
 }
 
 export async function moveTicket(
@@ -63,7 +101,7 @@ export async function moveTicket(
     }),
   });
   if (!res.ok) {
-    throw new Error(`Failed to move ticket: ${res.statusText}`);
+    throw new Error(await readErrorDetail(res));
   }
   return res.json();
 }
@@ -94,7 +132,7 @@ export async function createTicket(
     }),
   });
   if (!res.ok) {
-    throw new Error(`Failed to create ticket: ${res.statusText}`);
+    throw new Error(await readErrorDetail(res));
   }
   return res.json();
 }
@@ -122,20 +160,34 @@ export async function delegateSubtask(
     }),
   });
   if (!res.ok) {
-    throw new Error(`Failed to delegate: ${res.statusText}`);
+    throw new Error(await readErrorDetail(res));
   }
   return res.json();
 }
 
-export function subscribeToBoardEvents(onEvent: (eventType: string, data: any) => void): () => void {
+export function subscribeToBoardEvents(
+  onEvent: (eventType: string, data: unknown) => void,
+  options?: {
+    onOpen?: () => void;
+    onError?: () => void;
+  }
+): () => void {
   const eventSource = new EventSource(`${API_BASE}/events/stream`);
 
   const events = ["TICKET_CREATED", "TICKET_MOVED", "TICKET_DELEGATED", "TICKET_UPDATED", "COMMENT_ADDED"];
 
+  eventSource.onopen = () => {
+    options?.onOpen?.();
+  };
+
+  eventSource.onerror = () => {
+    options?.onError?.();
+  };
+
   events.forEach((evt) => {
     eventSource.addEventListener(evt, (e: MessageEvent) => {
       try {
-        const parsed = JSON.parse(e.data);
+        const parsed: unknown = JSON.parse(e.data);
         onEvent(evt, parsed);
       } catch (err) {
         console.error("Failed to parse SSE event:", err);

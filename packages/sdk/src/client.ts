@@ -6,6 +6,7 @@ import {
   Board,
   BoardEventPayload,
   BoardEventType,
+  BoardSummary,
   Ticket,
   TicketComment,
   TicketCreateInput,
@@ -113,6 +114,10 @@ export class AK5Client {
   }
 
   // --- Boards ---
+
+  public async listBoards(): Promise<BoardSummary[]> {
+    return this.request<BoardSummary[]>("/boards");
+  }
 
   public async getBoard(boardId: string = "proj-core-engine"): Promise<Board> {
     return this.request<Board>(`/boards/${boardId}`);

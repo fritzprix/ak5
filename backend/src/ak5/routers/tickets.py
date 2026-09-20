@@ -30,6 +30,26 @@ from ak5.services.lexorank import rank_between
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 
 
+async def _assert_wip_allows(
+    db: AsyncSession,
+    column: Column,
+) -> None:
+    """Reject when adding a ticket would exceed the column WIP limit (0 = unlimited)."""
+    if column.wip_limit <= 0:
+        return
+
+    stmt = select(func.count()).select_from(Ticket).where(Ticket.column_id == column.column_id)
+    count = (await db.execute(stmt)).scalar_one() or 0
+    if count >= column.wip_limit:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"WIP limit ({column.wip_limit}) exceeded for column "
+                f"'{column.name}' ({column.column_id})"
+            ),
+        )
+
+
 async def _generate_ticket_id(db: AsyncSession) -> str:
     """Generate safe sequential ticket identifier e.g. TK-001."""
     stmt = select(func.count(Ticket.ticket_id))
@@ -88,6 +108,8 @@ async def create_ticket(
         assignee = await db.get(Actor, req.assigned_to)
         if not assignee:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Assignee '{req.assigned_to}' not found")
+
+    await _assert_wip_allows(db, column)
 
     ticket_id = req.ticket_id or await _generate_ticket_id(db)
 
@@ -264,6 +286,10 @@ async def move_ticket(
     if not target_column:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Target column '{req.target_column_id}' not found")
 
+    # WIP applies only when entering a different column (reorders within a column are allowed)
+    if ticket.column_id != req.target_column_id:
+        await _assert_wip_allows(db, target_column)
+
     prev_rank: str | None = None
     next_rank: str | None = None
 
@@ -343,6 +369,10 @@ async def delegate_subtask(
     stmt_col = select(Column).where(Column.board_id == parent.board_id, Column.stage == "open").limit(1)
     res_col = await db.execute(stmt_col)
     target_col = res_col.scalar_one_or_none() or await db.get(Column, parent.column_id)
+    if not target_col:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No target column available for subtask")
+
+    await _assert_wip_allows(db, target_col)
 
     # Determine rank in target column
     stmt_last = (

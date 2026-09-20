@@ -1,10 +1,9 @@
 "use client";
 
-import React, { useEffect, useState, useTransition } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   DndContext,
   DragEndEvent,
-  DragOverEvent,
   DragOverlay,
   DragStartEvent,
   PointerSensor,
@@ -20,18 +19,30 @@ import {
   delegateSubtask,
   subscribeToBoardEvents,
 } from "@/lib/api";
+import { buildAgentSetupMarkdown } from "@/lib/agentSetup";
 import { Board, Column, Ticket, Actor } from "@/lib/types";
 import { KanbanColumn } from "./KanbanColumn";
 import { TicketCard } from "./TicketCard";
-import { Plus, RefreshCw, Radio, Sparkles } from "lucide-react";
+import { Plus, RefreshCw, Radio, Sparkles, ClipboardCopy, Check, Terminal } from "lucide-react";
 
-export const KanbanBoard: React.FC = () => {
+interface KanbanBoardProps {
+  boardId: string;
+}
+
+export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [board, setBoard] = useState<Board | null>(null);
   const [actors, setActors] = useState<Actor[]>([]);
   const [activeTicket, setActiveTicket] = useState<Ticket | null>(null);
   const [delegatingTicket, setDelegatingTicket] = useState<Ticket | null>(null);
   const [isNewTicketOpen, setIsNewTicketOpen] = useState(false);
+  const [isAgentSetupOpen, setIsAgentSetupOpen] = useState(false);
   const [isConnectedSSE, setIsConnectedSSE] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoadingBoard, setIsLoadingBoard] = useState(true);
+  const copiedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Form states
   const [newTitle, setNewTitle] = useState("");
@@ -51,30 +62,68 @@ export const KanbanBoard: React.FC = () => {
     })
   );
 
+  useEffect(() => {
+    return () => {
+      if (copiedResetTimer.current) clearTimeout(copiedResetTimer.current);
+    };
+  }, []);
+
   const reloadBoard = async () => {
     try {
-      const data = await fetchBoard();
+      setIsLoadingBoard(true);
+      setLoadError(null);
+      const data = await fetchBoard(boardId);
       setBoard(data);
     } catch (err) {
       console.error("Failed to load board:", err);
+      setBoard(null);
+      setLoadError(err instanceof Error ? err.message : `Failed to load board '${boardId}'`);
+    } finally {
+      setIsLoadingBoard(false);
+    }
+  };
+
+  const copyAgentSetup = async () => {
+    if (!board) return;
+    const instructions = buildAgentSetupMarkdown(board, actors);
+    try {
+      await navigator.clipboard.writeText(instructions);
+      setCopyError(null);
+      setCopied(true);
+      if (copiedResetTimer.current) clearTimeout(copiedResetTimer.current);
+      copiedResetTimer.current = setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+      setCopied(false);
+      setCopyError(err instanceof Error ? err.message : "Failed to copy to clipboard");
     }
   };
 
   useEffect(() => {
+    setBoard(null);
+    setIsConnectedSSE(false);
+    setActionError(null);
+    setLoadError(null);
+    setCopyError(null);
+    setCopied(false);
     reloadBoard();
     fetchActors().then(setActors).catch(console.error);
 
-    // Subscribe to SSE
-    const cleanup = subscribeToBoardEvents((evt, data) => {
-      setIsConnectedSSE(true);
-      // Reload on any Kanban event
-      reloadBoard();
-    });
+    const cleanup = subscribeToBoardEvents(
+      () => {
+        reloadBoard();
+      },
+      {
+        onOpen: () => setIsConnectedSSE(true),
+        onError: () => setIsConnectedSSE(false),
+      }
+    );
 
     return () => {
       cleanup();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when boardId changes
+  }, [boardId]);
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
@@ -138,10 +187,12 @@ export const KanbanBoard: React.FC = () => {
     }
 
     try {
+      setActionError(null);
       await moveTicket(activeId, targetCol.column_id, prevId, nextId);
       await reloadBoard();
     } catch (err) {
       console.error("Move ticket failed:", err);
+      setActionError(err instanceof Error ? err.message : "Move ticket failed");
       await reloadBoard();
     }
   };
@@ -152,6 +203,7 @@ export const KanbanBoard: React.FC = () => {
 
     const firstCol = board.columns[0];
     try {
+      setActionError(null);
       await createTicket(
         board.board_id,
         firstCol.column_id,
@@ -166,6 +218,7 @@ export const KanbanBoard: React.FC = () => {
       await reloadBoard();
     } catch (err) {
       console.error("Create ticket failed:", err);
+      setActionError(err instanceof Error ? err.message : "Create ticket failed");
     }
   };
 
@@ -174,6 +227,7 @@ export const KanbanBoard: React.FC = () => {
     if (!delegatingTicket || !subtaskAgent || !subtaskTitle.trim()) return;
 
     try {
+      setActionError(null);
       await delegateSubtask(
         delegatingTicket.ticket_id,
         subtaskAgent,
@@ -187,14 +241,33 @@ export const KanbanBoard: React.FC = () => {
       await reloadBoard();
     } catch (err) {
       console.error("Delegate subtask failed:", err);
+      setActionError(err instanceof Error ? err.message : "Delegate subtask failed");
     }
   };
 
-  if (!board) {
+  if (isLoadingBoard && !board) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
         <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin" />
         <p className="text-slate-400 text-sm">Connecting to AK5 Gateway...</p>
+      </div>
+    );
+  }
+
+  if (loadError || !board) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
+        <p className="text-rose-300 text-sm text-center max-w-md">
+          {loadError || `Board '${boardId}' was not found.`}
+        </p>
+        <button
+          type="button"
+          onClick={() => reloadBoard()}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-sm hover:border-slate-500"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Retry
+        </button>
       </div>
     );
   }
@@ -220,6 +293,7 @@ export const KanbanBoard: React.FC = () => {
             <Radio className={`w-3 h-3 ${isConnectedSSE ? "animate-pulse text-emerald-400" : ""}`} />
             <span>{isConnectedSSE ? "Live SSE Stream" : "Connecting..."}</span>
           </span>
+          <span className="text-[11px] font-mono text-slate-500">{board.board_id}</span>
         </div>
 
         <div className="flex items-center gap-3">
@@ -231,6 +305,14 @@ export const KanbanBoard: React.FC = () => {
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
+            onClick={() => setIsAgentSetupOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors shadow-lg shadow-purple-900/30"
+            title="Copy Agent Setup Instructions"
+          >
+            <Terminal className="w-4 h-4" />
+            <span>Agent Setup</span>
+          </button>
+          <button
             onClick={() => setIsNewTicketOpen(true)}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium transition-colors shadow-lg shadow-cyan-900/30"
           >
@@ -239,6 +321,12 @@ export const KanbanBoard: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {actionError && (
+        <div className="mb-4 px-3 py-2 rounded-lg border border-rose-800/60 bg-rose-950/50 text-rose-300 text-sm">
+          {actionError}
+        </div>
+      )}
 
       {/* Kanban Canvas with DnD */}
       <DndContext
@@ -414,6 +502,75 @@ export const KanbanBoard: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Agent Setup Instructions Modal */}
+      {isAgentSetupOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-2xl shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-5 h-5 text-purple-400" />
+                <h3 className="text-lg font-semibold text-slate-100">Agent Setup Instructions</h3>
+              </div>
+              <button
+                type="button"
+                aria-label="Close agent setup"
+                onClick={() => {
+                  setIsAgentSetupOpen(false);
+                  setCopyError(null);
+                }}
+                className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto mb-4">
+              <pre className="bg-slate-950 border border-slate-800 rounded-lg p-4 text-xs text-slate-300 font-mono whitespace-pre-wrap leading-relaxed">
+                {buildAgentSetupMarkdown(board, actors)}
+              </pre>
+            </div>
+
+            {copyError && (
+              <p className="mb-3 text-sm text-rose-300">{copyError}</p>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAgentSetupOpen(false);
+                  setCopyError(null);
+                }}
+                className="px-4 py-2 text-sm text-slate-400 hover:text-white"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={copyAgentSetup}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  copied
+                    ? "bg-emerald-600 text-white"
+                    : "bg-purple-600 hover:bg-purple-500 text-white"
+                }`}
+              >
+                {copied ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <ClipboardCopy className="w-4 h-4" />
+                    <span>Copy to Clipboard</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

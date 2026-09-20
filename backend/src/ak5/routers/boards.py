@@ -25,6 +25,16 @@ DEFAULT_COLUMNS = [
 ]
 
 
+def _to_board_out(board: Board) -> BoardOut:
+    return BoardOut(
+        board_id=board.board_id,
+        name=board.name,
+        description=board.description,
+        created_by=board.created_by,
+        created_at=board.created_at,
+    )
+
+
 def _to_ticket_out(t: Ticket, subtask_stats: dict[str, tuple[int, int]]) -> TicketOut:
     count, done_count = subtask_stats.get(t.ticket_id, (0, 0))
     return TicketOut(
@@ -48,6 +58,17 @@ def _to_ticket_out(t: Ticket, subtask_stats: dict[str, tuple[int, int]]) -> Tick
         subtask_count=count,
         subtask_done_count=done_count,
     )
+
+
+@router.get("", response_model=list[BoardOut])
+async def list_boards(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[BoardOut]:
+    """List all boards (summary without columns/tickets)."""
+    stmt = select(Board).order_by(Board.created_at.asc(), Board.name.asc())
+    result = await db.execute(stmt)
+    boards = result.scalars().all()
+    return [_to_board_out(b) for b in boards]
 
 
 @router.get("/{board_id}", response_model=BoardDetailOut)
@@ -143,13 +164,7 @@ async def create_board(
 
     await db.commit()
     await db.refresh(board)
-    return BoardOut(
-        board_id=board.board_id,
-        name=board.name,
-        description=board.description,
-        created_by=board.created_by,
-        created_at=board.created_at,
-    )
+    return _to_board_out(board)
 
 
 @router.post("/{board_id}/columns", response_model=ColumnOut)

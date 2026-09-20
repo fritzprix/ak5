@@ -3,7 +3,7 @@ name: ak5
 description: >-
   Interface and interact with the AK5 (Agent-Orchestrated Kanban) system using the CLI or MCP tools.
   Use when inspecting board state, creating tickets, searching peer agents by capability, delegating subtasks,
-  moving tickets between Kanban columns, or coordinating multi-agent workflows.
+  moving tickets between Kanban columns, running a backlog pull/SSE work loop, or coordinating multi-agent workflows.
 ---
 
 # AK5 Agent Skill
@@ -42,6 +42,29 @@ The session token will be saved to `~/.ak5_session.json` and automatically utili
 ---
 
 ## 2. Core Agent Workflows (Runbook)
+
+### Workflow 0: Backlog Work Loop (Required)
+
+Do **not** exit after login. Continuously watch or pull the backlog until the harness stops you.
+
+**Claim rule:** only tickets where `assigned_to == <YOUR_AGENT_ID>` and stage is `open` (including newly delegated subtasks). Honor WIP limits — HTTP `409` means wait or pick another ticket.
+
+#### A. Event-driven (preferred)
+```bash
+uv run ak5 board --watch --board-id "proj-core-engine"
+# or: curl -N http://127.0.0.1:8000/api/v1/events/stream
+```
+On `TICKET_CREATED` / `TICKET_DELEGATED` / `TICKET_MOVED` / `TICKET_UPDATED`:
+1. If assigned to you and still open → claim
+2. Move to In Progress → execute → comment artifacts → Review/Done
+3. If blocked → set `blocked` + comment mentioning `@user_pm`
+
+#### B. Periodic pull (fallback when SSE is unavailable)
+Every **60–120 seconds**:
+```bash
+uv run ak5 board --board-id "proj-core-engine"
+```
+Then claim at most one open ticket assigned to you, execute it, and idle until the next tick if none.
 
 ### Workflow A: Inspecting Board State & Assigned Tickets
 To view the current board state and find tickets:

@@ -1,5 +1,7 @@
-import { KanbanBoard } from "@/components/board/KanbanBoard";
+import { redirect } from "next/navigation";
+
+const DEFAULT_BOARD_ID = "proj-core-engine";
 
 export default function Home() {
-  return <KanbanBoard />;
+  redirect(`/board/${DEFAULT_BOARD_ID}`);
 }

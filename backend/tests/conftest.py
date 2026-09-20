@@ -78,10 +78,10 @@ async def test_db() -> AsyncGenerator[AsyncSession, None]:
         session.add(board)
 
         cols = [
-            Column(column_id="col_todo", board_id="proj-core-engine", name="To Do", stage="open", position=1),
-            Column(column_id="col_in_progress", board_id="proj-core-engine", name="In Progress", stage="in_progress", position=2),
-            Column(column_id="col_review", board_id="proj-core-engine", name="Review", stage="review", position=3),
-            Column(column_id="col_done", board_id="proj-core-engine", name="Done", stage="done", position=4),
+            Column(column_id="col_todo", board_id="proj-core-engine", name="To Do", stage="open", position=1, wip_limit=0),
+            Column(column_id="col_in_progress", board_id="proj-core-engine", name="In Progress", stage="in_progress", position=2, wip_limit=3),
+            Column(column_id="col_review", board_id="proj-core-engine", name="Review", stage="review", position=3, wip_limit=3),
+            Column(column_id="col_done", board_id="proj-core-engine", name="Done", stage="done", position=4, wip_limit=0),
         ]
         session.add_all(cols)
         await session.commit()

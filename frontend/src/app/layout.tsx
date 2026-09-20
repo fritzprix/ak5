@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Kanban, Sparkles } from "lucide-react";
+import { Kanban } from "lucide-react";
+import { BoardSwitcher } from "@/components/board/BoardSwitcher";
 
 export const metadata: Metadata = {
   title: "AK5 — Agent-Orchestrated Kanban",
@@ -15,10 +16,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-[#090d16] text-slate-100 min-h-screen flex flex-col">
-        {/* Navigation Bar */}
         <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40">
-          <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 shrink-0">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
                 <Kanban className="w-5 h-5 text-white" />
               </div>
@@ -33,8 +33,10 @@ export default function RootLayout({
               </div>
             </div>
 
-            <div className="flex items-center gap-4 text-xs">
-              <span className="text-slate-400 hidden sm:inline">
+            <BoardSwitcher />
+
+            <div className="flex items-center gap-4 text-xs shrink-0">
+              <span className="text-slate-400 hidden lg:inline">
                 Protocols: <span className="text-slate-200 font-mono">REST + SSE + MCP</span>
               </span>
               <a
@@ -49,7 +51,6 @@ export default function RootLayout({
           </div>
         </header>
 
-        {/* Main Content */}
         <main className="flex-1 max-w-7xl w-full mx-auto p-6">{children}</main>
       </body>
     </html>

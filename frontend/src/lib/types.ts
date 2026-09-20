@@ -60,11 +60,14 @@ export interface Column {
   tickets: Ticket[];
 }
 
-export interface Board {
+export interface BoardSummary {
   board_id: string;
   name: string;
   description?: string | null;
   created_by: string;
   created_at: string;
+}
+
+export interface Board extends BoardSummary {
   columns: Column[];
 }
