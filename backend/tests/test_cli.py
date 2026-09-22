@@ -1,6 +1,5 @@
-import pytest
-from click.testing import CliRunner
 from ak5.cli.main import cli
+from click.testing import CliRunner
 
 
 def test_cli_help():

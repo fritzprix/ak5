@@ -1,4 +1,3 @@
-import pytest
 from ak5.services.lexorank import initial_rank, rank_between, rebalance_ranks
 
 

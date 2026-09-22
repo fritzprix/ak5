@@ -1,15 +1,13 @@
-import asyncio
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from ak5.config import settings
 from ak5.database import get_db
-from ak5.main import app, seed_initial_data
+from ak5.main import app
 from ak5.models.base import Base
 from ak5.routers.auth import create_access_token
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Use in-memory SQLite database for tests
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
@@ -30,7 +28,7 @@ TestAsyncSessionLocal = async_sessionmaker(
 
 
 @pytest_asyncio.fixture(scope="function")
-async def test_db() -> AsyncGenerator[AsyncSession, None]:
+async def test_db() -> AsyncGenerator[AsyncSession]:
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -44,10 +42,11 @@ async def test_db() -> AsyncGenerator[AsyncSession, None]:
     # Seed initial test data
     async with TestAsyncSessionLocal() as session:
         # Seed default PM and agents
+        import json
+
         from ak5.models.actor import Actor
         from ak5.models.board import Board
         from ak5.models.column import Column
-        import json
 
         pm = Actor(
             actor_id="user_pm",
@@ -96,7 +95,7 @@ async def test_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client(test_db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+async def client(test_db: AsyncSession) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac

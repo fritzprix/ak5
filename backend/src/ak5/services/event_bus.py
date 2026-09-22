@@ -1,9 +1,11 @@
 import asyncio
-from collections import deque
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+import contextlib
 import json
-from typing import Any, AsyncGenerator
+from collections import deque
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
 
 @dataclass
@@ -35,20 +37,18 @@ class EventBus:
                 event_id=self._counter,
                 event_type=event_type,
                 data=data,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
             )
             self._history.append(event)
             # Dispatch to all active subscribers
             for queue in list(self._subscribers):
-                try:
+                with contextlib.suppress(asyncio.QueueFull):
                     queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    pass
         return event
 
     async def subscribe(
         self, last_event_id: int | None = None
-    ) -> AsyncGenerator[BoardEvent, None]:
+    ) -> AsyncGenerator[BoardEvent]:
         queue: asyncio.Queue[BoardEvent] = asyncio.Queue(maxsize=100)
         async with self._lock:
             self._subscribers.add(queue)

@@ -1,8 +1,9 @@
 import json
 from datetime import datetime
 from typing import Any
+
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.models.base import Base
 
@@ -29,7 +30,7 @@ class AuditLog(Base):
             return None
         try:
             return json.loads(self.payload)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             return {}
 
     @payload_dict.setter

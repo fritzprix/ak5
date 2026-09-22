@@ -1,4 +1,5 @@
 from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from ak5.schemas.column import ColumnOut

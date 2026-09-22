@@ -1,17 +1,13 @@
 import asyncio
-import json
-import os
-import sys
+
 import click
 import httpx
-from rich.columns import Columns
+from ak5.cli.config import get_api_url
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-
-from ak5.cli.config import get_api_url
 
 console = Console()
 
@@ -90,18 +86,20 @@ async def watch_board_live(api_url: str, board_id: str) -> None:
     board_data = fetch_board(api_url, board_id)
 
     with Live(render_board_view(board_data), console=console, refresh_per_second=4) as live:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("GET", f"{api_url}/events/stream") as stream:
-                async for line in stream.aiter_lines():
-                    if line.startswith("event:"):
-                        event_type = line.split(":", 1)[1].strip()
-                        if event_type in ("TICKET_CREATED", "TICKET_MOVED", "TICKET_DELEGATED", "TICKET_UPDATED", "COMMENT_ADDED"):
-                            # Refresh board
-                            try:
-                                board_data = fetch_board(api_url, board_id)
-                                live.update(render_board_view(board_data))
-                            except Exception:
-                                pass
+        async with (
+            httpx.AsyncClient(timeout=None) as client,
+            client.stream("GET", f"{api_url}/events/stream") as stream,
+        ):
+            async for line in stream.aiter_lines():
+                if line.startswith("event:"):
+                    event_type = line.split(":", 1)[1].strip()
+                    if event_type in ("TICKET_CREATED", "TICKET_MOVED", "TICKET_DELEGATED", "TICKET_UPDATED", "COMMENT_ADDED"):
+                        # Refresh board
+                        try:
+                            board_data = fetch_board(api_url, board_id)
+                            live.update(render_board_view(board_data))
+                        except (httpx.HTTPError, OSError):
+                            pass
 
 
 @click.command("board")

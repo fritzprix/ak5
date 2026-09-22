@@ -1,11 +1,12 @@
-from contextlib import asynccontextmanager
 import json
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
 
 from ak5.config import settings
 from ak5.database import AsyncSessionLocal, engine
+from ak5.mcp.tools import server as mcp_server
 from ak5.models.actor import Actor
 from ak5.models.base import Base
 from ak5.models.board import Board
@@ -15,7 +16,6 @@ from ak5.routers.auth import router as auth_router
 from ak5.routers.boards import router as boards_router
 from ak5.routers.events import router as events_router
 from ak5.routers.tickets import router as tickets_router
-from ak5.mcp.tools import server as mcp_server
 
 
 async def seed_initial_data() -> None:

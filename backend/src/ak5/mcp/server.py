@@ -1,5 +1,3 @@
-import asyncio
-import sys
 from ak5.mcp.tools import server
 
 

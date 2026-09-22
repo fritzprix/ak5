@@ -1,4 +1,5 @@
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -39,7 +40,7 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+async def get_db() -> AsyncGenerator[AsyncSession]:
     """Dependency that provides an async SQLAlchemy session."""
     async with AsyncSessionLocal() as session:
         try:

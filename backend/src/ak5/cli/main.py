@@ -1,5 +1,6 @@
 import click
 from rich.console import Console
+
 from ak5.cli.commands.agents import agents_command
 from ak5.cli.commands.board import board_command
 from ak5.cli.commands.delegate import delegate_command
@@ -15,7 +16,6 @@ console = Console()
 @click.version_option(version="1.0.0", prog_name="ak5")
 def cli():
     """AK5 (Agent K5) - Agent-Orchestrated Kanban Command Line Interface."""
-    pass
 
 
 cli.add_command(serve_command)

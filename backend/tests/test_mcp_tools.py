@@ -1,5 +1,5 @@
+import ak5.mcp.tools as mcp_tools
 import pytest
-from httpx import AsyncClient
 from ak5.mcp.client import AK5Client
 from ak5.mcp.tools import (
     ak5_delegate_subtask,
@@ -8,7 +8,7 @@ from ak5.mcp.tools import (
     ak5_report_block,
     ak5_update_ticket_status,
 )
-import ak5.mcp.tools as mcp_tools
+from httpx import AsyncClient
 
 
 @pytest.mark.asyncio

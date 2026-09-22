@@ -51,7 +51,7 @@ async def test_ticket_move_and_status_sync(client: AsyncClient, auth_headers):
         json={"title": "Task 2", "board_id": "proj-core-engine", "column_id": "col_todo"},
         headers=headers,
     )
-    t2_id = t2_resp.json()["ticket_id"]
+    assert t2_resp.status_code == 201
 
     # Move ticket 1 to In Progress (stage='in_progress')
     move_resp = await client.patch(

@@ -1,5 +1,6 @@
-from typing import Annotated
 import uuid
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +12,12 @@ from ak5.models.board import Board
 from ak5.models.column import Column
 from ak5.models.ticket import Ticket
 from ak5.routers.auth import get_current_actor
-from ak5.schemas.board import BoardCreate, BoardDetailOut, BoardOut, ColumnWithTicketsOut
+from ak5.schemas.board import (
+    BoardCreate,
+    BoardDetailOut,
+    BoardOut,
+    ColumnWithTicketsOut,
+)
 from ak5.schemas.column import ColumnCreate, ColumnOut
 from ak5.schemas.ticket import TicketOut
 

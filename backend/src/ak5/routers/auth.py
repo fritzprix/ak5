@@ -1,8 +1,9 @@
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
+
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,7 @@ security = HTTPBearer(auto_error=False)
 
 
 def create_access_token(actor_id: str, actor_type: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode = {
         "sub": actor_id,
         "actor_type": actor_type,

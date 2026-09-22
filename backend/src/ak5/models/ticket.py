@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -107,7 +108,7 @@ class Ticket(Base, TimestampMixin):
     def label_list(self) -> list[str]:
         try:
             return json.loads(self.labels)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             return []
 
     @label_list.setter
@@ -120,7 +121,7 @@ class Ticket(Base, TimestampMixin):
             return None
         try:
             return json.loads(self.execution_context)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             return {}
 
     @execution_context_dict.setter

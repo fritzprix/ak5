@@ -1,11 +1,10 @@
 import asyncio
-import time
+
 import click
 import httpx
+from ak5.cli.config import get_api_url
 from rich.console import Console
 from rich.panel import Panel
-
-from ak5.cli.config import get_api_url
 
 console = Console()
 

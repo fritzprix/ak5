@@ -1,5 +1,6 @@
 import json
 from typing import Any
+
 from mcp.server.mcpserver import MCPServer
 from mcp.types import TextContent
 
@@ -135,7 +136,7 @@ async def ak5_report_block(
 ) -> list[TextContent]:
     """외부 의존성 결여나 권한 부족으로 작업 진행이 불가능할 때 티켓을 Blocked 상태로 전환하고 담당자/PM을 멘션합니다."""
     client = get_client()
-    ticket = await client.report_block(
+    await client.report_block(
         ticket_id=ticket_id,
         blocking_reason=blocking_reason,
         required_actor_id=required_actor_id,

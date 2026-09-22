@@ -1,7 +1,8 @@
 import json
 from typing import Any
+
 from sqlalchemy import CheckConstraint, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.models.base import Base, TimestampMixin
 
@@ -27,7 +28,7 @@ class Actor(Base, TimestampMixin):
     def capability_list(self) -> list[str]:
         try:
             return json.loads(self.capabilities)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             return []
 
     @capability_list.setter

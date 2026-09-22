@@ -1,8 +1,8 @@
 import click
 import httpx
+from ak5.cli.config import get_api_url
 from rich.console import Console
 from rich.table import Table
-from ak5.cli.config import get_api_url
 
 console = Console()
 

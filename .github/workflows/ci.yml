@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  backend-ci:
+    name: Backend Tests & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          uv sync --all-packages
+
+      - name: Run Pytest
+        run: |
+          uv run pytest
+
+      - name: Run Ruff Lint
+        run: |
+          uvx ruff check backend
+
+  frontend-sdk-ci:
+    name: Frontend & SDK Build & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build SDK (@ak5/sdk)
+        working-directory: ./packages/sdk
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build & Lint Frontend Dashboard
+        working-directory: ./frontend
+        env:
+          NEXT_PUBLIC_API_URL: "http://localhost:8000/api/v1"
+        run: |
+          npm ci
+          npm run lint
+          npm run build

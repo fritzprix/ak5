@@ -6,9 +6,8 @@ RUN pip install uv
 
 COPY pyproject.toml README.md ./
 COPY backend ./backend
-COPY cli ./cli
 
-RUN uv pip install --system -e backend -e cli
+RUN uv pip install --system -e backend
 
 EXPOSE 8000
 

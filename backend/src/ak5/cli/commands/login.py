@@ -1,7 +1,7 @@
 import click
 import httpx
-from rich.console import Console
 from ak5.cli.config import get_api_url, save_session
+from rich.console import Console
 
 console = Console()
 

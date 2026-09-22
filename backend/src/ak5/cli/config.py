@@ -9,9 +9,9 @@ DEFAULT_API_URL = "http://127.0.0.1:8000/api/v1"
 def load_session() -> dict[str, Any]:
     if SESSION_FILE.exists():
         try:
-            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+            with open(SESSION_FILE, encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             return {}
     return {}
 

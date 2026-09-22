@@ -1,6 +1,6 @@
-import asyncio
 import json
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+
 from fastapi import APIRouter, Header, Request
 from sse_starlette.sse import EventSourceResponse
 
@@ -18,7 +18,7 @@ async def sse_event_stream(
 
     Emits TICKET_CREATED, TICKET_MOVED, TICKET_DELEGATED, TICKET_UPDATED, COMMENT_ADDED events.
     """
-    async def event_generator() -> AsyncGenerator[dict, None]:
+    async def event_generator() -> AsyncGenerator[dict]:
         # Send initial ping event
         yield {
             "event": "CONNECTED",
