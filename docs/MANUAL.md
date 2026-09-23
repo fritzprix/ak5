@@ -46,19 +46,35 @@ AK5는 **인간 사용자(PM/엔지니어)와 자율 AI 에이전트가 단일 �
 
 ## 2. 빠른 시작 (Quick Start)
 
-### 2.1 사전 준비 사항
-* **Python 3.11 이상** (3.12, 3.13 호환)
-* **[uv](https://github.com/astral-sh/uv)** (초고속 파이썬 패키지 매니저)
-* **Node.js 18 이상** 및 npm
-
-### 2.2 저장소 설정 및 백엔드 실행
+### 2.1 무설치 즉시 실행 (Zero-Install: `uvx`)
+패키지 설치나 코드 복제 없이 바로 체험할 수 있습니다:
 ```bash
-# 1. 의존성 설치 및 가상환경 패키지 등록
+# 1. AI 협업 시뮬레이션 데모 1초 실행
+uvx ak5 demo
+
+# 2. 백엔드 게이트웨이 및 임베디드 MCP 서버 실행
+uvx ak5 serve
+
+# 3. 실시간 터미널 칸반 보드 뷰어
+uvx ak5 board --watch
+```
+
+### 2.2 패키지 설치 (`pip` / `uv`)
+```bash
+pip install ak5
+# 또는
+uv tool install ak5
+```
+
+### 2.3 저장소 소스코드 개발 환경 실행
+* **요구사항:** Python 3.11+, uv, Node.js 18+
+```bash
+# 1. 의존성 설치 및 로컬 패키지 동기화
 uv sync
-uv pip install -e backend -e cli
+uv pip install -e backend
 
 # 2. 백엔드 게이트웨이 기동 (기본 포트 8000)
-uv run uvicorn ak5.main:app --host 127.0.0.1 --port 8000 --reload
+uv run ak5 serve --reload
 ```
 * 서버가 정상 기동되면 SQLite WAL DB (`ak5.db`)가 자동 생성되며, 기본 보드(`proj-core-engine`)와 기본 액터(`user_pm`, `agent_image_worker`, `agent_code_reviewer`)가 자동 시딩됩니다.
 * **Swagger API 문서:** `http://127.0.0.1:8000/docs`
