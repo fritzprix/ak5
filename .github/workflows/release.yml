@@ -1,4 +1,4 @@
-name: Release AK5 to PyPI & npm
+name: Release AK5 to PyPI
 
 on:
   push:
@@ -32,55 +32,3 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-
-  publish-npm-sdk:
-    name: Publish @ak5/sdk to npm
-    runs-on: ubuntu-latest
-    if: ${{ secrets.NPM_TOKEN != '' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Install & Build SDK
-        working-directory: ./packages/sdk
-        run: |
-          npm ci
-          npm run build
-
-      - name: Publish @ak5/sdk to npm
-        working-directory: ./packages/sdk
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm publish --access public
-
-  publish-npm-web:
-    name: Publish Web Dashboard to npm (npx ak5)
-    runs-on: ubuntu-latest
-    if: ${{ secrets.NPM_TOKEN != '' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Install & Build Next.js
-        working-directory: ./frontend
-        run: |
-          npm ci
-          npm run build
-
-      - name: Publish to npm
-        working-directory: ./frontend
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm publish --access public
