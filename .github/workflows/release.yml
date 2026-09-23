@@ -4,11 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   publish-pypi:
     name: Publish Python Package to PyPI (uvx ak5)
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -24,17 +28,15 @@ jobs:
 
       - name: Build Wheel & Source Tarball
         run: |
-          uv build backend
+          uv build backend --out-dir dist
 
       - name: Publish to PyPI
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          uv publish dist/*
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-npm-sdk:
     name: Publish @ak5/sdk to npm
     runs-on: ubuntu-latest
+    if: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,6 +62,7 @@ jobs:
   publish-npm-web:
     name: Publish Web Dashboard to npm (npx ak5)
     runs-on: ubuntu-latest
+    if: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
