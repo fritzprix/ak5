@@ -1,4 +1,4 @@
-# AK5 (Agent K5) — Agent-Orchestrated Kanban System
+# AK5 — Agent-Orchestrated Kanban System
 
 <p align="center">
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/v/ak5.svg?color=blue" alt="PyPI version"></a>
@@ -8,7 +8,52 @@
   <img src="https://img.shields.io/badge/Zero--Install-uvx%20ak5-orange.svg" alt="uvx ak5">
 </p>
 
-**AK5** is an open-source, **Agent-Orchestrated Kanban Platform** that unifies human users (PMs, engineers) and autonomous AI agents (LLMs) on a single collaborative Kanban interface. It provides capability-based task discovery, subtask delegation, real-time board visualization, and seamless Model Context Protocol (MCP) integration.
+**AK5** (*Agent Kanban* — where **K5** stands for **K**anban) is an open-source, **Agent-Orchestrated Kanban Platform** that unifies human users (PMs, engineers) and autonomous AI agents (LLMs) on a single collaborative Kanban interface. It provides capability-based task discovery, subtask delegation, real-time board visualization, and seamless Model Context Protocol (MCP) integration.
+
+> 💡 **No heavy Jira/Confluence SaaS subscriptions. No per-seat enterprise bloat.**  
+> Spin up a dedicated, agent-native Kanban hub for your personal army of AI agents in 5 seconds. Pair it with **Tailscale** to establish a secure, ticket-driven autonomous work operating system you can manage from anywhere in the world.
+
+---
+
+## 🎯 Why AK5? Your Personal AI Fleet Without SaaS Bloat
+
+Coordinating multiple AI coding agents (Claude Desktop, Cursor, Antigravity, local LLMs, or autonomous background loops) shouldn't require:
+* 💸 **Expensive per-seat SaaS subscriptions** (Jira, Linear, Monday.com, Confluence).
+* 🕸️ **Complex webhook and cloud plumbing** just to let your bots read and update tickets.
+* 🌪️ **Chat-window chaos**, where task context, blocker reports, and execution logs get buried in scrolling prompts.
+
+### 🛡️ The Ticket-Driven Autonomous System (with Tailscale)
+
+With **AK5 + Tailscale**, you get an enterprise-grade, ticket-driven workflow on your own terms:
+
+```
+             ┌────────────────────────────────────────────────────────┐
+             │       Tailscale Mesh VPN (Encrypted & Zero-Config)     │
+             └────────────────────────────────────────────────────────┘
+                       ▲                                    ▲
+                       │ Mobile / Laptop                    │ Local or Remote
+                       │ (Tailscale MagicDNS)               │ Agent Access
+                       ▼                                    ▼
+       ┌──────────────────────────────┐        ┌──────────────────────────────┐
+       │   Human PM / Engineer        │        │   Personal AI Agent Fleet    │
+       │   • File requirements        │        │   • Claude / Cursor / CLI    │
+       │   • Prioritize backlog       │        │   • Capability discovery     │
+       │   • Review & unblock tasks   │        │   • Autonomous execution     │
+       └──────────────┬───────────────┘        └──────────────┬───────────────┘
+                      │                                       │
+                      └───────────────────┬───────────────────┘
+                                          ▼
+                      ┌───────────────────────────────────────┐
+                      │         AK5 Embedded Gateway          │
+                      │  • Port 8000: Web Dashboard + API     │
+                      │  • SQLite WAL (Zero external DB)      │
+                      │  • Native MCP Server + SSE Streams    │
+                      └───────────────────────────────────────┘
+```
+
+* **Self-Hosted in Seconds:** Run `ak5 web` on your workstation or home server. It runs locally with SQLite WAL storage—no cloud lock-in, no external DB setup.
+* **Access Anywhere via Tailscale:** Connect securely from your smartphone or laptop on the go (`http://my-machine.ts.net:8000`) without exposing any ports to the public internet.
+* **Structured Ticket-Driven Execution:** Instead of micromanaging prompts, drop tickets into the backlog. Your AI agents autonomously pick them up via MCP, branch subtasks, update column stages, and report blockers with human mentions.
 
 ---
 
@@ -225,30 +270,65 @@ npm run dev
 
 ## 🌐 Web Dashboard & Remote Access (Tailscale)
 
-The Kanban Web Dashboard is **bundled into the Python package** and served by FastAPI on the same port as the API (no separate Node process for end users).
+AK5 features a responsive Next.js 15 Kanban Web Dashboard designed for human PMs and engineers. The frontend is **bundled directly into the Python package**, allowing FastAPI to serve both the REST API and the Web UI on a **single port (8000)** without requiring Node.js or npm to be installed.
 
-### One-command (`ak5 web` / `uvx ak5 web`)
+### 1. Launching the Web Dashboard
 ```bash
-# Optional: enable login gate for Tailscale / LAN exposure
-cp .env.example .env
-# Set AK5_AUTH_USERNAME / AK5_AUTH_PASSWORD
+# Launch API + Web Dashboard on single port (auto-detects Tailscale and opens browser)
+ak5 web
 
-uvx ak5 web --host 0.0.0.0 --port 8000
+# Or with zero installation via uvx:
+uvx ak5 web
+
+# Custom host, port, or headless server mode:
+ak5 web --host 0.0.0.0 --port 8080 --no-browser
 ```
 
-`ak5 web` will:
-* Serve REST + SSE + MCP + static UI on **one port**
-* Auto-detect **Tailscale IPv4** and **MagicDNS** (`*.ts.net`) when `tailscale` is on PATH
-* Open the local browser (disable with `--no-browser`)
-* Enforce optional web auth when `AK5_AUTH_PASSWORD` is set
+When started, `ak5 web` automatically detects your network interfaces and displays an interactive connection panel:
+```text
+╭────────────────── AK5 Kanban Web Dashboard ──────────────────╮
+│ Local:              http://127.0.0.1:8000                    │
+│ API Docs:           http://127.0.0.1:8000/docs               │
+│ Tailscale Domain:   http://my-machine.tailfd161b.ts.net:8000 │
+│ Tailscale IP:       http://100.119.228.9:8000                │
+│ Bind:               http://0.0.0.0:8000                      │
+│ Web Auth:           ENABLED (user: admin)                    │
+│ Brute-force Shield: ACTIVE (5 / 5m, 10m lockout)             │
+╰──────────────────────────────────────────────────────────────╯
+```
 
-### Security & Authentication Features
-* **Zero-Friction Local Dev:** If `AK5_AUTH_PASSWORD` is omitted or empty, authentication is disabled.
-* **Brute-Force Rate Limiting:** Max 5 failed attempts / 5 minutes → 10-minute IP lockout (HTTP 429 + `Retry-After`).
-* **Session Cookie:** HttpOnly, SameSite=Lax, 30-day SHA-256 session cookie (`ak5_auth`).
-* **Tailscale-aware CORS:** Allows `localhost`, `100.x.y.z`, and `*.ts.net` origins only (not an open wildcard).
+---
 
-Monorepo hot-reload (Next.js on :3000) remains available via `AK5_LEGACY_WEB=1 ./start-web.sh`.
+### 2. Remote Access via Tailscale
+
+AK5 comes with built-in network security configured for [Tailscale](https://tailscale.com/) VPN meshes:
+1. **MagicDNS Domain:** Access directly from any connected mobile phone, laptop, or tablet using your node domain (e.g., `http://my-machine.ts.net:8000`).
+2. **Private CGNAT IP:** Access via your private Tailscale IPv4 address (e.g., `http://100.x.y.z:8000`).
+3. **Tailscale-Aware CORS:** Cross-Origin Resource Sharing is strictly constrained to `localhost`, `127.0.0.1`, Tailscale IP ranges (`100.*.*.*`), and MagicDNS domains (`*.ts.net`), preventing unauthorized web origins from querying your gateway.
+
+---
+
+### 3. Password Authentication & Brute-Force Defense
+
+To secure your dashboard when binding to `0.0.0.0` or exposing over Tailscale, enable the built-in HTTP authentication gate:
+
+1. **Configure Credentials:**
+   Copy `.env.example` to `.env` (or export environment variables):
+   ```bash
+   cp .env.example .env
+   ```
+   Set your desired credentials:
+   ```env
+   AK5_AUTH_USERNAME=admin
+   AK5_AUTH_PASSWORD=your_super_secret_password
+   ```
+
+2. **Security Features:**
+   * **Zero-Friction Dev:** If `AK5_AUTH_PASSWORD` is omitted or empty, authentication is disabled so you can prototype locally without login screens.
+   * **Brute-Force Rate Limiting:** After **5 consecutive failed attempts** within 5 minutes from the same IP address, access is automatically locked for **10 minutes** (HTTP 429 `Too Many Requests` with `Retry-After: 600`).
+   * **Secure HTTP-Only Sessions:** Successful authentication issues an encrypted `ak5_auth` session cookie (`HttpOnly`, `SameSite=Lax`, 30-day lifetime).
+   * **Header Logout Action:** An active session displays the logged-in username badge and a one-click Sign Out button in the dashboard navigation bar.
+
 
 
 ---

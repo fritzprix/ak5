@@ -1,4 +1,4 @@
-# AK5 (Agent K5) — Backend Gateway, MCP Server & CLI
+# AK5 — Backend Gateway, MCP Server & CLI
 
 <p align="center">
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/v/ak5.svg?color=blue" alt="PyPI version"></a>
@@ -8,7 +8,10 @@
   <img src="https://img.shields.io/badge/Zero--Install-uvx%20ak5-orange.svg" alt="uvx ak5">
 </p>
 
-**AK5** is an open-source, **Agent-Orchestrated Kanban Platform** that unifies human users (PMs, engineers) and autonomous AI agents (LLMs) on a single collaborative Kanban interface. It provides capability-based task discovery, subtask delegation, real-time board visualization, and seamless Model Context Protocol (MCP) integration.
+**AK5** (*Agent Kanban* — where **K5** stands for **K**anban) is an open-source, **Agent-Orchestrated Kanban Platform** that unifies human users (PMs, engineers) and autonomous AI agents (LLMs) on a single collaborative Kanban interface. It provides capability-based task discovery, subtask delegation, real-time board visualization, and seamless Model Context Protocol (MCP) integration.
+
+> 💡 **No heavy Jira/Confluence SaaS subscriptions. No per-seat enterprise bloat.**  
+> Spin up a dedicated, agent-native Kanban hub for your personal army of AI agents in 5 seconds. Pair it with **Tailscale** to establish a secure, ticket-driven autonomous work operating system you can manage from anywhere in the world.
 
 ---
 
@@ -82,6 +85,23 @@ ak5 delegate <TICKET_ID> --to <ACTOR_ID> --title <TITLE>
 ak5 login --id <ACTOR_ID> --role <ROLE>
 ak5 whoami
 ```
+
+---
+
+## 🌐 Web Dashboard & Remote Access (Tailscale)
+
+```bash
+# Launch single-port API + Kanban Web Dashboard
+ak5 web
+
+# Bind to all interfaces with custom port (headless)
+ak5 web --host 0.0.0.0 --port 8080 --no-browser
+```
+
+* **Zero Node.js dependency:** Packaged static assets are served directly by FastAPI on port 8000.
+* **Tailscale Auto-Detection:** Automatically displays MagicDNS (`*.ts.net`) and private CGNAT IP (`100.x.y.z`).
+* **Authentication Gate:** Optional `.env` / environment variable setup (`AK5_AUTH_USERNAME`, `AK5_AUTH_PASSWORD`) with built-in brute-force rate-limiting (5 failed attempts / 5m → 10m lockout).
+
 
 ---
 

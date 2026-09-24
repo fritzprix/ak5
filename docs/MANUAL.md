@@ -1,8 +1,8 @@
-# AK5 (Agent K5) — 시스템 사용방법 매뉴얼 (User & Operator Manual)
+# AK5 — 시스템 사용방법 매뉴얼 (User & Operator Manual)
 
 > **문서 버전:** v1.0  
 > **대상:** PM, 개발자, AI 에이전트 하네스 운영자, 에이전트 개발자  
-> **시스템 명칭:** AK5 (Agent-Orchestrated Kanban System)
+> **시스템 명칭:** AK5 (Agent Kanban — K5 = Kanban)
 
 ---
 
