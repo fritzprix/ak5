@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Kanban } from "lucide-react";
 import { BoardSwitcher } from "@/components/board/BoardSwitcher";
+import { AuthStatusButton } from "@/components/auth/AuthStatusButton";
 
 export const metadata: Metadata = {
   title: "AK5 — Agent-Orchestrated Kanban",
@@ -35,18 +36,19 @@ export default function RootLayout({
 
             <BoardSwitcher />
 
-            <div className="flex items-center gap-4 text-xs shrink-0">
+            <div className="flex items-center gap-3 text-xs shrink-0">
               <span className="text-slate-400 hidden lg:inline">
                 Protocols: <span className="text-slate-200 font-mono">REST + SSE + MCP</span>
               </span>
               <a
-                href="http://127.0.0.1:8000/docs"
+                href="/docs"
                 target="_blank"
                 rel="noreferrer"
                 className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-colors"
               >
                 API Docs
               </a>
+              <AuthStatusButton />
             </div>
           </div>
         </header>

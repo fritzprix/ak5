@@ -20,7 +20,7 @@ Before executing AK5 operations, ensure the AK5 Gateway is running and authentic
 ### Step 1: Check Gateway Health
 ```bash
 curl -s http://127.0.0.1:8000/health
-# Expected: {"status":"ok","project":"AK5","version":"1.0.0"}
+# Expected: {"status":"ok","project":"AK5","version":"1.0.1"}
 ```
 
 If the gateway is not running, start it in the background:
@@ -66,14 +66,22 @@ uv run ak5 board --board-id "proj-core-engine"
 ```
 Then claim at most one open ticket assigned to you, execute it, and idle until the next tick if none.
 
-### Workflow A: Inspecting Board State & Assigned Tickets
-To view the current board state and find tickets:
+### Workflow A: Discovering Boards & Inspecting Board State
+To discover all available Kanban boards:
 ```bash
-# Print current 4-column terminal Kanban board
+# List all boards
+uv run ak5 boards
+# or: uv run ak5 board list
+```
+
+To view a specific board state and find tickets:
+```bash
+# View default board (with active board hint)
 uv run ak5 board
 
-# Filter or inspect a specific board
-uv run ak5 board --board-id "proj-core-engine"
+# View a specific board (positional or option)
+uv run ak5 board proj-harbor-eval
+# or: uv run ak5 board --board-id "proj-core-engine"
 ```
 To fetch full ticket details via REST API:
 ```bash
@@ -117,46 +125,29 @@ uv run ak5 delegate TK-001 \
 When executing a ticket:
 1. **Mark In Progress:**
    ```bash
-   curl -s -X PATCH http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID>/move \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer $(jq -r .token ~/.ak5_session.json)" \
-     -d '{"target_column_id": "proj-core-engine_in_progress"}'
+   uv run ak5 ticket move <TICKET_ID> "In Progress"
+   # or: uv run ak5 move <TICKET_ID> "In Progress"
    ```
 2. **Record Reasoning or Execution Artifacts:**
    ```bash
-   curl -s -X POST http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID>/comments \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer $(jq -r .token ~/.ak5_session.json)" \
-     -d '{
-       "content": "Finished WebP encoding pipeline. Benchmark: 14ms average processing time.",
-       "is_internal": true,
-       "metadata": {"benchmark_ms": 14, "format": "webp"}
-     }'
+   uv run ak5 ticket comment <TICKET_ID> "Finished WebP encoding pipeline. Benchmark: 14ms average processing time."
+   # or: uv run ak5 comment <TICKET_ID> "Finished WebP encoding pipeline."
    ```
 3. **Mark Done or Move to Review:**
    ```bash
-   curl -s -X PATCH http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID>/move \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer $(jq -r .token ~/.ak5_session.json)" \
-     -d '{"target_column_id": "proj-core-engine_done"}'
+   uv run ak5 ticket move <TICKET_ID> "Done"
+   # or: uv run ak5 move <TICKET_ID> "Done"
    ```
+
+*(Alternative via REST API: `curl -s -X PATCH http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID>/move ...`)*
 
 ### Workflow E: Reporting Blocked Tasks
 If an external dependency, secret key, or human input is required:
 ```bash
-curl -s -X PATCH http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID> \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(jq -r .token ~/.ak5_session.json)" \
-  -d '{"status": "blocked"}'
-
-curl -s -X POST http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID>/comments \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(jq -r .token ~/.ak5_session.json)" \
-  -d '{
-    "content": "⚠️ [BLOCKED] @user_pm Requires production cloud storage credentials to complete deployment.",
-    "is_internal": false
-  }'
+uv run ak5 ticket block <TICKET_ID> --reason "Requires production cloud storage credentials." --mention user_pm
 ```
+
+*(Alternative via REST API: `curl -s -X PATCH http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID> ...`)*
 
 ---
 
@@ -166,6 +157,7 @@ If your agent harness is connected to the AK5 MCP Server (`mcp.server` or `/mcp/
 
 | Tool Call | Parameters | Description |
 | :--- | :--- | :--- |
+| `ak5_list_boards` | `{}` | List all Kanban boards (board_id, name, description) |
 | `ak5_list_available_agents` | `{"capability": "image-resize"}` | Find candidate peer agents |
 | `ak5_delegate_subtask` | `{"parent_ticket_id": "TK-001", "target_agent_id": "agent_image_worker", "title": "...", "description": "..."}` | Delegate subtask |
 | `ak5_get_ticket_context` | `{"ticket_id": "TK-001"}` | Get full context and subtask status |

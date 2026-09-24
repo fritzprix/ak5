@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AK5"
-    VERSION: str = "1.0.0"
+    VERSION: str = "1.0.1"
     API_V1_STR: str = "/api/v1"
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./ak5.db"
@@ -22,6 +22,12 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]
+
+    # Optional web gate (prefer AK5_AUTH_* / AK5_WEB_* via os.environ in web_auth)
+    AUTH_USERNAME: str = "admin"
+    AUTH_PASSWORD: str = ""
+    WEB_USER: str = ""
+    WEB_PASSWORD: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

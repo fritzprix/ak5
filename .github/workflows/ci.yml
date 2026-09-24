@@ -23,6 +23,16 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build embedded web UI into Python package
+        run: |
+          chmod +x scripts/build_web_ui.sh
+          ./scripts/build_web_ui.sh
+
       - name: Install dependencies
         run: |
           uv sync --all-packages
@@ -54,9 +64,11 @@ jobs:
 
       - name: Build & Lint Frontend Dashboard
         working-directory: ./frontend
-        env:
-          NEXT_PUBLIC_API_URL: "http://localhost:8000/api/v1"
         run: |
           npm ci
           npm run lint
+          export AK5_STATIC_EXPORT=1
+          export NEXT_PUBLIC_API_URL=/api/v1
+          if [ -f src/middleware.ts ]; then mv src/middleware.ts src/middleware.ts.ci_bak; fi
+          trap 'if [ -f src/middleware.ts.ci_bak ]; then mv src/middleware.ts.ci_bak src/middleware.ts; fi' EXIT
           npm run build

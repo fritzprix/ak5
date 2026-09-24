@@ -1,68 +1,93 @@
-# AK5 (Agent K5) — Agent-Orchestrated Kanban System
+# AK5 (Agent K5) — Backend Gateway, MCP Server & CLI
 
 <p align="center">
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/v/ak5.svg?color=blue" alt="PyPI version"></a>
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/pyversions/ak5.svg" alt="Python Versions"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/MCP-Compatible-green.svg" alt="MCP Compatible">
   <img src="https://img.shields.io/badge/Zero--Install-uvx%20ak5-orange.svg" alt="uvx ak5">
 </p>
 
-**AK5**는 인간 사용자(PM, 개발자)와 자율 AI 에이전트(LLM Agents)가 단일 칸반(K5) 인터페이스 위에서 실시간으로 협업하고, 작업을 위임(Delegation) 및 추적하는 **Agent-Orchestrated Kanban 플랫폼**입니다.
+**AK5** is an open-source, **Agent-Orchestrated Kanban Platform** that unifies human users (PMs, engineers) and autonomous AI agents (LLMs) on a single collaborative Kanban interface. It provides capability-based task discovery, subtask delegation, real-time board visualization, and seamless Model Context Protocol (MCP) integration.
 
 ---
 
-## ⚡ 빠른 시작 (Zero-Install: 설치 없이 1초 실행)
+## ⚡ Quick Start (Zero-Install via `uvx`)
 
-Python 3.11+ 환경이 있다면 패키지 설치나 복제 없이 [`uvx`](https://docs.astral.sh/uv/)로 즉시 실행할 수 있습니다:
+Run AK5 immediately without cloning or installing dependencies using [`uvx`](https://docs.astral.sh/uv/):
 
-### 1. 1분 만에 AI 멀티 에이전트 협업 시뮬레이션 체험
+### 1. Run 1-Minute Multi-Agent Collaboration Simulation
 ```bash
 uvx ak5 demo
 ```
-> PM 액터가 상위 작업을 등록하고, 이미지 처리/코드 리뷰/보안 에이전트가 서브태스크를 자율 인수 및 완료하는 전 과정을 터미널에서 생생하게 시뮬레이션합니다.
 
-### 2. 백엔드 게이트웨이 기동
+### 2. Start Backend Gateway & Embedded Web UI
 ```bash
-uvx ak5 serve
+uvx ak5 web
 ```
+* **Web Dashboard:** `http://127.0.0.1:8000/`
 * **REST API & Swagger Docs:** `http://127.0.0.1:8000/docs`
-* **Realtime SSE Event Stream:** `http://127.0.0.1:8000/api/v1/events/stream`
-* **Embedded MCP Server:** `http://127.0.0.1:8000/mcp/sse`
+* **Real-time SSE Event Stream:** `http://127.0.0.1:8000/api/v1/events/stream`
+* **Embedded MCP Server Endpoint:** `http://127.0.0.1:8000/mcp/sse`
+* Prints Tailscale MagicDNS / CGNAT URLs when available
 
-### 3. 실시간 터미널 칸반 보드 (TUI)
+### 3. Terminal Kanban Board (TUI)
 ```bash
-uvx ak5 board --watch
+# List all project boards
+uvx ak5 boards
+
+# Inspect board in real time
+uvx ak5 board proj-core-engine --watch
 ```
 
 ---
 
-## 📦 설치 (Installation)
-
-시스템에 영구 설치하거나 가상환경에 추가하려면:
+## 📦 Installation
 
 ```bash
-# pip를 통한 설치
+# Via pip
 pip install ak5
 
-# 또는 uv tool로 전역 CLI 설치
+# Or via uv tool
 uv tool install ak5
 ```
 
-설치 후 `ak5` 및 `ak5-mcp` 명령어를 바로 사용할 수 있습니다:
+---
+
+## 💻 Full Human CLI Reference
+
 ```bash
-ak5 --help
-ak5 serve
-ak5 board --watch
+# Boards
+ak5 boards
+ak5 board [BOARD_ID] [--watch]
+ak5 create-board <BOARD_ID> --name <NAME> [--desc <DESC>]
+
+# Tickets
+ak5 ticket create --title <TITLE> [--board <ID>] [--priority <PRIORITY>] [--assign <ACTOR_ID>]
+ak5 ticket view <TICKET_ID>
+ak5 ticket move <TICKET_ID> <TARGET_COLUMN> [--note <NOTE>]
+ak5 ticket comment <TICKET_ID> <CONTENT>
+ak5 ticket block <TICKET_ID> --reason <REASON> [--mention <ACTOR_ID>]
+ak5 ticket update <TICKET_ID> [--priority <P>] [--assign <ACTOR>]
+
+# Quick Shortcuts
+ak5 move <TICKET_ID> <TARGET_COLUMN> [--note <NOTE>]
+ak5 comment <TICKET_ID> <CONTENT>
+
+# Agents & Delegation
+ak5 agents --cap <TAG>
+ak5 delegate <TICKET_ID> --to <ACTOR_ID> --title <TITLE>
+
+# Identity
+ak5 login --id <ACTOR_ID> --role <ROLE>
+ak5 whoami
 ```
 
 ---
 
-## 🤖 AI 에이전트 연동 (Claude Desktop, Cursor, Antigravity)
+## 🤖 AI Agent & MCP Integration (Claude Desktop, Cursor, Antigravity)
 
-AK5는 **Model Context Protocol (MCP)** 표준을 내장하고 있어, 주요 AI 도구에서 즉시 칸반 보드를 인식하고 하위 작업을 자율 위임할 수 있습니다.
-
-### Claude Desktop 설정 (`claude_desktop_config.json`)
+### Claude Desktop (`claude_desktop_config.json`)
 ```json
 {
   "mcpServers": {
@@ -74,52 +99,19 @@ AK5는 **Model Context Protocol (MCP)** 표준을 내장하고 있어, 주요 AI
 }
 ```
 
-### Cursor / Antigravity / Windsurf 설정
-MCP 설정 메뉴에서 아래 커맨드를 등록하세요:
-* **Command:** `uvx`
-* **Args:** `ak5-mcp`
-
-### 제공되는 MCP 표준 툴 (5종)
-| MCP 도구명 | 설명 |
-|---|---|
-| `ak5_list_available_agents` | 가용 에이전트 목록 및 역량 태그(`image-resize`, `code-review` 등) 검색 |
-| `ak5_delegate_subtask` | 복잡한 작업을 쪼개어 하위 에이전트에게 서브태스크 발급 & 위임 |
-| `ak5_get_ticket_context` | 티켓 세부사항, 진행 히스토리, 부모-자식 트리, 코멘트 조회 |
-| `ak5_update_ticket_status` | 티켓 상태 전이(컬럼 이동) 및 산출물 기록 |
-| `ak5_report_block` | 에이전트 병목/차단 보고 및 PM 멘션 알림 |
+### Standard MCP Tools (6 Tools)
+| Tool Name | Parameters | Description |
+|---|---|---|
+| `ak5_list_boards` | *(none)* | Discover all registered Kanban boards and project IDs |
+| `ak5_list_available_agents` | `capability`, `search_query` | Find candidate peer agents by capability tag or natural-language query |
+| `ak5_delegate_subtask` | `parent_ticket_id`, `target_agent_id`, `title`, `description`, `priority` | Spawn a child subtask and assign it to a peer agent |
+| `ak5_get_ticket_context` | `ticket_id` | Retrieve ticket specification, subtask tree, comments, and execution context |
+| `ak5_update_ticket_status` | `ticket_id`, `column_name`, `status_note`, `execution_context` | Transition column stage (e.g. In Progress, Done) and log artifacts |
+| `ak5_report_block` | `ticket_id`, `blocking_reason`, `required_actor_id` | Set ticket state to `blocked` and notify assigned actor or PM |
 
 ---
 
-## 🌟 주요 특징
+## 📄 License
 
-1. **Actor 모델 일원화 (Unified Actor Model):** 인간과 AI 에이전트를 동일한 `Actor` 인터페이스(`user_pm`, `agent_code_reviewer` 등)로 취급하여 투명한 권한 관리와 작업 위임을 보장합니다.
-2. **역량 기반 발견 및 계층형 위임 (Discovery & Delegation):** 에이전트가 스스로 역량 태그를 질의하여 최적의 동료 에이전트를 찾아 하위 티켓을 위임합니다.
-3. **Lexorank 알고리즘 (Base36):** Jira와 동일한 방식으로 순서 인덱스를 재정렬 충돌 없이 무한 보간 삽입합니다.
-4. **듀얼 프로토콜 지원:** 터미널 CLI(`ak5`), 웹 프론트엔드(`Next.js 15`), AI 에이전트 표준(`MCP`)을 모두 지원합니다.
-5. **임베디드 & 경량화:** SQLite WAL(Write-Ahead Logging) 모드를 기본 내장하여 별도 DB 서버 설정 없이 즉시 동작합니다.
-
----
-
-## 💻 CLI 주요 명령어 모음
-
-```bash
-# 가용 에이전트 역량 검색
-ak5 agents --cap "code-review"
-
-# 하위 작업 위임
-ak5 delegate --parent TICKET-101 --agent agent-reviewer --title "PR #42 보안 감사"
-
-# 터미널 칸반 보드 확인 (실시간 새로고침)
-ak5 board --watch --refresh 2
-
-# 액터 전환 로그인
-ak5 login --actor agent-worker
-```
-
----
-
-## 📚 문서 및 링크
-
-* 🌐 **GitHub 저장소:** [https://github.com/fritzprix/ak5](https://github.com/fritzprix/ak5)
-* 📦 **PyPI 공식 패키지:** [https://pypi.org/project/ak5/](https://pypi.org/project/ak5/)
-* 📜 **라이선스:** [MIT License](https://opensource.org/licenses/MIT)
+This project is licensed under the **Apache License, Version 2.0**.  
+See the [LICENSE](../LICENSE) file for details.

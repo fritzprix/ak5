@@ -40,6 +40,11 @@ class AK5Client:
         token = await self.ensure_token()
         return {"Authorization": f"Bearer {token}"}
 
+    async def list_boards(self) -> list[dict[str, Any]]:
+        resp = await self._http.get(f"{self.base_url.rstrip('/')}/boards")
+        resp.raise_for_status()
+        return resp.json()
+
     async def list_available_agents(
         self, capability: str | None = None, search_query: str | None = None
     ) -> list[dict[str, Any]]:

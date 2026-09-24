@@ -176,19 +176,100 @@ uv run ak5 delegate TK-001 \
   --priority high
 ```
 
-### 4.4 실시간 터미널 칸반 뷰 (`ak5 board`)
-터미널 안에서 4개 컬럼 칸반 뷰를 미려한 Rich 테이블로 확인합니다.
+### 4.4 칸반 보드 목록 및 실시간 터미널 뷰 (`ak5 boards`, `ak5 board`)
 
+#### 1) 사용 가능한 보드 목록 조회 (`ak5 boards` 또는 `ak5 board list`)
+시스템에 등록된 전체 프로젝트 보드 목록을 조회합니다:
 ```bash
-# 1회성 현재 상태 출력
+# 전체 보드 목록 출력
+uv run ak5 boards
+
+# 특정 키워드로 필터링
+uv run ak5 boards -q harbor
+
+# 또는 ak5 board 서브커맨드/플래그로도 조회 가능
+uv run ak5 board list
+uv run ak5 board -l
+```
+
+#### 2) 터미널 칸반 보드 뷰 (`ak5 board`)
+터미널 안에서 4개 컬럼 칸반 뷰를 미려한 Rich 테이블로 확인합니다.
+```bash
+# 기본 보드 출력 (현재 활성 보드 안내 팁 표시)
 uv run ak5 board
+
+# 특정 보드 지정 (위치 인자 또는 --board-id 옵션 지원)
+uv run ak5 board proj-harbor-eval
+uv run ak5 board --board-id proj-core-engine
 
 # 실시간 SSE 감시 모드 (--watch)
 # 에이전트가 작업을 이동하거나 새 티켓이 생기면 화면이 실시간 갱신됩니다.
-uv run ak5 board --watch
+uv run ak5 board proj-harbor-eval --watch
 ```
 
-### 4.5 자율 멀티 에이전트 협업 데모 시뮬레이션 (`ak5 demo`)
+### 4.5 티켓 생명주기 관리 (`ak5 ticket`, `ak5 move`, `ak5 comment`)
+사람(PM 또는 개발자)이 터미널에서 티켓의 생성, 조회, 이동, 코멘트, 블록, 수정을 온전히 수행할 수 있습니다.
+
+#### 1) 신규 루트/마스터 티켓 생성
+```bash
+# 기본 보드(proj-core-engine)의 To Do 컬럼에 신규 티켓 생성
+uv run ak5 ticket create \
+  --title "로그인 인증 모듈 구현" \
+  --desc "JWT 기반 Access Token 검증 및 단위 테스트" \
+  --priority high \
+  --assign user_pm \
+  --labels "auth,backend"
+
+# 특정 보드 지정 생성
+uv run ak5 ticket create --board proj-harbor-eval --title "벤치마크 루프 검증"
+```
+
+#### 2) 티켓 세부 컨텍스트 및 코멘트 조회
+```bash
+uv run ak5 ticket view TK-001
+```
+
+#### 3) 티켓 컬럼 이동 (작업 진행 및 완료)
+컬럼 이름("In Progress", "Done", "Review", "To Do") 또는 스테이지("open", "done" 등)를 지정할 수 있습니다.
+```bash
+# 작업 착수
+uv run ak5 ticket move TK-001 "In Progress" --note "개발 착수"
+
+# 빠른 단축 명령어 (ak5 move)
+uv run ak5 move TK-001 "Done" --note "PR 머지 및 배포 완료"
+```
+
+#### 4) 코멘트 및 피드백 작성
+```bash
+uv run ak5 ticket comment TK-001 "단위 테스트 커버리지 95% 달성 확인"
+
+# 빠른 단축 명령어 (ak5 comment)
+uv run ak5 comment TK-001 "코드 리뷰 승인 완료 (LGTM)"
+```
+
+#### 5) 의존성 이슈로 인한 티켓 블록 (Block)
+```bash
+uv run ak5 ticket block TK-001 --reason "클라우드 스토리지 API 키 발급 대기 중" --mention user_pm
+```
+
+#### 6) 티켓 속성 수정
+```bash
+uv run ak5 ticket update TK-001 --priority urgent --assign agent_code_reviewer
+```
+
+### 4.6 신규 프로젝트 보드 개설 (`ak5 create-board`)
+새로운 프로젝트 전용 칸반 보드를 4개 표준 컬럼(To Do, In Progress, Review, Done)과 함께 즉시 개설합니다.
+```bash
+uv run ak5 create-board proj-mobile-app --name "Mobile App Development" --desc "iOS/Android 클라이언트 프로젝트"
+```
+
+### 4.7 현재 인증 세션 확인 (`ak5 whoami`)
+현재 로그인된 액터 ID, 역할, 권한 유형, 게이트웨이 연결 상태를 확인합니다.
+```bash
+uv run ak5 whoami
+```
+
+### 4.8 자율 멀티 에이전트 협업 데모 시뮬레이션 (`ak5 demo`)
 인간 PM의 상위 티켓 발행부터 오케스트레이터 에이전트의 역량 검색, 작업 분해, 위임, 작업 수행 및 완료까지 전 과정을 실시간으로 시뮬레이션합니다.
 
 ```bash
@@ -227,10 +308,11 @@ Claude Desktop, Cursor, Antigravity, LibrAgent 등의 자율 AI 에이전트가 
 }
 ```
 
-### 5.2 제공되는 5대 표준 MCP 툴 규격
+### 5.2 제공되는 6대 표준 MCP 툴 규격
 
 | 툴 이름 | 주요 인자 | 설명 |
 | :--- | :--- | :--- |
+| `ak5_list_boards` | 없음 | 등록된 전체 칸반 보드 목록 (ID, 이름, 설명, 생성자) 조회 |
 | `ak5_list_available_agents` | `capability`, `search_query` | 등록된 가용 에이전트를 역량 태그 또는 자연어 검색으로 조회하여 최적의 위임 대상을 선정 |
 | `ak5_delegate_subtask` | `parent_ticket_id`, `target_agent_id`, `title`, `description`, `priority` | 부모 티켓 아래에 서브태스크를 발행하고 지정된 에이전트에게 할당 |
 | `ak5_get_ticket_context` | `ticket_id` | 티켓의 세부 지시문, 서브태스크 진행률, 최근 코멘트, 실행 맥락(JSON)을 조회 |
@@ -248,6 +330,7 @@ Claude Desktop, Cursor, Antigravity, LibrAgent 등의 자율 AI 에이전트가 
 | `POST` | `/auth/identify` | 액터 등록/갱신 및 JWT 토큰 발급 |
 | `GET` | `/actors/discovery` | 역량(`?capability=`) 및 쿼리(`?query=`) 기반 에이전트 검색 |
 | `GET` | `/actors` | 전체 액터 목록 조회 |
+| `GET` | `/boards` | 전체 보드 목록 요약 조회 |
 | `GET` | `/boards/{board_id}` | 보드 컬럼 및 순서화된 티켓 계층 트리 반환 |
 | `POST` | `/tickets` | 신규 티켓 생성 및 Lexorank 부여 |
 | `GET` | `/tickets/{ticket_id}` | 티켓 상세, 서브태스크 통계, 코멘트 목록 조회 |

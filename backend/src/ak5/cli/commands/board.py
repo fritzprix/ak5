@@ -103,17 +103,56 @@ async def watch_board_live(api_url: str, board_id: str) -> None:
 
 
 @click.command("board")
-@click.option("--board-id", default="proj-core-engine", help="Target Board ID")
+@click.argument("target_board", required=False, default=None, metavar="[BOARD_ID]")
+@click.option("--board-id", default=None, help="Target Board ID (alternative to positional argument)")
 @click.option("--watch", is_flag=True, help="Watch board with live real-time SSE updates")
-def board_command(board_id: str, watch: bool) -> None:
-    """View Kanban board in terminal."""
+@click.option("--list", "-l", "list_boards_flag", is_flag=True, help="List all available Kanban boards")
+def board_command(target_board: str | None, board_id: str | None, watch: bool, list_boards_flag: bool) -> None:
+    """View Kanban board in terminal.
+
+    Optionally specify BOARD_ID positionally (e.g. 'ak5 board proj-harbor-eval')
+    or list boards using 'ak5 board list' or 'ak5 boards'.
+    """
     api_url = get_api_url()
+
+    # Handle 'ak5 board list' or 'ak5 board --list'
+    if list_boards_flag or target_board == "list":
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(f"{api_url}/boards")
+                resp.raise_for_status()
+                boards = resp.json()
+
+            if not boards:
+                console.print("[yellow]No boards found.[/yellow]")
+                return
+
+            from ak5.cli.commands.boards import render_boards_table
+            console.print(render_boards_table(boards))
+            console.print(
+                "\n[dim]💡 Tip: View a specific board with [bold cyan]ak5 board <board_id>[/bold cyan] "
+                "(e.g. [cyan]ak5 board proj-harbor-eval[/cyan])[/dim]"
+            )
+            return
+        except httpx.ConnectError:
+            console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+            return
+        except Exception as e:
+            console.print(f"[bold red]✗ Error querying boards:[/bold red] {e}")
+            return
+
+    resolved_board_id = target_board or board_id or "proj-core-engine"
+
     try:
         if watch:
-            asyncio.run(watch_board_live(api_url, board_id))
+            asyncio.run(watch_board_live(api_url, resolved_board_id))
         else:
-            board_data = fetch_board(api_url, board_id)
+            board_data = fetch_board(api_url, resolved_board_id)
             console.print(render_board_view(board_data))
+            console.print(
+                f"[dim]💡 Active Board: [bold cyan]{board_data['board_id']}[/bold cyan] | "
+                "Run [bold cyan]ak5 boards[/bold cyan] (or [bold cyan]ak5 board list[/bold cyan]) to view all available boards[/dim]"
+            )
     except httpx.ConnectError:
         console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
     except httpx.HTTPStatusError as e:

@@ -22,11 +22,15 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual environments
+# Virtual environments & Environment Variables
 .venv/
 env/
 venv/
 ENV/
+.env
+.env.local
+.env.*.local
+
 
 # Database
 *.db
@@ -62,3 +66,11 @@ htmlcov/
 # Local agent / scratch
 .libragent/
 tmp/
+.run/
+
+# Embedded dashboard build artifacts (CI builds via scripts/build_web_ui.sh)
+frontend/out/
+backend/src/ak5/web_ui/**
+!backend/src/ak5/web_ui/.keep
+!backend/src/ak5/web_ui/index.html
+

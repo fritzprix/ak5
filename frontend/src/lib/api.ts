@@ -1,11 +1,14 @@
 import { Board, BoardSummary, Ticket, Actor } from "./types";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+/** Same-origin by default so embedded FastAPI (`ak5 web`) needs no CORS/port split. */
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 
 export function getGatewayOrigin(): string {
+  if (typeof window !== "undefined") {
+    return window.location.origin;
+  }
   try {
-    const url = new URL(API_BASE);
-    return url.origin;
+    return new URL(API_BASE, "http://127.0.0.1:8000").origin;
   } catch {
     return "http://127.0.0.1:8000";
   }

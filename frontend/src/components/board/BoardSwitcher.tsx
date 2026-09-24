@@ -48,7 +48,7 @@ export const BoardSwitcher: React.FC = () => {
         return (
           <Link
             key={board.board_id}
-            href={`/board/${encodeURIComponent(board.board_id)}`}
+            href={`/board/${encodeURIComponent(board.board_id)}/`}
             className={`shrink-0 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
               isActive
                 ? "bg-cyan-950/70 text-cyan-300 border-cyan-700/60"

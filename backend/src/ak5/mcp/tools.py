@@ -15,6 +15,28 @@ def get_client() -> AK5Client:
 
 
 @server.tool()
+async def ak5_list_boards() -> list[TextContent]:
+    """현재 시스템에 등록된 전체 칸반 보드(Board) 목록을 조회합니다.
+
+    각 보드의 ID, 이름, 설명, 생성자 정보를 반환합니다.
+    """
+    client = get_client()
+    boards = await client.list_boards()
+    if not boards:
+        return [TextContent(type="text", text="No boards found.")]
+
+    lines = [f"Found {len(boards)} board(s):"]
+    for b in boards:
+        desc = b.get("description") or "N/A"
+        lines.append(
+            f"- Board ID: {b['board_id']} | Name: {b['name']}\n"
+            f"  Description: {desc}\n"
+            f"  Created by: @{b.get('created_by')}"
+        )
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+@server.tool()
 async def ak5_list_available_agents(
     capability: str | None = None,
     search_query: str | None = None,

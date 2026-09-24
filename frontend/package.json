@@ -1,6 +1,6 @@
 {
   "name": "ak5",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AK5: Agent-Orchestrated Kanban Web Dashboard & Client SDK",
   "bin": {
     "ak5": "./bin/cli.js"
@@ -16,7 +16,7 @@
     "dnd-kit"
   ],
   "author": "AK5 Team",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

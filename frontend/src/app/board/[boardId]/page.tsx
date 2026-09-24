@@ -1,10 +1,15 @@
-import { KanbanBoard } from "@/components/board/KanbanBoard";
+import { BoardPageClient } from "./BoardPageClient";
 
 interface BoardPageProps {
   params: Promise<{ boardId: string }>;
 }
 
+/** Pre-render shells for static export; unknown IDs fall back via FastAPI SPA. */
+export function generateStaticParams() {
+  return [{ boardId: "proj-core-engine" }, { boardId: "_" }];
+}
+
 export default async function BoardPage({ params }: BoardPageProps) {
   const { boardId } = await params;
-  return <KanbanBoard boardId={decodeURIComponent(boardId)} />;
+  return <BoardPageClient initialBoardId={decodeURIComponent(boardId)} />;
 }

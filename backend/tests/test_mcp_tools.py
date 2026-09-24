@@ -5,6 +5,7 @@ from ak5.mcp.tools import (
     ak5_delegate_subtask,
     ak5_get_ticket_context,
     ak5_list_available_agents,
+    ak5_list_boards,
     ak5_report_block,
     ak5_update_ticket_status,
 )
@@ -18,6 +19,11 @@ async def test_mcp_tools_flow(client: AsyncClient, auth_headers, monkeypatch):
     # Replace internal httpx client with test client
     test_mcp_client._http = client
     monkeypatch.setattr(mcp_tools, "_client", test_mcp_client)
+
+    # 0. Test ak5_list_boards
+    boards_res = await ak5_list_boards()
+    assert len(boards_res) == 1
+    assert "proj-core-engine" in boards_res[0].text
 
     # 1. Test ak5_list_available_agents
     agents_res = await ak5_list_available_agents(capability="image-resize")
