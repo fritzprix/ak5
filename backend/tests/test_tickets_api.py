@@ -278,3 +278,80 @@ async def test_review_comment_from_human_pm(client: AsyncClient, auth_headers):
     assert detail.status_code == 200
     comments = detail.json().get("comments") or []
     assert any("LGTM" in c["content"] for c in comments)
+
+
+@pytest.mark.asyncio
+async def test_review_approve_and_request_changes_flow(client: AsyncClient, auth_headers):
+    """Web review UX: comment then move to Done, or comment then send back to In Progress."""
+    headers = auth_headers("user_pm", "human")
+
+    create = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Review decision flow",
+            "board_id": "proj-core-engine",
+            "column_id": "col_todo",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201
+    t_id = create.json()["ticket_id"]
+
+    to_review = await client.patch(
+        f"/api/v1/tickets/{t_id}/move",
+        json={"target_column_id": "col_review"},
+        headers=headers,
+    )
+    assert to_review.status_code == 200
+    assert to_review.json()["column_id"] == "col_review"
+
+    # Approve path: structured note + Done
+    approve_note = await client.post(
+        f"/api/v1/tickets/{t_id}/comments",
+        json={"content": "✅ Approved\nLGTM after smoke test", "is_internal": False},
+        headers=headers,
+    )
+    assert approve_note.status_code == 201
+
+    to_done = await client.patch(
+        f"/api/v1/tickets/{t_id}/move",
+        json={"target_column_id": "col_done"},
+        headers=headers,
+    )
+    assert to_done.status_code == 200
+    assert to_done.json()["column_id"] == "col_done"
+    assert to_done.json()["status"] == "done"
+
+    # Second ticket: request changes → In Progress
+    create2 = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Needs changes",
+            "board_id": "proj-core-engine",
+            "column_id": "col_todo",
+        },
+        headers=headers,
+    )
+    t2 = create2.json()["ticket_id"]
+    await client.patch(
+        f"/api/v1/tickets/{t2}/move",
+        json={"target_column_id": "col_review"},
+        headers=headers,
+    )
+    changes = await client.post(
+        f"/api/v1/tickets/{t2}/comments",
+        json={"content": "↩️ Changes requested\nAdd unit tests for edge cases", "is_internal": False},
+        headers=headers,
+    )
+    assert changes.status_code == 201
+    back = await client.patch(
+        f"/api/v1/tickets/{t2}/move",
+        json={"target_column_id": "col_in_progress"},
+        headers=headers,
+    )
+    assert back.status_code == 200
+    assert back.json()["column_id"] == "col_in_progress"
+    assert back.json()["status"] == "in_progress"
+
+    detail = await client.get(f"/api/v1/tickets/{t2}", headers=headers)
+    assert any("Changes requested" in c["content"] for c in detail.json().get("comments") or [])

@@ -1,20 +1,37 @@
 "use client";
 
 import React, { useEffect, useId, useState } from "react";
-import { Send, X } from "lucide-react";
-import { addComment, fetchTicket } from "@/lib/api";
-import { Ticket, TicketComment } from "@/lib/types";
+import { Check, RotateCcw, Send, X } from "lucide-react";
+import { addComment, fetchTicket, moveTicket } from "@/lib/api";
+import {
+  buildReviewDecisionComment,
+  columnStageForTicket,
+  resolveReviewTargetColumnId,
+  reviewDecisionRequiresNote,
+  type ReviewDecision,
+} from "@/lib/reviewDecision";
+import { Column, Ticket, TicketComment } from "@/lib/types";
 import { ActorBadge } from "../actor/ActorBadge";
 
 interface TicketDetailDrawerProps {
   ticket: Ticket | null;
+  columns: Column[];
   onClose: () => void;
   onDelegate?: (ticket: Ticket) => void;
   /** Called after a successful comment so the parent can queue a board refresh. */
   onCommented?: () => void;
+  /** Called after approve / request-changes so the parent can refresh and close. */
+  onReviewDecision?: () => void;
 }
 
-export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }: TicketDetailDrawerProps) {
+export function TicketDetailDrawer({
+  ticket,
+  columns,
+  onClose,
+  onDelegate,
+  onCommented,
+  onReviewDecision,
+}: TicketDetailDrawerProps) {
   const ticketId = ticket?.ticket_id ?? null;
   const [detail, setDetail] = useState<Ticket | null>(ticket);
   const [loading, setLoading] = useState(false);
@@ -23,7 +40,6 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
   const [commentError, setCommentError] = useState<string | null>(null);
   const commentFieldId = useId();
 
-  // Fetch by id only — do not depend on ticket object identity (SSE board reloads).
   useEffect(() => {
     if (!ticketId) {
       setDetail(null);
@@ -49,7 +65,6 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
     return () => {
       cancelled = true;
     };
-    // Intentionally ignore `ticket` object identity; seed uses first paint only.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ticketId is the stable key
   }, [ticketId]);
 
@@ -67,6 +82,13 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
     };
   }, [ticketId, onClose]);
 
+  const appendCommentLocally = (created: TicketComment) => {
+    setDetail((prev) => {
+      if (!prev) return prev;
+      return { ...prev, comments: [created, ...(prev.comments ?? [])] };
+    });
+  };
+
   const handleSubmitComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ticketId || !draft.trim() || submitting) return;
@@ -74,11 +96,7 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
     setCommentError(null);
     try {
       const created = await addComment(ticketId, draft.trim(), false);
-      setDetail((prev) => {
-        if (!prev) return prev;
-        const comments: TicketComment[] = [created, ...(prev.comments ?? [])];
-        return { ...prev, comments };
-      });
+      appendCommentLocally(created);
       setDraft("");
       onCommented?.();
     } catch (err) {
@@ -88,7 +106,51 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
     }
   };
 
+  const handleReviewDecision = async (decision: ReviewDecision) => {
+    if (!ticketId || !detail || submitting) return;
+    if (reviewDecisionRequiresNote(decision, draft)) {
+      setCommentError(
+        decision === "approve"
+          ? "Add an approval note before marking Done."
+          : "Add a reason before sending this back."
+      );
+      return;
+    }
+    const targetColumnId = resolveReviewTargetColumnId(columns, decision);
+    if (!targetColumnId) {
+      setCommentError(
+        decision === "approve"
+          ? "No Done column found on this board."
+          : "No In Progress column found on this board."
+      );
+      return;
+    }
+
+    setSubmitting(true);
+    setCommentError(null);
+    try {
+      const created = await addComment(
+        ticketId,
+        buildReviewDecisionComment(decision, draft),
+        false
+      );
+      appendCommentLocally(created);
+      await moveTicket(ticketId, targetColumnId);
+      setDraft("");
+      onCommented?.();
+      onReviewDecision?.();
+      onClose();
+    } catch (err) {
+      setCommentError(err instanceof Error ? err.message : "Review decision failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (!ticketId || !detail) return null;
+
+  const stage = columnStageForTicket(columns, detail.column_id);
+  const isReview = stage === "review";
 
   const progress =
     detail.subtask_count > 0
@@ -131,11 +193,23 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
             <span className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] uppercase text-[var(--muted)]">
               {detail.status}
             </span>
+            {stage ? (
+              <span className="rounded-md border border-[var(--accent)]/40 bg-[var(--accent-muted)] px-2 py-1 text-[11px] uppercase text-[var(--accent)]">
+                {stage.replace("_", " ")}
+              </span>
+            ) : null}
             <span className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] uppercase text-[var(--muted)]">
               {detail.priority}
             </span>
             <ActorBadge actorId={detail.assigned_to} />
           </div>
+
+          {isReview ? (
+            <p className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent-muted)] px-3 py-2 text-xs text-[var(--foreground)]">
+              Review gate — leave a note, then <strong>Approve</strong> (Done) or{" "}
+              <strong>Request changes</strong> (back to In Progress). Drag still works on the board.
+            </p>
+          ) : null}
 
           <section>
             <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -178,7 +252,9 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
               Comments {comments.length > 0 ? `(${comments.length})` : ""}
             </h3>
             {comments.length === 0 ? (
-              <p className="text-xs text-[var(--muted)]">No comments yet. Leave a review note below.</p>
+              <p className="text-xs text-[var(--muted)]">
+                {isReview ? "No review notes yet." : "No comments yet."}
+              </p>
             ) : (
               <ul className="space-y-2">
                 {comments.slice(0, 20).map((c) => (
@@ -200,8 +276,11 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
 
         <div className="shrink-0 border-t border-[var(--border)] px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
           <form onSubmit={handleSubmitComment} className="space-y-2">
-            <label htmlFor={commentFieldId} className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-              Add comment
+            <label
+              htmlFor={commentFieldId}
+              className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
+            >
+              {isReview ? "Review note" : "Add comment"}
             </label>
             <textarea
               id={commentFieldId}
@@ -209,37 +288,81 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }:
               rows={3}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Review notes, approval, or questions…"
+              placeholder={
+                isReview
+                  ? "What looks good, or what should change…"
+                  : "Notes, questions, or progress…"
+              }
               disabled={submitting}
             />
             {commentError ? <p className="text-xs text-[var(--danger)]">{commentError}</p> : null}
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <button type="button" className="ak-btn-ghost" onClick={onClose}>
-                  Close
-                </button>
-                {onDelegate ? (
+
+            {isReview ? (
+              <div className="flex flex-col gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <button
                     type="button"
-                    className="ak-btn-secondary"
-                    onClick={() => {
-                      onDelegate(detail);
-                      onClose();
-                    }}
+                    className="ak-btn-secondary w-full"
+                    disabled={submitting}
+                    onClick={() => void handleReviewDecision("request_changes")}
                   >
-                    Delegate
+                    <RotateCcw className="h-4 w-4" />
+                    Request changes
                   </button>
-                ) : null}
+                  <button
+                    type="button"
+                    className="ak-btn-primary w-full"
+                    disabled={submitting}
+                    onClick={() => void handleReviewDecision("approve")}
+                  >
+                    <Check className="h-4 w-4" />
+                    Approve → Done
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <button type="button" className="ak-btn-ghost" onClick={onClose}>
+                    Close
+                  </button>
+                  <button
+                    type="submit"
+                    className="ak-btn-ghost text-[11px]"
+                    disabled={submitting || !draft.trim()}
+                    title="Post note without moving the ticket"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    Comment only
+                  </button>
+                </div>
               </div>
-              <button
-                type="submit"
-                className="ak-btn-primary"
-                disabled={submitting || !draft.trim()}
-              >
-                <Send className="h-4 w-4" />
-                {submitting ? "Posting…" : "Post"}
-              </button>
-            </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button type="button" className="ak-btn-ghost" onClick={onClose}>
+                    Close
+                  </button>
+                  {onDelegate ? (
+                    <button
+                      type="button"
+                      className="ak-btn-secondary"
+                      onClick={() => {
+                        onDelegate(detail);
+                        onClose();
+                      }}
+                    >
+                      Delegate
+                    </button>
+                  ) : null}
+                </div>
+                <button
+                  type="submit"
+                  className="ak-btn-primary"
+                  disabled={submitting || !draft.trim()}
+                >
+                  <Send className="h-4 w-4" />
+                  {submitting ? "Posting…" : "Post"}
+                </button>
+              </div>
+            )}
           </form>
         </div>
       </aside>
