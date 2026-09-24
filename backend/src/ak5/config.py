@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AK5"
-    VERSION: str = "1.0.1"
+    VERSION: str = "1.0.2"
     API_V1_STR: str = "/api/v1"
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./ak5.db"
