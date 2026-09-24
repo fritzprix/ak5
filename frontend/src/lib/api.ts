@@ -65,6 +65,14 @@ export async function fetchBoard(boardId: string): Promise<Board> {
   return res.json();
 }
 
+export async function fetchTicket(ticketId: string): Promise<Ticket> {
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ticket: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function fetchActors(): Promise<Actor[]> {
   const res = await fetch(`${API_BASE}/actors`, { cache: "no-store" });
   if (!res.ok) return [];

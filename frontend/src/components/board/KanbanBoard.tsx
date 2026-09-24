@@ -23,7 +23,10 @@ import { buildAgentSetupMarkdown } from "@/lib/agentSetup";
 import { Board, Column, Ticket, Actor } from "@/lib/types";
 import { KanbanColumn } from "./KanbanColumn";
 import { TicketCard } from "./TicketCard";
-import { Plus, RefreshCw, Radio, Sparkles, ClipboardCopy, Check, Terminal } from "lucide-react";
+import { TicketDetailDrawer } from "./TicketDetailDrawer";
+import { AgentFleetStrip } from "../actor/AgentFleetStrip";
+import { Dialog } from "../ui/Dialog";
+import { Plus, RefreshCw, Radio, ClipboardCopy, Check, Terminal } from "lucide-react";
 
 interface KanbanBoardProps {
   boardId: string;
@@ -33,6 +36,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [board, setBoard] = useState<Board | null>(null);
   const [actors, setActors] = useState<Actor[]>([]);
   const [activeTicket, setActiveTicket] = useState<Ticket | null>(null);
+  const [detailTicket, setDetailTicket] = useState<Ticket | null>(null);
   const [delegatingTicket, setDelegatingTicket] = useState<Ticket | null>(null);
   const [isNewTicketOpen, setIsNewTicketOpen] = useState(false);
   const [isAgentSetupOpen, setIsAgentSetupOpen] = useState(false);
@@ -44,7 +48,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [isLoadingBoard, setIsLoadingBoard] = useState(true);
   const copiedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Form states
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newPriority, setNewPriority] = useState<string>("medium");
@@ -56,9 +59,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 5,
-      },
+      activationConstraint: { distance: 8 },
     })
   );
 
@@ -74,6 +75,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       setLoadError(null);
       const data = await fetchBoard(boardId);
       setBoard(data);
+      setDetailTicket((prev) => {
+        if (!prev) return null;
+        for (const col of data.columns) {
+          const found = col.tickets.find((t) => t.ticket_id === prev.ticket_id);
+          if (found) return found;
+        }
+        return prev;
+      });
     } catch (err) {
       console.error("Failed to load board:", err);
       setBoard(null);
@@ -106,6 +115,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     setLoadError(null);
     setCopyError(null);
     setCopied(false);
+    setDetailTicket(null);
     reloadBoard();
     fetchActors().then(setActors).catch(console.error);
 
@@ -126,9 +136,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   }, [boardId]);
 
   const handleDragStart = (event: DragStartEvent) => {
-    const { active } = event;
-    const ticketId = active.id as string;
-    // Find ticket in columns
+    const ticketId = event.active.id as string;
     if (!board) return;
     for (const col of board.columns) {
       const found = col.tickets.find((t) => t.ticket_id === ticketId);
@@ -142,21 +150,15 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveTicket(null);
-
     if (!over || !board) return;
 
     const activeId = active.id as string;
     const overId = over.id as string;
 
-    // Determine target column and position
-    let targetCol: Column | undefined;
+    let targetCol: Column | undefined = board.columns.find((c) => c.column_id === overId);
     let targetIndex = -1;
 
-    // Check if dropped directly onto a Column container
-    targetCol = board.columns.find((c) => c.column_id === overId);
-
     if (!targetCol) {
-      // Dropped onto a Ticket card
       for (const col of board.columns) {
         const idx = col.tickets.findIndex((t) => t.ticket_id === overId);
         if (idx !== -1) {
@@ -166,22 +168,17 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
         }
       }
     }
-
     if (!targetCol) return;
 
-    // Optimistically calculate previous and next tickets for Lexorank
     const destTickets = targetCol.tickets.filter((t) => t.ticket_id !== activeId);
     let prevId: string | null = null;
     let nextId: string | null = null;
 
     if (targetIndex === -1 || targetIndex >= destTickets.length) {
-      // Append to the end
       prevId = destTickets.length > 0 ? destTickets[destTickets.length - 1].ticket_id : null;
     } else if (targetIndex === 0) {
-      // Insert at the beginning
       nextId = destTickets.length > 0 ? destTickets[0].ticket_id : null;
     } else {
-      // Insert in between
       prevId = destTickets[targetIndex - 1].ticket_id;
       nextId = destTickets[targetIndex].ticket_id;
     }
@@ -200,7 +197,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!board || !newTitle.trim()) return;
-
     const firstCol = board.columns[0];
     try {
       setActionError(null);
@@ -225,15 +221,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const handleDelegateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!delegatingTicket || !subtaskAgent || !subtaskTitle.trim()) return;
-
     try {
       setActionError(null);
-      await delegateSubtask(
-        delegatingTicket.ticket_id,
-        subtaskAgent,
-        subtaskTitle,
-        subtaskDesc
-      );
+      await delegateSubtask(delegatingTicket.ticket_id, subtaskAgent, subtaskTitle, subtaskDesc);
       setSubtaskTitle("");
       setSubtaskDesc("");
       setSubtaskAgent("");
@@ -247,25 +237,21 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
   if (isLoadingBoard && !board) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-        <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin" />
-        <p className="text-slate-400 text-sm">Connecting to AK5 Gateway...</p>
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-3">
+        <RefreshCw className="h-7 w-7 animate-spin text-[var(--accent)]" />
+        <p className="text-sm text-[var(--muted)]">Connecting to AK5 Gateway…</p>
       </div>
     );
   }
 
   if (loadError || !board) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-        <p className="text-rose-300 text-sm text-center max-w-md">
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4">
+        <p className="max-w-md text-center text-sm text-[var(--danger)]">
           {loadError || `Board '${boardId}' was not found.`}
         </p>
-        <button
-          type="button"
-          onClick={() => reloadBoard()}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-sm hover:border-slate-500"
-        >
-          <RefreshCw className="w-4 h-4" />
+        <button type="button" onClick={() => reloadBoard()} className="ak-btn-secondary">
+          <RefreshCw className="h-4 w-4" />
           Retry
         </button>
       </div>
@@ -275,305 +261,245 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const agents = actors.filter((a) => a.actor_type === "agent");
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Top Action Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-800/80">
-        <div className="flex items-center gap-3">
-          <div>
-            <h2 className="text-lg font-bold text-slate-100">{board.name}</h2>
-            <p className="text-xs text-slate-400">{board.description || "Kanban board"}</p>
+    <div className="flex h-[calc(100dvh-3.5rem-1.5rem)] flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="truncate text-base font-semibold tracking-tight text-[var(--foreground)]">
+              {board.name}
+            </h2>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 font-mono text-[10px] ${
+                isConnectedSSE
+                  ? "border-[var(--success)]/40 text-[var(--success)]"
+                  : "border-[var(--border)] text-[var(--muted)]"
+              }`}
+            >
+              <Radio className={`h-3 w-3 ${isConnectedSSE ? "animate-pulse" : ""}`} />
+              {isConnectedSSE ? "Live" : "Reconnecting…"}
+            </span>
+            <span className="hidden font-mono text-[10px] text-[var(--muted)] sm:inline">{board.board_id}</span>
           </div>
-          <span
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border ${
-              isConnectedSSE
-                ? "bg-emerald-950/60 text-emerald-400 border-emerald-700/50"
-                : "bg-slate-800 text-slate-400 border-slate-700"
-            }`}
-          >
-            <Radio className={`w-3 h-3 ${isConnectedSSE ? "animate-pulse text-emerald-400" : ""}`} />
-            <span>{isConnectedSSE ? "Live SSE Stream" : "Connecting..."}</span>
-          </span>
-          <span className="text-[11px] font-mono text-slate-500">{board.board_id}</span>
+          {board.description ? (
+            <p className="mt-0.5 truncate text-xs text-[var(--muted)]">{board.description}</p>
+          ) : null}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={() => reloadBoard()}
-            className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-colors"
+            className="ak-btn-secondary p-2"
             title="Refresh"
           >
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className="h-4 w-4" />
           </button>
-          <button
-            onClick={() => setIsAgentSetupOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium transition-colors shadow-lg shadow-purple-900/30"
-            title="Copy Agent Setup Instructions"
-          >
-            <Terminal className="w-4 h-4" />
-            <span>Agent Setup</span>
+          <button type="button" onClick={() => setIsAgentSetupOpen(true)} className="ak-btn-secondary">
+            <Terminal className="h-4 w-4" />
+            <span className="hidden sm:inline">Agent Setup</span>
           </button>
-          <button
-            onClick={() => setIsNewTicketOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium transition-colors shadow-lg shadow-cyan-900/30"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Ticket</span>
+          <button type="button" onClick={() => setIsNewTicketOpen(true)} className="ak-btn-primary">
+            <Plus className="h-4 w-4" />
+            New Ticket
           </button>
         </div>
       </div>
 
-      {actionError && (
-        <div className="mb-4 px-3 py-2 rounded-lg border border-rose-800/60 bg-rose-950/50 text-rose-300 text-sm">
+      <AgentFleetStrip actors={actors} />
+
+      {actionError ? (
+        <div className="rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
           {actionError}
         </div>
-      )}
+      ) : null}
 
-      {/* Kanban Canvas with DnD */}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <div className="flex gap-4 overflow-x-auto pb-6">
+        <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-1">
           {board.columns.map((column) => (
             <KanbanColumn
               key={column.column_id}
               column={column}
-              onDelegateClick={(t) => setDelegatingTicket(t)}
+              onOpenTicket={setDetailTicket}
+              onDelegateClick={setDelegatingTicket}
             />
           ))}
         </div>
 
         <DragOverlay>
-          {activeTicket ? <TicketCard ticket={activeTicket} /> : null}
+          {activeTicket ? <TicketCard ticket={activeTicket} compact /> : null}
         </DragOverlay>
       </DndContext>
 
-      {/* New Ticket Modal */}
-      {isNewTicketOpen && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h3 className="text-lg font-semibold text-slate-100 mb-4">Create New Ticket</h3>
-            <form onSubmit={handleCreateTicket} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Title</label>
-                <input
-                  type="text"
-                  required
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  placeholder="e.g. Implement WebP Avatar Resizer"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500"
-                />
-              </div>
+      <TicketDetailDrawer
+        ticket={detailTicket}
+        onClose={() => setDetailTicket(null)}
+        onDelegate={setDelegatingTicket}
+      />
 
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Description</label>
-                <textarea
-                  rows={3}
-                  value={newDesc}
-                  onChange={(e) => setNewDesc(e.target.value)}
-                  placeholder="Provide context, acceptance criteria or instructions for AI agents"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">Priority</label>
-                  <select
-                    value={newPriority}
-                    onChange={(e) => setNewPriority(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500"
-                  >
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="urgent">Urgent</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">Assignee</label>
-                  <select
-                    value={newAssignee}
-                    onChange={(e) => setNewAssignee(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-cyan-500"
-                  >
-                    <option value="">Unassigned</option>
-                    {actors.map((a) => (
-                      <option key={a.actor_id} value={a.actor_id}>
-                        {a.name} ({a.role})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsNewTicketOpen(false)}
-                  className="px-4 py-2 text-sm text-slate-400 hover:text-white"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-sm font-medium"
-                >
-                  Create
-                </button>
-              </div>
-            </form>
+      <Dialog
+        open={isNewTicketOpen}
+        onClose={() => setIsNewTicketOpen(false)}
+        title="Create ticket"
+        footer={
+          <>
+            <button type="button" className="ak-btn-ghost" onClick={() => setIsNewTicketOpen(false)}>
+              Cancel
+            </button>
+            <button type="submit" form="create-ticket-form" className="ak-btn-primary">
+              Create
+            </button>
+          </>
+        }
+      >
+        <form id="create-ticket-form" onSubmit={handleCreateTicket} className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs text-[var(--muted)]">Title</label>
+            <input
+              className="ak-input"
+              required
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="e.g. Implement WebP Avatar Resizer"
+            />
           </div>
-        </div>
-      )}
-
-      {/* Delegate Subtask Modal */}
-      {delegatingTicket && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-lg shadow-2xl">
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="w-5 h-5 text-purple-400" />
-              <h3 className="text-lg font-semibold text-slate-100">
-                Delegate Subtask to Agent
-              </h3>
+          <div>
+            <label className="mb-1 block text-xs text-[var(--muted)]">Description</label>
+            <textarea
+              className="ak-input"
+              rows={3}
+              value={newDesc}
+              onChange={(e) => setNewDesc(e.target.value)}
+              placeholder="Acceptance criteria or agent instructions"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-[var(--muted)]">Priority</label>
+              <select className="ak-input" value={newPriority} onChange={(e) => setNewPriority(e.target.value)}>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
             </div>
-            <p className="text-xs text-slate-400 mb-4">
-              Parent Ticket: <span className="font-mono text-cyan-400">{delegatingTicket.ticket_id}</span> ({delegatingTicket.title})
+            <div>
+              <label className="mb-1 block text-xs text-[var(--muted)]">Assignee</label>
+              <select className="ak-input" value={newAssignee} onChange={(e) => setNewAssignee(e.target.value)}>
+                <option value="">Unassigned</option>
+                {actors.map((a) => (
+                  <option key={a.actor_id} value={a.actor_id}>
+                    {a.name} ({a.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </form>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(delegatingTicket)}
+        onClose={() => setDelegatingTicket(null)}
+        title="Delegate subtask"
+        size="lg"
+        footer={
+          <>
+            <button type="button" className="ak-btn-ghost" onClick={() => setDelegatingTicket(null)}>
+              Cancel
+            </button>
+            <button type="submit" form="delegate-form" className="ak-btn-primary">
+              Delegate
+            </button>
+          </>
+        }
+      >
+        {delegatingTicket ? (
+          <form id="delegate-form" onSubmit={handleDelegateSubmit} className="space-y-3">
+            <p className="text-xs text-[var(--muted)]">
+              Parent{" "}
+              <span className="font-mono text-[var(--accent)]">{delegatingTicket.ticket_id}</span> —{" "}
+              {delegatingTicket.title}
             </p>
-
-            <form onSubmit={handleDelegateSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Target AI Agent</label>
-                <select
-                  required
-                  value={subtaskAgent}
-                  onChange={(e) => setSubtaskAgent(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-purple-500"
-                >
-                  <option value="">Select an Agent...</option>
-                  {agents.map((a) => (
-                    <option key={a.actor_id} value={a.actor_id}>
-                      @{a.actor_id} — {a.name} ({a.role}) [Caps: {a.capabilities.join(", ")}]
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Subtask Title</label>
-                <input
-                  type="text"
-                  required
-                  value={subtaskTitle}
-                  onChange={(e) => setSubtaskTitle(e.target.value)}
-                  placeholder="e.g. 200x200 WebP Thumbnail Generator"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-purple-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Subtask Instructions</label>
-                <textarea
-                  rows={3}
-                  value={subtaskDesc}
-                  onChange={(e) => setSubtaskDesc(e.target.value)}
-                  placeholder="Specific requirements, formats, test parameters"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-purple-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setDelegatingTicket(null)}
-                  className="px-4 py-2 text-sm text-slate-400 hover:text-white"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>Delegate</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Agent Setup Instructions Modal */}
-      {isAgentSetupOpen && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-2xl shadow-2xl flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Terminal className="w-5 h-5 text-purple-400" />
-                <h3 className="text-lg font-semibold text-slate-100">Agent Setup Instructions</h3>
-              </div>
-              <button
-                type="button"
-                aria-label="Close agent setup"
-                onClick={() => {
-                  setIsAgentSetupOpen(false);
-                  setCopyError(null);
-                }}
-                className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+            <div>
+              <label className="mb-1 block text-xs text-[var(--muted)]">Target agent</label>
+              <select
+                className="ak-input"
+                required
+                value={subtaskAgent}
+                onChange={(e) => setSubtaskAgent(e.target.value)}
               >
-                ✕
-              </button>
+                <option value="">Select an agent…</option>
+                {agents.map((a) => (
+                  <option key={a.actor_id} value={a.actor_id}>
+                    @{a.actor_id} — {a.role} [{a.capabilities.join(", ")}]
+                  </option>
+                ))}
+              </select>
             </div>
-
-            <div className="flex-1 overflow-auto mb-4">
-              <pre className="bg-slate-950 border border-slate-800 rounded-lg p-4 text-xs text-slate-300 font-mono whitespace-pre-wrap leading-relaxed">
-                {buildAgentSetupMarkdown(board, actors)}
-              </pre>
+            <div>
+              <label className="mb-1 block text-xs text-[var(--muted)]">Subtask title</label>
+              <input
+                className="ak-input"
+                required
+                value={subtaskTitle}
+                onChange={(e) => setSubtaskTitle(e.target.value)}
+                placeholder="e.g. 200x200 WebP Thumbnail Generator"
+              />
             </div>
-
-            {copyError && (
-              <p className="mb-3 text-sm text-rose-300">{copyError}</p>
-            )}
-
-            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAgentSetupOpen(false);
-                  setCopyError(null);
-                }}
-                className="px-4 py-2 text-sm text-slate-400 hover:text-white"
-              >
-                Close
-              </button>
-              <button
-                type="button"
-                onClick={copyAgentSetup}
-                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  copied
-                    ? "bg-emerald-600 text-white"
-                    : "bg-purple-600 hover:bg-purple-500 text-white"
-                }`}
-              >
-                {copied ? (
-                  <>
-                    <Check className="w-4 h-4" />
-                    <span>Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <ClipboardCopy className="w-4 h-4" />
-                    <span>Copy to Clipboard</span>
-                  </>
-                )}
-              </button>
+            <div>
+              <label className="mb-1 block text-xs text-[var(--muted)]">Instructions</label>
+              <textarea
+                className="ak-input"
+                rows={3}
+                value={subtaskDesc}
+                onChange={(e) => setSubtaskDesc(e.target.value)}
+                placeholder="Requirements, formats, tests"
+              />
             </div>
-          </div>
-        </div>
-      )}
+          </form>
+        ) : null}
+      </Dialog>
+
+      <Dialog
+        open={isAgentSetupOpen}
+        onClose={() => {
+          setIsAgentSetupOpen(false);
+          setCopyError(null);
+        }}
+        title="Agent setup"
+        size="xl"
+        footer={
+          <>
+            <button
+              type="button"
+              className="ak-btn-ghost"
+              onClick={() => {
+                setIsAgentSetupOpen(false);
+                setCopyError(null);
+              }}
+            >
+              Close
+            </button>
+            <button type="button" className="ak-btn-primary" onClick={copyAgentSetup}>
+              {copied ? <Check className="h-4 w-4" /> : <ClipboardCopy className="h-4 w-4" />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </>
+        }
+      >
+        <p className="mb-3 text-xs text-[var(--muted)]">
+          CLI login once, then poll tickets on a schedule — no push interrupts.
+        </p>
+        <pre className="max-h-[50vh] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--background)] p-3 font-mono text-[11px] leading-relaxed text-[var(--foreground)] whitespace-pre-wrap">
+          {buildAgentSetupMarkdown(board, actors)}
+        </pre>
+        {copyError ? <p className="mt-2 text-sm text-[var(--danger)]">{copyError}</p> : null}
+      </Dialog>
     </div>
   );
 };

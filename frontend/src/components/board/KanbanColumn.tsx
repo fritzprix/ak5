@@ -8,89 +8,69 @@ import { TicketCard } from "./TicketCard";
 
 interface KanbanColumnProps {
   column: Column;
+  onOpenTicket?: (ticket: Ticket) => void;
   onDelegateClick?: (ticket: Ticket) => void;
-  onAddTicketClick?: (columnId: string) => void;
 }
 
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   column,
+  onOpenTicket,
   onDelegateClick,
-  onAddTicketClick,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: column.column_id,
-    data: {
-      type: "Column",
-      column,
-    },
+    data: { type: "Column", column },
   });
 
-  const stageBadgeColors: Record<string, string> = {
-    open: "bg-blue-500/10 text-blue-400 border-blue-500/30",
-    in_progress: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-    review: "bg-purple-500/10 text-purple-400 border-purple-500/30",
-    done: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-  };
-
   const isOverWip = column.wip_limit > 0 && column.tickets.length > column.wip_limit;
+
+  const stageDot =
+    column.stage === "open"
+      ? "bg-sky-400"
+      : column.stage === "in_progress"
+        ? "bg-[var(--warning)]"
+        : column.stage === "review"
+          ? "bg-[var(--accent)]"
+          : "bg-[var(--success)]";
 
   return (
     <div
       ref={setNodeRef}
-      className={`flex flex-col flex-1 min-w-[300px] max-w-[360px] bg-slate-950/60 rounded-2xl border transition-colors ${
-        isOver
-          ? "border-cyan-500/80 bg-slate-900/50"
-          : "border-slate-800/80 hover:border-slate-800"
+      className={`flex h-full min-w-[280px] max-w-[340px] flex-1 flex-col rounded-xl border bg-[var(--background-elevated)]/80 transition-colors ${
+        isOver ? "border-[var(--accent)]" : "border-[var(--border)]"
       }`}
     >
-      {/* Column Header */}
-      <div className="flex items-center justify-between p-4 border-b border-slate-800/60">
-        <div className="flex items-center gap-2">
-          <span
-            className={`w-2.5 h-2.5 rounded-full ${
-              column.stage === "open"
-                ? "bg-blue-400"
-                : column.stage === "in_progress"
-                ? "bg-amber-400 animate-pulse"
-                : column.stage === "review"
-                ? "bg-purple-400"
-                : "bg-emerald-400"
-            }`}
-          />
-          <h3 className="font-semibold text-sm text-slate-200">{column.name}</h3>
-          <span className="text-xs font-mono text-slate-500">
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={`h-2 w-2 shrink-0 rounded-full ${stageDot}`} aria-hidden />
+          <h3 className="truncate text-sm font-semibold text-[var(--foreground)]">{column.name}</h3>
+          <span className="font-mono text-[11px] text-[var(--muted)]">
             {column.tickets.length}
-            {column.wip_limit > 0 && `/${column.wip_limit}`}
+            {column.wip_limit > 0 ? `/${column.wip_limit}` : ""}
           </span>
         </div>
-
-        {isOverWip && (
-          <span className="text-[10px] font-medium text-rose-400 bg-rose-950/80 px-2 py-0.5 rounded border border-rose-800/50">
-            WIP Exceeded
-          </span>
-        )}
+        {isOverWip ? (
+          <span className="shrink-0 text-[10px] font-medium text-[var(--danger)]">WIP</span>
+        ) : null}
       </div>
 
-      {/* Ticket List (Droppable & Sortable) */}
-      <div className="flex-1 p-3 space-y-3 overflow-y-auto min-h-[300px]">
-        <SortableContext
-          items={column.tickets.map((t) => t.ticket_id)}
-          strategy={verticalListSortingStrategy}
-        >
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-2.5">
+        <SortableContext items={column.tickets.map((t) => t.ticket_id)} strategy={verticalListSortingStrategy}>
           {column.tickets.map((ticket) => (
             <TicketCard
               key={ticket.ticket_id}
               ticket={ticket}
+              onOpen={onOpenTicket}
               onDelegateClick={onDelegateClick}
             />
           ))}
         </SortableContext>
 
-        {column.tickets.length === 0 && (
-          <div className="h-32 flex items-center justify-center border-2 border-dashed border-slate-900 rounded-xl text-xs text-slate-600">
-            Drop cards here
+        {column.tickets.length === 0 ? (
+          <div className="flex h-24 items-center justify-center rounded-lg border border-dashed border-[var(--border)] text-[11px] text-[var(--muted)]">
+            Drop tickets here
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

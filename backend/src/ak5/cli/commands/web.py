@@ -49,20 +49,23 @@ def _load_dotenv_files() -> None:
         break
 
 
-def _print_ready_banner(host: str, port: int) -> None:
-    ts = detect_tailscale()
+def _print_ready_banner(host: str, port: int, is_ssl: bool = False) -> None:
+    ts = detect_tailscale(port=port)
     cfg = get_web_auth_config()
-    local = f"http://127.0.0.1:{port}"
+    scheme = "https" if is_ssl else "http"
+    local = f"{scheme}://127.0.0.1:{port}"
     lines = [
         f"[bold]Local:[/bold]              [cyan]{local}[/cyan]",
         f"[bold]API Docs:[/bold]           [cyan]{local}/docs[/cyan]",
     ]
-    if ts.dns_name:
-        lines.append(f"[bold]Tailscale Domain:[/bold]  [cyan]http://{ts.dns_name}:{port}[/cyan]")
+    if ts.https_active and ts.https_url:
+        lines.append(f"[bold]Tailscale HTTPS:[/bold]   [green]{ts.https_url}[/green] (secure port 443)")
+    elif ts.dns_name:
+        lines.append(f"[bold]Tailscale Domain:[/bold]  [cyan]{scheme}://{ts.dns_name}:{port}[/cyan]")
     if ts.ipv4:
-        lines.append(f"[bold]Tailscale IP:[/bold]      [cyan]http://{ts.ipv4}:{port}[/cyan]")
+        lines.append(f"[bold]Tailscale IP:[/bold]      [cyan]{scheme}://{ts.ipv4}:{port}[/cyan]")
     if host not in {"127.0.0.1", "localhost"}:
-        lines.append(f"[bold]Bind:[/bold]               [cyan]http://{host}:{port}[/cyan]")
+        lines.append(f"[bold]Bind:[/bold]               [cyan]{scheme}://{host}:{port}[/cyan]")
 
     if cfg.enabled:
         lines.append(f"[bold]Web Auth:[/bold]           [green]ENABLED[/green] (user: {cfg.username})")
@@ -91,9 +94,20 @@ def _open_browser_later(url: str, delay: float = 1.2) -> None:
 @click.command("web")
 @click.option("--host", default="0.0.0.0", show_default=True, help="Bind address (0.0.0.0 for Tailscale/LAN)")
 @click.option("--port", default=8000, show_default=True, type=int, help="Single port for API + dashboard")
+@click.option("--ssl-keyfile", default=None, type=click.Path(exists=True), help="SSL private key file for direct HTTPS")
+@click.option("--ssl-certfile", default=None, type=click.Path(exists=True), help="SSL certificate file for direct HTTPS")
+@click.option("--tailscale-serve", is_flag=True, help="Proxy via Tailscale Serve (HTTPS on port 443)")
 @click.option("--no-browser", is_flag=True, help="Do not open a browser tab")
 @click.option("--reload", is_flag=True, help="Auto-reload (development)")
-def web_command(host: str, port: int, no_browser: bool, reload: bool) -> None:
+def web_command(
+    host: str,
+    port: int,
+    ssl_keyfile: str | None,
+    ssl_certfile: str | None,
+    tailscale_serve: bool,
+    no_browser: bool,
+    reload: bool,
+) -> None:
     """Start AK5 with the embedded Kanban Web Dashboard on one port.
 
     Serves the packaged static UI (when present) plus REST/SSE/MCP.
@@ -113,10 +127,34 @@ def web_command(host: str, port: int, no_browser: bool, reload: bool) -> None:
         )
         console.print("API-only mode will still start; open [cyan]/docs[/cyan] for Swagger.\n")
 
-    _print_ready_banner(host, port)
+    if tailscale_serve:
+        import shutil
+        import subprocess
+
+        if shutil.which("tailscale"):
+            console.print(f"[cyan]▶ Setting up Tailscale HTTPS proxy (tailscale serve --bg {port})...[/cyan]")
+            res = subprocess.run(["tailscale", "serve", "--bg", str(port)], capture_output=True, text=True, check=False)
+            if res.returncode != 0:
+                err_msg = res.stderr.strip() or res.stdout.strip()
+                console.print(f"[yellow]⚠️ Tailscale serve returned:[/yellow] {err_msg}")
+            else:
+                console.print("[green]✓ Tailscale HTTPS serve active on port 443[/green]")
+
+    is_ssl = bool(ssl_keyfile and ssl_certfile)
+    _print_ready_banner(host, port, is_ssl=is_ssl)
 
     if not no_browser:
-        _open_browser_later(f"http://127.0.0.1:{port}/")
+        scheme = "https" if is_ssl else "http"
+        _open_browser_later(f"{scheme}://127.0.0.1:{port}/")
 
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
-    uvicorn.run("ak5.main:app", host=host, port=port, reload=reload)
+    uvicorn.run(
+        "ak5.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+        ssl_keyfile=ssl_keyfile,
+        ssl_certfile=ssl_certfile,
+    )

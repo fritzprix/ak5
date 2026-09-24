@@ -11,7 +11,7 @@ interface ActorBadgeProps {
 export const ActorBadge: React.FC<ActorBadgeProps> = ({ actorId, actor, size = "sm" }) => {
   if (!actorId && !actor) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-400">
+      <span className="inline-flex items-center gap-1 rounded-md bg-[var(--background)] px-2 py-0.5 text-[11px] text-[var(--muted)]">
         Unassigned
       </span>
     );
@@ -19,19 +19,18 @@ export const ActorBadge: React.FC<ActorBadgeProps> = ({ actorId, actor, size = "
 
   const id = actor?.actor_id || actorId || "";
   const isAgent = id.startsWith("agent") || actor?.actor_type === "agent";
-  const role = actor?.role || (isAgent ? "Agent" : "PM");
+  const role = actor?.role || (isAgent ? "Agent" : "Human");
   const name = actor?.name || id;
+  const pad = size === "sm" ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs";
 
   if (isAgent) {
     return (
       <span
         title={`AI Agent: ${name} (${role})`}
-        className={`inline-flex items-center gap-1.5 font-medium rounded-full bg-purple-950/70 border border-purple-600/50 text-purple-300 ${
-          size === "sm" ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm"
-        }`}
+        className={`inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--accent-muted)] font-medium text-[var(--accent)] ${pad}`}
       >
-        <Bot className={size === "sm" ? "w-3 h-3 text-purple-400" : "w-4 h-4 text-purple-400"} />
-        <span>Agent: {role}</span>
+        <Bot className={size === "sm" ? "h-3 w-3" : "h-3.5 w-3.5"} />
+        <span className="max-w-[7rem] truncate">{role}</span>
       </span>
     );
   }
@@ -39,12 +38,10 @@ export const ActorBadge: React.FC<ActorBadgeProps> = ({ actorId, actor, size = "
   return (
     <span
       title={`Human: ${name} (${role})`}
-      className={`inline-flex items-center gap-1.5 font-medium rounded-full bg-emerald-950/70 border border-emerald-600/50 text-emerald-300 ${
-        size === "sm" ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm"
-      }`}
+      className={`inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] font-medium text-[var(--foreground)] ${pad}`}
     >
-      <User className={size === "sm" ? "w-3 h-3 text-emerald-400" : "w-4 h-4 text-emerald-400"} />
-      <span>{role}</span>
+      <User className={size === "sm" ? "h-3 w-3 text-[var(--success)]" : "h-3.5 w-3.5 text-[var(--success)]"} />
+      <span className="max-w-[7rem] truncate">{role}</span>
     </span>
   );
 };

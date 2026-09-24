@@ -1,8 +1,21 @@
+import type { CSSProperties, ReactNode } from "react";
 import type { Metadata } from "next";
+import { Outfit, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
-import { Kanban } from "lucide-react";
-import { BoardSwitcher } from "@/components/board/BoardSwitcher";
-import { AuthStatusButton } from "@/components/auth/AuthStatusButton";
+import { AppShell } from "@/components/layout/AppShell";
+
+const outfit = Outfit({
+  subsets: ["latin"],
+  variable: "--font-outfit",
+  display: "swap",
+});
+
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "AK5 — Agent-Orchestrated Kanban",
@@ -12,48 +25,20 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode;
+  children: ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className="bg-[#090d16] text-slate-100 min-h-screen flex flex-col">
-        <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40">
-          <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3 shrink-0">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-                <Kanban className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h1 className="font-bold text-base tracking-tight flex items-center gap-1.5">
-                  <span>AK5</span>
-                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-purple-950/80 border border-purple-800 text-purple-300">
-                    Agent-Orchestrated
-                  </span>
-                </h1>
-                <p className="text-[11px] text-slate-400">Human & AI Dual Protocol Kanban</p>
-              </div>
-            </div>
-
-            <BoardSwitcher />
-
-            <div className="flex items-center gap-3 text-xs shrink-0">
-              <span className="text-slate-400 hidden lg:inline">
-                Protocols: <span className="text-slate-200 font-mono">REST + SSE + MCP</span>
-              </span>
-              <a
-                href="/docs"
-                target="_blank"
-                rel="noreferrer"
-                className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-colors"
-              >
-                API Docs
-              </a>
-              <AuthStatusButton />
-            </div>
-          </div>
-        </header>
-
-        <main className="flex-1 max-w-7xl w-full mx-auto p-6">{children}</main>
+    <html lang="en" className={`${outfit.variable} ${plexMono.variable}`}>
+      <body
+        className="min-h-screen font-sans text-[var(--foreground)] antialiased"
+        style={
+          {
+            "--font-sans": "var(--font-outfit), ui-sans-serif, system-ui, sans-serif",
+            "--font-mono": "var(--font-plex-mono), ui-monospace, monospace",
+          } as CSSProperties
+        }
+      >
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

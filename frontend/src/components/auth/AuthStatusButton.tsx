@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { LogOut, ShieldCheck, User } from "lucide-react";
+import { LogOut, ShieldCheck } from "lucide-react";
 
 interface AuthStatus {
   authEnabled: boolean;
@@ -37,18 +37,19 @@ export function AuthStatusButton() {
   };
 
   return (
-    <div className="flex items-center gap-2 pl-2 border-l border-slate-800">
-      <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
-        <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
-        <span className="font-mono text-slate-200">{status.username || "admin"}</span>
-      </div>
+    <div className="flex items-center gap-1.5 border-l border-[var(--border)] pl-2">
+      <span className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 font-mono text-[11px] text-[var(--foreground)]">
+        <ShieldCheck className="h-3.5 w-3.5 text-[var(--accent)]" />
+        {status.username || "admin"}
+      </span>
       <button
+        type="button"
         onClick={handleLogout}
         disabled={loggingOut}
         title="Sign Out"
-        className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-rose-400 hover:border-rose-900/50 transition-colors disabled:opacity-50"
+        className="ak-btn-ghost p-1.5"
       >
-        <LogOut className="w-3.5 h-3.5" />
+        <LogOut className="h-3.5 w-3.5" />
       </button>
     </div>
   );

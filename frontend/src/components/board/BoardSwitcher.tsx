@@ -1,14 +1,13 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { LayoutGrid } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import { fetchBoards } from "@/lib/api";
 import { BoardSummary } from "@/lib/types";
 
 export const BoardSwitcher: React.FC = () => {
   const pathname = usePathname();
+  const router = useRouter();
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,44 +21,39 @@ export const BoardSwitcher: React.FC = () => {
 
   const activeBoardId = pathname?.startsWith("/board/")
     ? decodeURIComponent(pathname.slice("/board/".length).split("/")[0] || "")
-    : null;
+    : "";
 
   if (error) {
     return (
-      <span className="text-[11px] text-rose-400 truncate max-w-[180px]" title={error}>
+      <span className="max-w-[180px] truncate text-[11px] text-[var(--danger)]" title={error}>
         Boards unavailable
       </span>
     );
   }
 
   if (boards.length === 0) {
-    return (
-      <span className="text-[11px] text-slate-500 inline-flex items-center gap-1">
-        <LayoutGrid className="w-3 h-3" />
-        Loading boards…
-      </span>
-    );
+    return <span className="text-[11px] text-[var(--muted)]">Loading boards…</span>;
   }
 
   return (
-    <nav className="flex items-center gap-1.5 max-w-[420px] overflow-x-auto" aria-label="Boards">
-      {boards.map((board) => {
-        const isActive = board.board_id === activeBoardId;
-        return (
-          <Link
-            key={board.board_id}
-            href={`/board/${encodeURIComponent(board.board_id)}/`}
-            className={`shrink-0 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
-              isActive
-                ? "bg-cyan-950/70 text-cyan-300 border-cyan-700/60"
-                : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700"
-            }`}
-            title={board.description || board.name}
-          >
+    <label className="flex min-w-[12rem] max-w-[20rem] flex-1 items-center gap-2">
+      <span className="sr-only">Board</span>
+      <select
+        className="ak-input py-1.5 text-xs"
+        value={activeBoardId}
+        aria-label="Select board"
+        onChange={(e) => {
+          const id = e.target.value;
+          if (id) router.push(`/board/${encodeURIComponent(id)}/`);
+        }}
+      >
+        {!activeBoardId ? <option value="">Select board…</option> : null}
+        {boards.map((board) => (
+          <option key={board.board_id} value={board.board_id}>
             {board.name}
-          </Link>
-        );
-      })}
-    </nav>
+          </option>
+        ))}
+      </select>
+    </label>
   );
 };

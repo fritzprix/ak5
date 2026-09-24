@@ -11,15 +11,18 @@ const config: Config = {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
-      },
-      keyframes: {
-        pulseBorder: {
-          "0%, 100%": { borderColor: "rgba(59, 130, 246, 0.8)", boxShadow: "0 0 12px rgba(59, 130, 246, 0.4)" },
-          "50%": { borderColor: "rgba(147, 51, 234, 0.8)", boxShadow: "0 0 16px rgba(147, 51, 234, 0.6)" },
+        surface: "var(--surface)",
+        muted: "var(--muted)",
+        border: "var(--border)",
+        accent: {
+          DEFAULT: "var(--accent)",
+          hover: "var(--accent-hover)",
+          muted: "var(--accent-muted)",
         },
       },
-      animation: {
-        "agent-pulse": "pulseBorder 2s ease-in-out infinite",
+      fontFamily: {
+        sans: ["var(--font-sans)"],
+        mono: ["var(--font-mono)"],
       },
     },
   },

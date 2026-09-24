@@ -12,6 +12,8 @@ from dataclasses import dataclass
 class TailscaleInfo:
     ipv4: str | None
     dns_name: str | None
+    https_active: bool = False
+    https_url: str | None = None
 
 
 def _run(args: list[str], timeout: float = 2.0) -> str:
@@ -30,8 +32,8 @@ def _run(args: list[str], timeout: float = 2.0) -> str:
     return (completed.stdout or "").strip()
 
 
-def detect_tailscale() -> TailscaleInfo:
-    """Return Tailscale IPv4 and DNS name when `tailscale` is on PATH."""
+def detect_tailscale(port: int = 8000) -> TailscaleInfo:
+    """Return Tailscale IPv4, DNS name, and active HTTPS serve status."""
     if shutil.which("tailscale") is None:
         return TailscaleInfo(ipv4=None, dns_name=None)
 
@@ -55,4 +57,17 @@ def detect_tailscale() -> TailscaleInfo:
         except json.JSONDecodeError:
             pass
 
-    return TailscaleInfo(ipv4=ipv4, dns_name=dns_name)
+    https_active = False
+    https_url: str | None = None
+    if dns_name:
+        serve_status = _run(["tailscale", "serve", "status"], timeout=3.0)
+        if serve_status and "No serve config" not in serve_status and f":{port}" in serve_status:
+            https_active = True
+            https_url = f"https://{dns_name}"
+
+    return TailscaleInfo(
+        ipv4=ipv4,
+        dns_name=dns_name,
+        https_active=https_active,
+        https_url=https_url,
+    )

@@ -35,6 +35,10 @@ def _client_ip(request: Request) -> str:
     )
 
 
+def _is_secure(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
 @router.post("/login")
 async def web_login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
     ip = _client_ip(request)
@@ -56,7 +60,7 @@ async def web_login(body: LoginBody, request: Request, response: Response) -> di
 
     record_successful_attempt(ip)
     token = compute_session_hash(cfg.username, cfg.password)
-    secure = request.url.scheme == "https"
+    secure = _is_secure(request)
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
@@ -71,7 +75,7 @@ async def web_login(body: LoginBody, request: Request, response: Response) -> di
 
 @router.post("/logout")
 async def web_logout(request: Request, response: Response) -> dict[str, bool]:
-    secure = request.url.scheme == "https"
+    secure = _is_secure(request)
     response.set_cookie(
         key=COOKIE_NAME,
         value="",
