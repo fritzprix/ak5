@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   DndContext,
   DragEndEvent,
@@ -21,6 +21,7 @@ import {
   subscribeToBoardEvents,
 } from "@/lib/api";
 import { buildAgentSetupMarkdown } from "@/lib/agentSetup";
+import { decideLiveRefresh, shouldFlushDeferredRefresh } from "@/lib/liveRefresh";
 import { Board, Column, Ticket, Actor } from "@/lib/types";
 import { KanbanColumn } from "./KanbanColumn";
 import { TicketCard } from "./TicketCard";
@@ -32,6 +33,8 @@ import { Plus, RefreshCw, Radio, ClipboardCopy, Check, Terminal } from "lucide-r
 interface KanbanBoardProps {
   boardId: string;
 }
+
+const LIVE_REFRESH_DEBOUNCE_MS = 700;
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [board, setBoard] = useState<Board | null>(null);
@@ -48,6 +51,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoadingBoard, setIsLoadingBoard] = useState(true);
   const copiedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pauseLiveRefreshRef = useRef(false);
+  const pendingLiveRefreshRef = useRef(false);
+  const boardIdRef = useRef(boardId);
 
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
@@ -68,34 +75,72 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     })
   );
 
+  const isUiBlocking =
+    isNewTicketOpen || Boolean(delegatingTicket) || isAgentSetupOpen || Boolean(detailTicket);
+
+  useEffect(() => {
+    boardIdRef.current = boardId;
+  }, [boardId]);
+
   useEffect(() => {
     return () => {
       if (copiedResetTimer.current) clearTimeout(copiedResetTimer.current);
+      if (liveRefreshTimer.current) clearTimeout(liveRefreshTimer.current);
     };
   }, []);
 
-  const reloadBoard = async () => {
+  const reloadBoard = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent);
+    const id = boardIdRef.current;
     try {
-      setIsLoadingBoard(true);
-      setLoadError(null);
-      const data = await fetchBoard(boardId);
+      if (!silent) {
+        setIsLoadingBoard(true);
+        setLoadError(null);
+      }
+      const data = await fetchBoard(id);
       setBoard(data);
+      // Keep detailTicket object identity stable while the drawer is open so
+      // typing/comment drafts are not wiped by SSE-driven board refreshes.
       setDetailTicket((prev) => {
         if (!prev) return null;
-        for (const col of data.columns) {
-          const found = col.tickets.find((t) => t.ticket_id === prev.ticket_id);
-          if (found) return found;
-        }
-        return prev;
+        const stillOnBoard = data.columns.some((col) =>
+          col.tickets.some((t) => t.ticket_id === prev.ticket_id)
+        );
+        return stillOnBoard ? prev : null;
       });
     } catch (err) {
       console.error("Failed to load board:", err);
-      setBoard(null);
-      setLoadError(err instanceof Error ? err.message : `Failed to load board '${boardId}'`);
+      if (!silent) {
+        setBoard(null);
+        setLoadError(err instanceof Error ? err.message : `Failed to load board '${id}'`);
+      }
     } finally {
-      setIsLoadingBoard(false);
+      if (!silent) setIsLoadingBoard(false);
     }
-  };
+  }, []);
+
+  const scheduleLiveRefresh = useCallback(() => {
+    if (pauseLiveRefreshRef.current) {
+      pendingLiveRefreshRef.current = true;
+      return;
+    }
+    if (liveRefreshTimer.current) clearTimeout(liveRefreshTimer.current);
+    liveRefreshTimer.current = setTimeout(() => {
+      if (pauseLiveRefreshRef.current) {
+        pendingLiveRefreshRef.current = true;
+        return;
+      }
+      void reloadBoard({ silent: true });
+    }, LIVE_REFRESH_DEBOUNCE_MS);
+  }, [reloadBoard]);
+
+  useEffect(() => {
+    pauseLiveRefreshRef.current = decideLiveRefresh(isUiBlocking) === "defer";
+    if (shouldFlushDeferredRefresh(isUiBlocking, pendingLiveRefreshRef.current)) {
+      pendingLiveRefreshRef.current = false;
+      void reloadBoard({ silent: true });
+    }
+  }, [isUiBlocking, reloadBoard]);
 
   const copyAgentSetup = async () => {
     if (!board) return;
@@ -121,12 +166,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     setCopyError(null);
     setCopied(false);
     setDetailTicket(null);
-    reloadBoard();
+    pendingLiveRefreshRef.current = false;
+    if (liveRefreshTimer.current) clearTimeout(liveRefreshTimer.current);
+    void reloadBoard();
     fetchActors().then(setActors).catch(console.error);
 
     const cleanup = subscribeToBoardEvents(
       () => {
-        reloadBoard();
+        scheduleLiveRefresh();
       },
       {
         onOpen: () => setIsConnectedSSE(true),
@@ -136,9 +183,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
     return () => {
       cleanup();
+      if (liveRefreshTimer.current) clearTimeout(liveRefreshTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when boardId changes
-  }, [boardId]);
+  }, [boardId, reloadBoard, scheduleLiveRefresh]);
 
   const handleDragStart = (event: DragStartEvent) => {
     const ticketId = event.active.id as string;
@@ -191,11 +238,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     try {
       setActionError(null);
       await moveTicket(activeId, targetCol.column_id, prevId, nextId);
-      await reloadBoard();
+      await reloadBoard({ silent: true });
     } catch (err) {
       console.error("Move ticket failed:", err);
       setActionError(err instanceof Error ? err.message : "Move ticket failed");
-      await reloadBoard();
+      await reloadBoard({ silent: true });
     }
   };
 
@@ -216,7 +263,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       setNewTitle("");
       setNewDesc("");
       setIsNewTicketOpen(false);
-      await reloadBoard();
+      await reloadBoard({ silent: true });
     } catch (err) {
       console.error("Create ticket failed:", err);
       setActionError(err instanceof Error ? err.message : "Create ticket failed");
@@ -233,7 +280,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       setSubtaskDesc("");
       setSubtaskAgent("");
       setDelegatingTicket(null);
-      await reloadBoard();
+      await reloadBoard({ silent: true });
     } catch (err) {
       console.error("Delegate subtask failed:", err);
       setActionError(err instanceof Error ? err.message : "Delegate subtask failed");
@@ -352,6 +399,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
         ticket={detailTicket}
         onClose={() => setDetailTicket(null)}
         onDelegate={setDelegatingTicket}
+        onCommented={() => {
+          // Drawer stays open (live refresh paused); flush board when it closes.
+          pendingLiveRefreshRef.current = true;
+        }}
       />
 
       <Dialog

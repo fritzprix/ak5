@@ -197,3 +197,84 @@ async def test_ticket_comments(client: AsyncClient, auth_headers):
     assert c2_resp.status_code == 201
     assert c2_resp.json()["is_internal"]
     assert c2_resp.json()["metadata"]["detected_channels"] == 4
+
+    # Review flow: comments must be visible on ticket detail (web drawer source)
+    detail = await client.get(f"/api/v1/tickets/{t_id}", headers=headers)
+    assert detail.status_code == 200
+    comments = detail.json().get("comments") or []
+    assert len(comments) >= 2
+    contents = {c["content"] for c in comments}
+    assert "Please prioritize this ticket." in contents
+
+
+@pytest.mark.asyncio
+async def test_ticket_comment_validation_and_missing(client: AsyncClient, auth_headers):
+    headers = auth_headers("user_pm", "human")
+
+    t_resp = await client.post(
+        "/api/v1/tickets",
+        json={"title": "Comment validation", "board_id": "proj-core-engine", "column_id": "col_todo"},
+        headers=headers,
+    )
+    t_id = t_resp.json()["ticket_id"]
+
+    empty = await client.post(
+        f"/api/v1/tickets/{t_id}/comments",
+        json={"content": ""},
+        headers=headers,
+    )
+    assert empty.status_code == 422
+
+    missing = await client.post(
+        "/api/v1/tickets/t_does_not_exist/comments",
+        json={"content": "hello"},
+        headers=headers,
+    )
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_review_comment_from_human_pm(client: AsyncClient, auth_headers):
+    """Human PM can leave a review note on a ticket in the review column."""
+    headers = auth_headers("user_pm", "human")
+
+    create = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Needs review",
+            "board_id": "proj-core-engine",
+            "column_id": "col_todo",
+            "description": "Please review the WebP path",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201
+    t_id = create.json()["ticket_id"]
+
+    # Move into review if a review column exists on the default board
+    board = await client.get("/api/v1/boards/proj-core-engine", headers=headers)
+    assert board.status_code == 200
+    review_col = next(
+        (c for c in board.json()["columns"] if c.get("stage") == "review"),
+        None,
+    )
+    if review_col:
+        moved = await client.patch(
+            f"/api/v1/tickets/{t_id}/move",
+            json={"target_column_id": review_col["column_id"]},
+            headers=headers,
+        )
+        assert moved.status_code == 200
+
+    note = await client.post(
+        f"/api/v1/tickets/{t_id}/comments",
+        json={"content": "LGTM — approve after thumbnail smoke test.", "is_internal": False},
+        headers=headers,
+    )
+    assert note.status_code == 201
+    assert note.json()["actor_id"] == "user_pm"
+
+    detail = await client.get(f"/api/v1/tickets/{t_id}", headers=headers)
+    assert detail.status_code == 200
+    comments = detail.json().get("comments") or []
+    assert any("LGTM" in c["content"] for c in comments)

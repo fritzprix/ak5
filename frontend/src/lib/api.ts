@@ -1,4 +1,4 @@
-import { Board, BoardSummary, Ticket, Actor } from "./types";
+import { Board, BoardSummary, Ticket, TicketComment, Actor } from "./types";
 
 /** Same-origin by default so embedded FastAPI (`ak5 web`) needs no CORS/port split. */
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
@@ -168,6 +168,30 @@ export async function delegateSubtask(
       subtask_description: subtaskDescription,
       priority,
       labels: ["delegated"],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function addComment(
+  ticketId: string,
+  content: string,
+  isInternal: boolean = false
+): Promise<TicketComment> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/comments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify({
+      content,
+      is_internal: isInternal,
+      metadata: {},
     }),
   });
   if (!res.ok) {

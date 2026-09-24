@@ -1,35 +1,47 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { X } from "lucide-react";
-import { fetchTicket } from "@/lib/api";
-import { Ticket } from "@/lib/types";
+import React, { useEffect, useId, useState } from "react";
+import { Send, X } from "lucide-react";
+import { addComment, fetchTicket } from "@/lib/api";
+import { Ticket, TicketComment } from "@/lib/types";
 import { ActorBadge } from "../actor/ActorBadge";
 
 interface TicketDetailDrawerProps {
   ticket: Ticket | null;
   onClose: () => void;
   onDelegate?: (ticket: Ticket) => void;
+  /** Called after a successful comment so the parent can queue a board refresh. */
+  onCommented?: () => void;
 }
 
-export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetailDrawerProps) {
+export function TicketDetailDrawer({ ticket, onClose, onDelegate, onCommented }: TicketDetailDrawerProps) {
+  const ticketId = ticket?.ticket_id ?? null;
   const [detail, setDetail] = useState<Ticket | null>(ticket);
   const [loading, setLoading] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const commentFieldId = useId();
 
+  // Fetch by id only — do not depend on ticket object identity (SSE board reloads).
   useEffect(() => {
-    if (!ticket) {
+    if (!ticketId) {
       setDetail(null);
+      setDraft("");
+      setCommentError(null);
       return;
     }
     setDetail(ticket);
+    setDraft("");
+    setCommentError(null);
     let cancelled = false;
     setLoading(true);
-    fetchTicket(ticket.ticket_id)
+    fetchTicket(ticketId)
       .then((full) => {
         if (!cancelled) setDetail(full);
       })
       .catch(() => {
-        if (!cancelled) setDetail(ticket);
+        if (!cancelled && ticket) setDetail(ticket);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -37,10 +49,12 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
     return () => {
       cancelled = true;
     };
-  }, [ticket]);
+    // Intentionally ignore `ticket` object identity; seed uses first paint only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ticketId is the stable key
+  }, [ticketId]);
 
   useEffect(() => {
-    if (!ticket) return;
+    if (!ticketId) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -51,18 +65,49 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = previousOverflow;
     };
-  }, [ticket, onClose]);
+  }, [ticketId, onClose]);
 
-  if (!ticket || !detail) return null;
+  const handleSubmitComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ticketId || !draft.trim() || submitting) return;
+    setSubmitting(true);
+    setCommentError(null);
+    try {
+      const created = await addComment(ticketId, draft.trim(), false);
+      setDetail((prev) => {
+        if (!prev) return prev;
+        const comments: TicketComment[] = [created, ...(prev.comments ?? [])];
+        return { ...prev, comments };
+      });
+      setDraft("");
+      onCommented?.();
+    } catch (err) {
+      setCommentError(err instanceof Error ? err.message : "Failed to post comment");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!ticketId || !detail) return null;
 
   const progress =
     detail.subtask_count > 0
       ? Math.round((detail.subtask_done_count / detail.subtask_count) * 100)
       : null;
 
+  const comments = detail.comments ?? [];
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-end sm:items-stretch" style={{ background: "rgba(6, 10, 16, 0.45)" }}>
-      <button type="button" className="absolute inset-0 cursor-default" aria-label="Close ticket detail" onClick={onClose} />
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-end sm:items-stretch"
+      style={{ background: "rgba(6, 10, 16, 0.45)" }}
+    >
+      <button
+        type="button"
+        className="absolute inset-0 cursor-default"
+        aria-label="Close ticket detail"
+        onClick={onClose}
+      />
       <aside
         role="dialog"
         aria-modal="true"
@@ -93,7 +138,9 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
           </div>
 
           <section>
-            <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Description</h3>
+            <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Description
+            </h3>
             <p className="whitespace-pre-wrap leading-relaxed text-[var(--foreground)]">
               {detail.description || "No description."}
             </p>
@@ -126,13 +173,15 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
             </section>
           ) : null}
 
-          {detail.comments && detail.comments.length > 0 ? (
-            <section>
-              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                Recent comments
-              </h3>
+          <section>
+            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Comments {comments.length > 0 ? `(${comments.length})` : ""}
+            </h3>
+            {comments.length === 0 ? (
+              <p className="text-xs text-[var(--muted)]">No comments yet. Leave a review note below.</p>
+            ) : (
               <ul className="space-y-2">
-                {detail.comments.slice(0, 8).map((c) => (
+                {comments.slice(0, 20).map((c) => (
                   <li
                     key={c.comment_id}
                     className="rounded-md border border-[var(--border)] bg-[var(--background)] p-2.5 text-xs"
@@ -145,26 +194,53 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
                   </li>
                 ))}
               </ul>
-            </section>
-          ) : null}
+            )}
+          </section>
         </div>
 
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--border)] px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
-          <button type="button" className="ak-btn-ghost" onClick={onClose}>
-            Close
-          </button>
-          {onDelegate ? (
-            <button
-              type="button"
-              className="ak-btn-primary"
-              onClick={() => {
-                onDelegate(detail);
-                onClose();
-              }}
-            >
-              Delegate
-            </button>
-          ) : null}
+        <div className="shrink-0 border-t border-[var(--border)] px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
+          <form onSubmit={handleSubmitComment} className="space-y-2">
+            <label htmlFor={commentFieldId} className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Add comment
+            </label>
+            <textarea
+              id={commentFieldId}
+              className="ak-input min-h-[4.5rem] resize-y"
+              rows={3}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="Review notes, approval, or questions…"
+              disabled={submitting}
+            />
+            {commentError ? <p className="text-xs text-[var(--danger)]">{commentError}</p> : null}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button type="button" className="ak-btn-ghost" onClick={onClose}>
+                  Close
+                </button>
+                {onDelegate ? (
+                  <button
+                    type="button"
+                    className="ak-btn-secondary"
+                    onClick={() => {
+                      onDelegate(detail);
+                      onClose();
+                    }}
+                  >
+                    Delegate
+                  </button>
+                ) : null}
+              </div>
+              <button
+                type="submit"
+                className="ak-btn-primary"
+                disabled={submitting || !draft.trim()}
+              >
+                <Send className="h-4 w-4" />
+                {submitting ? "Posting…" : "Post"}
+              </button>
+            </div>
+          </form>
         </div>
       </aside>
     </div>
