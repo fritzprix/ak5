@@ -36,10 +36,10 @@ export const BoardSwitcher: React.FC = () => {
   }
 
   return (
-    <label className="flex min-w-[12rem] max-w-[20rem] flex-1 items-center gap-2">
+    <label className="flex min-w-0 max-w-[14rem] flex-1 items-center gap-2 sm:max-w-[20rem] sm:min-w-[12rem]">
       <span className="sr-only">Board</span>
       <select
-        className="ak-input py-1.5 text-xs"
+        className="ak-input min-w-0 py-1.5 text-base sm:text-xs"
         value={activeBoardId}
         aria-label="Select board"
         onChange={(e) => {

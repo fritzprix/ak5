@@ -13,5 +13,9 @@ export function BoardPageClient({ initialBoardId }: BoardPageClientProps) {
   const fromPath = match?.[1] ? decodeURIComponent(match[1]) : null;
   const raw = fromPath || initialBoardId;
   const boardId = raw === "_" ? "proj-core-engine" : raw;
-  return <KanbanBoard boardId={boardId} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <KanbanBoard boardId={boardId} />
+    </div>
+  );
 }

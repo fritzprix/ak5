@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Outfit, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { AppShell } from "@/components/layout/AppShell";
@@ -22,6 +22,13 @@ export const metadata: Metadata = {
   description: "Human and Autonomous AI Agent Collaborative Kanban System",
 };
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0c1118",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -30,7 +37,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${outfit.variable} ${plexMono.variable}`}>
       <body
-        className="min-h-screen font-sans text-[var(--foreground)] antialiased"
+        className="min-h-dvh font-sans text-[var(--foreground)] antialiased"
         style={
           {
             "--font-sans": "var(--font-outfit), ui-sans-serif, system-ui, sans-serif",

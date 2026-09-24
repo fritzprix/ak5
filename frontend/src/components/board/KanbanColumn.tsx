@@ -36,11 +36,11 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   return (
     <div
       ref={setNodeRef}
-      className={`flex h-full min-w-[280px] max-w-[340px] flex-1 flex-col rounded-xl border bg-[var(--background-elevated)]/80 transition-colors ${
+      className={`flex h-full w-[min(85vw,20rem)] shrink-0 snap-center flex-col rounded-xl border bg-[var(--background-elevated)]/80 transition-colors sm:w-auto sm:min-w-[280px] sm:max-w-[340px] sm:flex-1 sm:[scroll-snap-align:none] ${
         isOver ? "border-[var(--accent)]" : "border-[var(--border)]"
       }`}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-3">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className={`h-2 w-2 shrink-0 rounded-full ${stageDot}`} aria-hidden />
           <h3 className="truncate text-sm font-semibold text-[var(--foreground)]">{column.name}</h3>
@@ -54,7 +54,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-2.5">
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain p-2.5">
         <SortableContext items={column.tickets.map((t) => t.ticket_id)} strategy={verticalListSortingStrategy}>
           {column.tickets.map((ticket) => (
             <TicketCard

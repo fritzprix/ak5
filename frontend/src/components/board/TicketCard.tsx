@@ -3,7 +3,7 @@
 import React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { AlertOctagon, GitBranch } from "lucide-react";
+import { AlertOctagon, GitBranch, GripVertical } from "lucide-react";
 import { Ticket } from "@/lib/types";
 import { ActorBadge } from "../actor/ActorBadge";
 
@@ -56,13 +56,21 @@ export const TicketCard: React.FC<TicketCardProps> = ({
             : "border-[var(--border)] hover:border-[var(--border-strong)]"
       }`}
     >
-      <div className="mb-2 flex items-start justify-between gap-2">
+      <div className="mb-2 flex items-start gap-1.5">
         <button
           type="button"
-          className="min-w-0 flex-1 cursor-grab touch-none text-left active:cursor-grabbing"
+          className="mt-0.5 shrink-0 cursor-grab touch-none rounded p-0.5 text-[var(--muted)] active:cursor-grabbing"
+          aria-label={`Drag ticket ${ticket.ticket_id}`}
+          title="Drag to move"
           {...attributes}
           {...listeners}
-          onDoubleClick={() => onOpen?.(ticket)}
+        >
+          <GripVertical className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left"
+          onClick={() => onOpen?.(ticket)}
         >
           <h4 className="text-sm font-medium leading-snug text-[var(--foreground)] group-hover:text-[var(--accent-hover)]">
             {ticket.title}
@@ -77,7 +85,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({
         </span>
       </div>
 
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="mb-2 flex items-center justify-between gap-2 pl-5">
         <span className="font-mono text-[10px] text-[var(--muted)]">{ticket.ticket_id}</span>
         {isBlocked ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[var(--danger)]">
@@ -88,7 +96,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({
       </div>
 
       {!compact && hasSubtasks ? (
-        <p className="mb-2 inline-flex items-center gap-1 text-[10px] text-[var(--muted)]">
+        <p className="mb-2 inline-flex items-center gap-1 pl-5 text-[10px] text-[var(--muted)]">
           <GitBranch className="h-3 w-3" />
           {ticket.subtask_done_count}/{ticket.subtask_count} subtasks
         </p>

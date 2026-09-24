@@ -6,7 +6,8 @@ import {
   DragEndEvent,
   DragOverlay,
   DragStartEvent,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   closestCorners,
@@ -58,8 +59,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [subtaskAgent, setSubtaskAgent] = useState("");
 
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
+    }),
+    useSensor(TouchSensor, {
+      // Delay so vertical/horizontal board scroll is not stolen by drag on phones
+      activationConstraint: { delay: 220, tolerance: 8 },
     })
   );
 
@@ -261,9 +266,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const agents = actors.filter((a) => a.actor_type === "agent");
 
   return (
-    <div className="flex h-[calc(100dvh-3.5rem-1.5rem)] flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 sm:gap-3">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="truncate text-base font-semibold tracking-tight text-[var(--foreground)]">
               {board.name}
@@ -285,22 +290,30 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
           ) : null}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={() => reloadBoard()}
             className="ak-btn-secondary p-2"
             title="Refresh"
+            aria-label="Refresh board"
           >
             <RefreshCw className="h-4 w-4" />
           </button>
-          <button type="button" onClick={() => setIsAgentSetupOpen(true)} className="ak-btn-secondary">
+          <button
+            type="button"
+            onClick={() => setIsAgentSetupOpen(true)}
+            className="ak-btn-secondary p-2 sm:px-3.5"
+            title="Agent Setup"
+            aria-label="Agent setup"
+          >
             <Terminal className="h-4 w-4" />
             <span className="hidden sm:inline">Agent Setup</span>
           </button>
           <button type="button" onClick={() => setIsNewTicketOpen(true)} className="ak-btn-primary">
             <Plus className="h-4 w-4" />
-            New Ticket
+            <span className="sm:hidden">New</span>
+            <span className="hidden sm:inline">New Ticket</span>
           </button>
         </div>
       </div>
@@ -308,7 +321,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       <AgentFleetStrip actors={actors} />
 
       {actionError ? (
-        <div className="rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
+        <div className="shrink-0 rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
           {actionError}
         </div>
       ) : null}
@@ -319,7 +332,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-1">
+        <div className="ak-board-scroll flex min-h-0 flex-1 gap-3 overflow-x-auto overflow-y-hidden pb-1">
           {board.columns.map((column) => (
             <KanbanColumn
               key={column.column_id}
@@ -377,7 +390,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
               placeholder="Acceptance criteria or agent instructions"
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-[var(--muted)]">Priority</label>
               <select className="ak-input" value={newPriority} onChange={(e) => setNewPriority(e.target.value)}>

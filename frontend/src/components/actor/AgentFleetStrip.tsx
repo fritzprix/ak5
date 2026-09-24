@@ -25,7 +25,7 @@ export function AgentFleetStrip({ actors }: AgentFleetStripProps) {
   return (
     <section
       aria-label="Agent fleet"
-      className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)]/80 px-3 py-2.5"
+      className="flex shrink-0 flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)]/80 px-3 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3 sm:py-2.5"
     >
       <div className="flex items-center gap-2 text-xs font-medium text-[var(--muted)]">
         <Bot className="h-3.5 w-3.5 text-[var(--accent)]" />
@@ -34,7 +34,7 @@ export function AgentFleetStrip({ actors }: AgentFleetStripProps) {
           {busy} busy · {idle} idle · {offline} off
         </span>
       </div>
-      <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+      <div className="flex min-w-0 gap-1.5 overflow-x-auto overscroll-x-contain pb-0.5 sm:flex-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
         {agents.map((agent) => {
           const tone =
             agent.status === "busy"
@@ -46,7 +46,7 @@ export function AgentFleetStrip({ actors }: AgentFleetStripProps) {
             <span
               key={agent.actor_id}
               title={`${agent.name} · ${statusLabel[agent.status] || agent.status}`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-[11px] text-[var(--foreground)]"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-[11px] text-[var(--foreground)]"
             >
               <Circle className={`h-2 w-2 fill-current ${tone}`} aria-hidden />
               <span className="max-w-[9rem] truncate font-mono">@{agent.actor_id}</span>
@@ -54,7 +54,7 @@ export function AgentFleetStrip({ actors }: AgentFleetStripProps) {
           );
         })}
       </div>
-      <p className="w-full text-[10px] text-[var(--muted)] sm:ml-auto sm:w-auto">
+      <p className="hidden text-[10px] text-[var(--muted)] sm:ml-auto sm:block sm:w-auto">
         Ticket-pull model — no push interrupts; agents poll on their schedule
       </p>
     </section>

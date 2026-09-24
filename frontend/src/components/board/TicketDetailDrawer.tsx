@@ -45,7 +45,12 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
       if (e.key === "Escape") onClose();
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
   }, [ticket, onClose]);
 
   if (!ticket || !detail) return null;
@@ -56,15 +61,15 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
       : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" style={{ background: "rgba(6, 10, 16, 0.45)" }}>
-      <button type="button" className="flex-1 cursor-default" aria-label="Close ticket detail" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex items-end justify-end sm:items-stretch" style={{ background: "rgba(6, 10, 16, 0.45)" }}>
+      <button type="button" className="absolute inset-0 cursor-default" aria-label="Close ticket detail" onClick={onClose} />
       <aside
         role="dialog"
         aria-modal="true"
         aria-label={`Ticket ${detail.ticket_id}`}
-        className="flex h-full w-full max-w-md flex-col border-l border-[var(--border)] bg-[var(--surface)] shadow-xl"
+        className="relative flex h-[min(92dvh,100%)] w-full max-w-md flex-col rounded-t-2xl border border-[var(--border)] bg-[var(--surface)] shadow-xl sm:h-full sm:rounded-none sm:border-l sm:border-y-0 sm:border-r-0"
       >
-        <div className="flex items-start justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border)] px-4 py-4 pt-[max(1rem,env(safe-area-inset-top))] sm:px-5">
           <div className="min-w-0">
             <p className="font-mono text-[11px] text-[var(--muted)]">{detail.ticket_id}</p>
             <h2 className="mt-1 text-lg font-semibold leading-snug text-[var(--foreground)]">{detail.title}</h2>
@@ -74,7 +79,7 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
           </button>
         </div>
 
-        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4 text-sm">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 text-sm sm:px-5">
           {loading ? <p className="text-xs text-[var(--muted)]">Loading full context…</p> : null}
 
           <div className="flex flex-wrap gap-2">
@@ -144,7 +149,7 @@ export function TicketDetailDrawer({ ticket, onClose, onDelegate }: TicketDetail
           ) : null}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] px-5 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--border)] px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
           <button type="button" className="ak-btn-ghost" onClick={onClose}>
             Close
           </button>
