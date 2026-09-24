@@ -148,7 +148,16 @@ stop_services() {
         kill "$(cat "$FRONTEND_PID_FILE")" 2>/dev/null || true
         rm -f "$FRONTEND_PID_FILE"
     fi
-    echo -e "${GREEN}✓${NC} Legacy frontend stop requested"
+    if [ -f "$BACKEND_PID_FILE" ]; then
+        kill "$(cat "$BACKEND_PID_FILE")" 2>/dev/null || true
+        rm -f "$BACKEND_PID_FILE"
+    fi
+    local P8000
+    P8000="$(ss -tulpn 2>/dev/null | grep :8000 | grep -o 'pid=[0-9]*' | cut -d= -f2 | head -n 1 || true)"
+    if [ -n "$P8000" ]; then
+        kill "$P8000" 2>/dev/null || true
+    fi
+    echo -e "${GREEN}✓${NC} All AK5 services stopped."
 }
 
 case "${1:-}" in
