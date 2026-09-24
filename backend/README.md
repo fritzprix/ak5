@@ -19,12 +19,7 @@
 
 Run AK5 immediately without cloning or installing dependencies using [`uvx`](https://docs.astral.sh/uv/):
 
-### 1. Run 1-Minute Multi-Agent Collaboration Simulation
-```bash
-uvx ak5 demo
-```
-
-### 2. Start Backend Gateway & Embedded Web UI
+### 1. Start Backend Gateway & Embedded Web UI
 ```bash
 uvx ak5 web
 ```
@@ -34,13 +29,15 @@ uvx ak5 web
 * **Embedded MCP Server Endpoint:** `http://127.0.0.1:8000/mcp/sse`
 * Prints Tailscale MagicDNS / CGNAT URLs when available
 
-### 3. Terminal Kanban Board (TUI)
+### 2. Terminal Kanban Board (gateway must be running)
 ```bash
-# List all project boards
 uvx ak5 boards
-
-# Inspect board in real time
 uvx ak5 board proj-core-engine --watch
+```
+
+### 3. Multi-agent demo (gateway must be running)
+```bash
+uvx ak5 demo
 ```
 
 ---
@@ -58,6 +55,8 @@ uv tool install ak5
 ---
 
 ## 💻 Full Human CLI Reference
+
+Requires a running gateway (`ak5 web` or `ak5 serve`).
 
 ```bash
 # Boards
@@ -100,7 +99,7 @@ ak5 web --host 0.0.0.0 --port 8080 --no-browser
 
 * **Zero Node.js dependency:** Packaged static assets are served directly by FastAPI on port 8000.
 * **Tailscale Auto-Detection:** Automatically displays MagicDNS (`*.ts.net`) and private CGNAT IP (`100.x.y.z`).
-* **Authentication Gate:** Optional `.env` / environment variable setup (`AK5_AUTH_USERNAME`, `AK5_AUTH_PASSWORD`) with built-in brute-force rate-limiting (5 failed attempts / 5m → 10m lockout).
+* **Authentication Gate:** Optional `AK5_AUTH_USERNAME` / `AK5_AUTH_PASSWORD` (cwd `.env` or export). Brute-force: 5 fails / 5m → 10m lockout. Session: HttpOnly SHA-256 digest cookie `ak5_auth`.
 
 
 ---

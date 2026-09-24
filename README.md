@@ -10,21 +10,16 @@
 
 **AK5** (*Agent Kanban* — where **K5** stands for **K**anban) is an open-source, **Agent-Orchestrated Kanban Platform** that unifies human users (PMs, engineers) and autonomous AI agents (LLMs) on a single collaborative Kanban interface. It provides capability-based task discovery, subtask delegation, real-time board visualization, and seamless Model Context Protocol (MCP) integration.
 
-> 💡 **No heavy Jira/Confluence SaaS subscriptions. No per-seat enterprise bloat.**  
-> Spin up a dedicated, agent-native Kanban hub for your personal army of AI agents in 5 seconds. Pair it with **Tailscale** to establish a secure, ticket-driven autonomous work operating system you can manage from anywhere in the world.
+> No heavy Jira/Confluence SaaS subscriptions. No per-seat enterprise bloat.  
+> Spin up an agent-native Kanban hub in seconds. Pair it with **Tailscale** for a secure, ticket-driven work OS you can manage from anywhere.
 
 ---
 
-## 🎯 Why AK5? Your Personal AI Fleet Without SaaS Bloat
+## Why AK5?
 
-Coordinating multiple AI coding agents (Claude Desktop, Cursor, Antigravity, local LLMs, or autonomous background loops) shouldn't require:
-* 💸 **Expensive per-seat SaaS subscriptions** (Jira, Linear, Monday.com, Confluence).
-* 🕸️ **Complex webhook and cloud plumbing** just to let your bots read and update tickets.
-* 🌪️ **Chat-window chaos**, where task context, blocker reports, and execution logs get buried in scrolling prompts.
+Coordinating multiple AI coding agents (Claude Desktop, Cursor, Antigravity, local LLMs, or autonomous background loops) shouldn't require expensive per-seat SaaS, fragile webhook plumbing, or burying blockers in chat scrollback.
 
-### 🛡️ The Ticket-Driven Autonomous System (with Tailscale)
-
-With **AK5 + Tailscale**, you get an enterprise-grade, ticket-driven workflow on your own terms:
+With **AK5 + Tailscale** you get a ticket-driven workflow on your own machine:
 
 ```
              ┌────────────────────────────────────────────────────────┐
@@ -51,52 +46,57 @@ With **AK5 + Tailscale**, you get an enterprise-grade, ticket-driven workflow on
                       └───────────────────────────────────────┘
 ```
 
-* **Self-Hosted in Seconds:** Run `ak5 web` on your workstation or home server. It runs locally with SQLite WAL storage—no cloud lock-in, no external DB setup.
-* **Access Anywhere via Tailscale:** Connect securely from your smartphone or laptop on the go (`http://my-machine.ts.net:8000`) without exposing any ports to the public internet.
-* **Structured Ticket-Driven Execution:** Instead of micromanaging prompts, drop tickets into the backlog. Your AI agents autonomously pick them up via MCP, branch subtasks, update column stages, and report blockers with human mentions.
+* **Self-hosted:** `ak5 web` runs locally with SQLite WAL — no cloud lock-in, no external DB.
+* **Access anywhere via Tailscale:** MagicDNS / `100.x` URLs without opening ports to the public internet.
+* **Ticket-driven agents:** Agents claim work via MCP, branch subtasks, move columns, and report blockers with mentions.
 
 ---
 
-## ⚡ Quick Start (Zero-Install via `uvx`)
+## Quick Start (Zero-Install via `uvx`)
 
-If you have Python 3.11+ installed, run AK5 immediately without cloning or installing dependencies using [`uvx`](https://docs.astral.sh/uv/):
+Requires Python 3.11+. Uses [`uvx`](https://docs.astral.sh/uv/) — no clone or permanent install needed.
 
-### 1. Run 1-Minute Multi-Agent Collaboration Simulation
-```bash
-uvx ak5 demo
-```
-> Watch human PMs and autonomous agents (Image Worker, Code Reviewer, Security Auditor) collaborate in real time—breaking down parent features, delegating subtasks, updating statuses, and logging execution context in your terminal.
+### 1. Start Gateway + Embedded Web Dashboard (single port)
 
-### 2. Start Gateway + Embedded Web Dashboard (single port)
 ```bash
 # API + Kanban UI on :8000 (no Node.js required after install)
 uvx ak5 web
 ```
+
 * **Web Dashboard:** `http://127.0.0.1:8000/`
-* **REST API & Interactive Docs (Swagger):** `http://127.0.0.1:8000/docs`
-* **Real-time SSE Event Stream:** `http://127.0.0.1:8000/api/v1/events/stream`
-* **Embedded MCP Server Endpoint:** `http://127.0.0.1:8000/mcp/sse`
-* **Tailscale:** when the Tailscale CLI is installed, `ak5 web` prints MagicDNS + `100.x` URLs automatically
+* **REST API & Swagger:** `http://127.0.0.1:8000/docs`
+* **SSE Event Stream:** `http://127.0.0.1:8000/api/v1/events/stream`
+* **MCP SSE:** `http://127.0.0.1:8000/mcp/sse`
+* **Tailscale:** if the Tailscale CLI is installed, MagicDNS + `100.x` URLs are printed automatically
 
 API-only (no browser open):
+
 ```bash
 uvx ak5 serve
 ```
 
-### 3. Terminal Kanban Board (TUI)
-```bash
-# List all available project boards
-uvx ak5 boards
+Auth, Tailscale CORS, and bind options: see [Web Dashboard & Remote Access](#web-dashboard--remote-access-tailscale).
 
-# Inspect a specific board in real-time (--watch with SSE updates)
+### 2. Terminal board & tickets (gateway must be running)
+
+Keep `ak5 web` (or `ak5 serve`) running in another terminal, then:
+
+```bash
+uvx ak5 boards
 uvx ak5 board proj-core-engine --watch
 ```
 
+### 3. Multi-agent collaboration demo (gateway must be running)
+
+```bash
+uvx ak5 demo
+```
+
+Simulates a PM plus Orchestrator, Image Worker, and Code Reviewer agents — ticket breakdown, delegation, column moves, and completion in the terminal.
+
 ---
 
-## 📦 Installation
-
-To install AK5 globally or into an existing virtual environment:
+## Installation
 
 ```bash
 # Using pip
@@ -106,50 +106,43 @@ pip install ak5
 uv tool install ak5
 ```
 
-Once installed, the `ak5` CLI and `ak5-mcp` stdio server binary are immediately accessible:
+Then:
+
 ```bash
 ak5 --help
+ak5 web          # preferred entrypoint
 ak5 whoami
 ```
 
 ---
 
-## 🌟 Core Features
+## Core Features
 
-1. **Unified Actor Model:** Humans and AI agents share the identical `Actor` entity (`user_pm`, `agent_code_reviewer`, etc.), enabling transparent role-based access, JWT authentication, and verifiable audit trails.
-2. **Capability-Based Discovery & Delegation:** Autonomous agents query specialist agents by capability tags (e.g. `image-resize`, `code-review`) or natural-language semantic search to decompose complex epics into subtasks.
-3. **Lexorank Algorithm (Base36):** Production-grade ticket ordering (similar to Jira) providing infinite fractional interpolation without race conditions or re-indexing collisions.
-4. **Multi-Protocol Collaboration:** Terminal CLI (`ak5`), Modern Web UI (`Next.js 15`), Server-Sent Events (`SSE`), and Anthropic/Model Context Protocol (`MCP`).
-5. **Zero-Configuration Embedded Storage:** Uses SQLite with Write-Ahead Logging (WAL) and busy-timeout protection out of the box, requiring zero external database administration.
+1. **Unified Actor Model:** Humans and AI agents share the same `Actor` entity (`user_pm`, `agent_code_reviewer`, …) with JWT auth and audit trails.
+2. **Capability-Based Discovery & Delegation:** Find peers by capability tags (e.g. `image-resize`, `code-review`) or natural-language search, then spawn subtasks.
+3. **Lexorank (Base36):** Stable ticket ordering with fractional ranks (no re-index collisions).
+4. **Multi-Protocol Surface:** CLI (`ak5`), embedded Next.js Kanban dashboard (static bundle in the PyPI wheel), SSE, and MCP.
+5. **Embedded Storage:** SQLite WAL + busy-timeout — zero external database admin.
 
 ---
 
-## 💻 Full Human CLI Reference
+## Human CLI Reference
 
-AK5 provides a complete command suite for human operators to manage projects, tickets, comments, and agent delegations directly from the terminal.
+Requires a running gateway (`ak5 web` or `ak5 serve`) unless noted.
 
-### 1. Board Discovery & Creation
+### Board discovery & creation
+
 ```bash
-# List all boards
 ak5 boards
-
-# Search boards by keyword
 ak5 boards -q "engine"
-
-# View a board (defaults to proj-core-engine)
 ak5 board
-
-# View a specific board (positional or option)
-ak5 board proj-harbor-eval
 ak5 board proj-harbor-eval --watch
-
-# Create a new project board with default 4 columns (To Do, In Progress, Review, Done)
 ak5 create-board proj-mobile-app --name "Mobile App" --desc "iOS/Android client"
 ```
 
-### 2. Ticket Lifecycle Management
+### Ticket lifecycle
+
 ```bash
-# Create a new master/root ticket
 ak5 ticket create \
   --title "Implement OAuth2 Flow" \
   --desc "Support Google and GitHub OAuth callbacks" \
@@ -158,35 +151,23 @@ ak5 ticket create \
   --labels "auth,security" \
   --board proj-core-engine
 
-# View comprehensive ticket context, subtasks, and recent comments
 ak5 ticket view TK-001
-
-# Move ticket between columns (To Do -> In Progress -> Review -> Done)
 ak5 ticket move TK-001 "In Progress" --note "Started implementation"
-# Or use the quick shortcut:
-ak5 move TK-001 "Done" --note "All unit tests pass and code merged"
+ak5 move TK-001 "Done" --note "Merged"
 
-# Add a comment or review note
 ak5 ticket comment TK-001 "Code review approved (LGTM)"
-# Or use the quick shortcut:
 ak5 comment TK-001 "Please attach benchmark logs"
 
-# Mark a ticket as blocked with an actor mention
 ak5 ticket block TK-001 --reason "Waiting on cloud storage API keys" --mention user_pm
-
-# Update ticket properties
 ak5 ticket update TK-001 --priority urgent --assign agent_code_reviewer
 ```
 
-### 3. Agent Discovery & Subtask Delegation
-```bash
-# Discover specialist agents by capability tag
-ak5 agents --cap "image-resize"
+### Agents & delegation
 
-# Search agents by natural language query
+```bash
+ak5 agents --cap "image-resize"
 ak5 agents --query "security audit buffer overflow"
 
-# Delegate a subtask to an agent under an existing parent ticket
 ak5 delegate TK-001 \
   --to agent_image_worker \
   --title "WebP Compression Module" \
@@ -194,26 +175,24 @@ ak5 delegate TK-001 \
   --priority high
 ```
 
-### 4. Identity & Session Inspection
+### Identity
+
 ```bash
-# Authenticate or switch active actor identity
 ak5 login \
   --id user_pm \
   --role "Product Manager" \
   --type human \
   --caps "planning,review"
 
-# Inspect current session and live status
 ak5 whoami
 ```
 
 ---
 
-## 🤖 AI Agent & MCP Integration (Claude Desktop, Cursor, Antigravity)
+## AI Agent & MCP Integration
 
-AK5 implements the standard **Model Context Protocol (MCP)**, allowing agents to automatically inspect boards, claim work, update progress, and delegate subtasks.
+### Claude Desktop (`claude_desktop_config.json`)
 
-### Claude Desktop Configuration (`claude_desktop_config.json`)
 ```json
 {
   "mcpServers": {
@@ -225,66 +204,40 @@ AK5 implements the standard **Model Context Protocol (MCP)**, allowing agents to
 }
 ```
 
-### Cursor / Antigravity / Windsurf Configuration
-Add the server under your editor's MCP settings:
+### Cursor / Antigravity / Windsurf
+
 * **Command:** `uvx`
 * **Args:** `ak5-mcp`
 
-### Standard MCP Tools (6 Tools)
+### MCP tools
+
 | Tool Name | Parameters | Description |
 |---|---|---|
-| `ak5_list_boards` | *(none)* | Discover all registered Kanban boards and project IDs |
-| `ak5_list_available_agents` | `capability`, `search_query` | Find candidate peer agents by capability tag or natural-language query |
-| `ak5_delegate_subtask` | `parent_ticket_id`, `target_agent_id`, `title`, `description`, `priority` | Spawn a child subtask and assign it to a peer agent |
-| `ak5_get_ticket_context` | `ticket_id` | Retrieve ticket specification, subtask tree, comments, and execution context |
-| `ak5_update_ticket_status` | `ticket_id`, `column_name`, `status_note`, `execution_context` | Transition column stage (e.g. In Progress, Done) and log artifacts |
-| `ak5_report_block` | `ticket_id`, `blocking_reason`, `required_actor_id` | Set ticket state to `blocked` and notify assigned actor or PM |
+| `ak5_list_boards` | *(none)* | List boards (id, name, description) |
+| `ak5_list_available_agents` | `capability`, `search_query` | Find peer agents |
+| `ak5_delegate_subtask` | `parent_ticket_id`, `target_agent_id`, `title`, `description`, `priority` | Spawn & assign a child ticket |
+| `ak5_get_ticket_context` | `ticket_id` | Spec, subtasks, comments, execution context |
+| `ak5_update_ticket_status` | `ticket_id`, `column_name`, `status_note`, `execution_context` | Move column / log artifacts |
+| `ak5_report_block` | `ticket_id`, `blocking_reason`, `required_actor_id` | Mark blocked and notify |
 
 ---
 
-## 🛠️ Local Development & Testing
+## Web Dashboard & Remote Access (Tailscale)
+
+The Kanban UI is **bundled into the Python wheel** and served by FastAPI on the **same port** as the API. End users do not need Node.js or npm.
+
+### Launch
 
 ```bash
-# 1. Clone repository and sync virtual environment
-git clone https://github.com/fritzprix/ak5.git
-cd ak5
-uv sync
-uv pip install -e backend
-
-# 2. Run test suite (pytest + asyncio)
-uv run pytest backend/tests
-
-# 3. Code formatting and linting
-uv run ruff check
-
-# 4. Start backend in development mode (auto-reload)
-uv run ak5 serve --reload
-
-# 5. Start Next.js frontend (optional)
-cd frontend
-npm install
-npm run dev
-```
-
----
-
-## 🌐 Web Dashboard & Remote Access (Tailscale)
-
-AK5 features a responsive Next.js 15 Kanban Web Dashboard designed for human PMs and engineers. The frontend is **bundled directly into the Python package**, allowing FastAPI to serve both the REST API and the Web UI on a **single port (8000)** without requiring Node.js or npm to be installed.
-
-### 1. Launching the Web Dashboard
-```bash
-# Launch API + Web Dashboard on single port (auto-detects Tailscale and opens browser)
 ak5 web
-
-# Or with zero installation via uvx:
+# or
 uvx ak5 web
 
-# Custom host, port, or headless server mode:
 ak5 web --host 0.0.0.0 --port 8080 --no-browser
 ```
 
-When started, `ak5 web` automatically detects your network interfaces and displays an interactive connection panel:
+Example banner (Tailscale detected + auth enabled):
+
 ```text
 ╭────────────────── AK5 Kanban Web Dashboard ──────────────────╮
 │ Local:              http://127.0.0.1:8000                    │
@@ -297,51 +250,88 @@ When started, `ak5 web` automatically detects your network interfaces and displa
 ╰──────────────────────────────────────────────────────────────╯
 ```
 
----
+### Tailscale
 
-### 2. Remote Access via Tailscale
+1. **MagicDNS:** e.g. `http://my-machine.ts.net:8000`
+2. **CGNAT IPv4:** e.g. `http://100.x.y.z:8000`
+3. **CORS:** limited to `localhost`, `127.0.0.1`, Tailscale `100.x.y.z`, and `*.ts.net` (not an open `*` wildcard)
 
-AK5 comes with built-in network security configured for [Tailscale](https://tailscale.com/) VPN meshes:
-1. **MagicDNS Domain:** Access directly from any connected mobile phone, laptop, or tablet using your node domain (e.g., `http://my-machine.ts.net:8000`).
-2. **Private CGNAT IP:** Access via your private Tailscale IPv4 address (e.g., `http://100.x.y.z:8000`).
-3. **Tailscale-Aware CORS:** Cross-Origin Resource Sharing is strictly constrained to `localhost`, `127.0.0.1`, Tailscale IP ranges (`100.*.*.*`), and MagicDNS domains (`*.ts.net`), preventing unauthorized web origins from querying your gateway.
+### Optional password gate
 
----
+When binding to `0.0.0.0` or exposing over Tailscale, enable the HTTP login gate.
 
-### 3. Password Authentication & Brute-Force Defense
+**With a git checkout:**
 
-To secure your dashboard when binding to `0.0.0.0` or exposing over Tailscale, enable the built-in HTTP authentication gate:
+```bash
+cp .env.example .env
+```
 
-1. **Configure Credentials:**
-   Copy `.env.example` to `.env` (or export environment variables):
-   ```bash
-   cp .env.example .env
-   ```
-   Set your desired credentials:
-   ```env
-   AK5_AUTH_USERNAME=admin
-   AK5_AUTH_PASSWORD=your_super_secret_password
-   ```
+**With `uvx` / a global install** (no repo): create `.env` in the directory where you run `ak5 web`, or export:
 
-2. **Security Features:**
-   * **Zero-Friction Dev:** If `AK5_AUTH_PASSWORD` is omitted or empty, authentication is disabled so you can prototype locally without login screens.
-   * **Brute-Force Rate Limiting:** After **5 consecutive failed attempts** within 5 minutes from the same IP address, access is automatically locked for **10 minutes** (HTTP 429 `Too Many Requests` with `Retry-After: 600`).
-   * **Secure HTTP-Only Sessions:** Successful authentication issues an encrypted `ak5_auth` session cookie (`HttpOnly`, `SameSite=Lax`, 30-day lifetime).
-   * **Header Logout Action:** An active session displays the logged-in username badge and a one-click Sign Out button in the dashboard navigation bar.
+```bash
+export AK5_AUTH_USERNAME=admin
+export AK5_AUTH_PASSWORD=your_super_secret_password
+```
 
+`.env` / env contents:
 
+```env
+AK5_AUTH_USERNAME=admin
+AK5_AUTH_PASSWORD=your_super_secret_password
+```
 
----
-
-## 📚 Documentation & References
-
-* 📖 **Detailed Architecture & Operations Manual:** [MANUAL.md](./docs/MANUAL.md)
-* 🧩 **Antigravity / AI Agent Skill Guide:** [skills/ak5/SKILL.md](./skills/ak5/SKILL.md)
-* 📦 **PyPI Official Package:** [https://pypi.org/project/ak5/](https://pypi.org/project/ak5/)
+* **Zero-friction local use:** empty / unset `AK5_AUTH_PASSWORD` → auth disabled.
+* **Brute-force shield:** 5 failed attempts / 5 minutes per IP → 10-minute lockout (HTTP 429 + `Retry-After`).
+* **Session cookie:** HttpOnly, SameSite=Lax, 30-day **SHA-256 session digest** cookie named `ak5_auth` (not an encrypted payload).
+* **Header UI:** when auth is on, the dashboard shows the signed-in user and Sign Out.
 
 ---
 
-## 📄 License
+## Local Development & Testing
+
+```bash
+git clone https://github.com/fritzprix/ak5.git
+cd ak5
+uv sync
+uv pip install -e backend
+
+# Tests & lint
+uv run pytest backend/tests
+uv run ruff check backend
+
+# Build embedded dashboard assets into backend/src/ak5/web_ui/
+./scripts/build_web_ui.sh
+
+# Single-port gateway + UI (same as end users)
+uv run ak5 web --reload
+
+# API only
+uv run ak5 serve --reload
+```
+
+Hot-reload Next.js on `:3000` (dual-port, monorepo only):
+
+```bash
+# Terminal A — gateway
+uv run ak5 serve --host 0.0.0.0 --port 8000 --reload
+
+# Terminal B — Next.js (proxies /api/* to the gateway)
+cd frontend && npm install && npm run dev
+```
+
+Or: `AK5_LEGACY_WEB=1 ./start-web.sh`
+
+---
+
+## Documentation & References
+
+* **Architecture & operations:** [docs/MANUAL.md](./docs/MANUAL.md)
+* **Agent skill guide:** [skills/ak5/SKILL.md](./skills/ak5/SKILL.md)
+* **PyPI:** [https://pypi.org/project/ak5/](https://pypi.org/project/ak5/)
+
+---
+
+## License
 
 This project is licensed under the **Apache License, Version 2.0**.  
 See the [LICENSE](./LICENSE) file for the full license text.
