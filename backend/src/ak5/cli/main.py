@@ -21,7 +21,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="1.0.1", prog_name="ak5")
+@click.version_option(package_name="ak5", prog_name="ak5")
 def cli():
     """AK5 (Agent K5) - Agent-Orchestrated Kanban Command Line Interface."""
 

@@ -1,9 +1,16 @@
+from importlib.metadata import PackageNotFoundError, version
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+try:
+    _pkg_version = version("ak5")
+except PackageNotFoundError:
+    _pkg_version = "1.0.3"
 
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AK5"
-    VERSION: str = "1.0.2"
+    VERSION: str = _pkg_version
     API_V1_STR: str = "/api/v1"
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./ak5.db"
