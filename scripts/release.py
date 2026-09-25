@@ -23,6 +23,7 @@ FRONTEND_PKG_PATH = ROOT / "frontend" / "package.json"
 SDK_PKG_PATH = ROOT / "packages" / "sdk" / "package.json"
 LOCK_PATH = ROOT / "uv.lock"
 BUILD_SCRIPT = ROOT / "scripts" / "build_web_ui.sh"
+SMOKE_SCRIPT = ROOT / "scripts" / "smoke_uvx_wheel.sh"
 
 
 def run_cmd(cmd: list[str] | str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -34,6 +35,22 @@ def run_cmd(cmd: list[str] | str, cwd: Path | None = None, check: bool = True) -
         print(f"\033[0;31m✗ Command failed with code {res.returncode}\033[0m", file=sys.stderr)
         sys.exit(res.returncode)
     return res
+
+
+def latest_wheel() -> Path:
+    wheels = sorted((ROOT / "dist").glob("ak5-*.whl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not wheels:
+        raise FileNotFoundError("No dist/ak5-*.whl found after build")
+    return wheels[0]
+
+
+def smoke_test_wheel() -> None:
+    """Hard gate: wheel must boot in an isolated env like uvx (declared deps only)."""
+    if not SMOKE_SCRIPT.is_file():
+        print("\033[0;31m✗ scripts/smoke_uvx_wheel.sh missing — refusing to release\033[0m", file=sys.stderr)
+        sys.exit(1)
+    wheel = latest_wheel()
+    run_cmd(["bash", str(SMOKE_SCRIPT), str(wheel)])
 
 
 def get_current_version() -> str:
@@ -99,21 +116,21 @@ def main() -> None:
 
     # 1. Pre-flight tests & linting
     if not args.skip_tests:
-        print("\033[1m[1/6] Running pre-flight linting and tests...\033[0m")
+        print("\033[1m[1/7] Running pre-flight linting and tests...\033[0m")
         run_cmd(["uv", "run", "ruff", "check", "backend"])
         run_cmd(["uv", "run", "pytest", "backend/tests"])
     else:
-        print("\033[1m[1/6] Skipping pre-flight tests (--skip-tests)\033[0m")
+        print("\033[1m[1/7] Skipping pre-flight tests (--skip-tests)\033[0m")
 
     # 2. Build embedded Web UI
-    print("\n\033[1m[2/6] Building embedded Web UI assets...\033[0m")
+    print("\n\033[1m[2/7] Building embedded Web UI assets...\033[0m")
     if BUILD_SCRIPT.is_file():
         run_cmd(["bash", str(BUILD_SCRIPT)])
     else:
         print("\033[0;33m⚠️ build_web_ui.sh not found, skipping web UI compilation\033[0m")
 
     # 3. Update version numbers across files
-    print("\n\033[1m[3/6] Updating versions across packages...\033[0m")
+    print("\n\033[1m[3/7] Updating versions across packages...\033[0m")
     update_file_version(
         PYPROJECT_PATH,
         r'(version\s*=\s*)"[^"]+"',
@@ -125,18 +142,22 @@ def main() -> None:
         update_json_version(SDK_PKG_PATH, next_ver)
 
     # 4. Sync lockfile
-    print("\n\033[1m[4/6] Updating uv.lock...\033[0m")
+    print("\n\033[1m[4/7] Updating uv.lock...\033[0m")
     run_cmd(["uv", "lock"])
 
-    # 5. Build distribution package & verify
-    print("\n\033[1m[5/6] Building distribution packages (wheel + sdist)...\033[0m")
+    # 5. Build distribution package
+    print("\n\033[1m[5/7] Building distribution packages (wheel + sdist)...\033[0m")
     run_cmd(["rm", "-rf", "dist"])
     run_cmd(["uv", "build", "backend", "--out-dir", "dist"])
 
-    # 6. Commit, tag & push
+    # 6. Isolated wheel smoke (uvx contract) — MUST pass before tag/push
+    print("\n\033[1m[6/7] Isolated wheel smoke test (uvx-equivalent)...\033[0m")
+    smoke_test_wheel()
+
+    # 7. Commit, tag & push
     tag_name = f"v{next_ver}"
     if args.push:
-        print(f"\n\033[1m[6/6] Committing, tagging ({tag_name}), and pushing to origin...\033[0m")
+        print(f"\n\033[1m[7/7] Committing, tagging ({tag_name}), and pushing to origin...\033[0m")
         run_cmd(["git", "add", "backend/pyproject.toml", "frontend/package.json", "packages/sdk/package.json", "uv.lock"])
         run_cmd(["git", "commit", "-m", f"release: {tag_name} — bump version to {next_ver}"])
         run_cmd(["git", "tag", "-a", tag_name, "-m", f"{tag_name} release"])
@@ -145,7 +166,7 @@ def main() -> None:
         print(f"\n\033[1;32m🎉 Successfully pushed {tag_name} to origin!\033[0m")
         print(f"Check GitHub Actions release workflow: \033[0;36mgh run list --workflow=release.yml\033[0m")
     else:
-        print(f"\n\033[1;33m[6/6] Changes applied locally. Not pushed (--push not set).\033[0m")
+        print(f"\n\033[1;33m[7/7] Changes applied locally. Not pushed (--push not set).\033[0m")
         print(f"To finish release manually:")
         print(f"  git add backend/pyproject.toml frontend/package.json packages/sdk/package.json uv.lock")
         print(f"  git commit -m 'release: {tag_name} — bump version to {next_ver}'")

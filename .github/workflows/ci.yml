@@ -30,7 +30,7 @@ jobs:
 
       - name: Build embedded web UI into Python package
         run: |
-          chmod +x scripts/build_web_ui.sh
+          chmod +x scripts/build_web_ui.sh scripts/smoke_uvx_wheel.sh
           ./scripts/build_web_ui.sh
 
       - name: Install dependencies
@@ -44,6 +44,12 @@ jobs:
       - name: Run Ruff Lint
         run: |
           uvx ruff check backend
+
+      - name: Build wheel + isolated uvx smoke gate
+        run: |
+          rm -rf dist
+          uv build backend --out-dir dist
+          ./scripts/smoke_uvx_wheel.sh
 
   frontend-sdk-ci:
     name: Frontend & SDK Build & Lint

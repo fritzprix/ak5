@@ -33,9 +33,14 @@ jobs:
 
       - name: Build Wheel & Source Tarball
         run: |
-          chmod +x scripts/build_web_ui.sh
+          chmod +x scripts/build_web_ui.sh scripts/smoke_uvx_wheel.sh
           ./scripts/build_web_ui.sh
           uv build backend --out-dir dist
+
+      - name: Isolated wheel smoke (uvx-equivalent hard gate)
+        run: |
+          chmod +x scripts/smoke_uvx_wheel.sh
+          ./scripts/smoke_uvx_wheel.sh
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

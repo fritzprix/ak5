@@ -47,8 +47,9 @@ python3 scripts/release.py patch --push
    - `frontend/package.json`
    - `packages/sdk/package.json`
 4. **Lockfile Synchronization:** Executes `uv lock` to update `uv.lock`.
-5. **Distribution Validation:** Runs `uv build backend --out-dir dist` to verify wheel and sdist validity.
-6. **Git Tag & Push:** Commits changes, tags `v<version>`, and pushes both `master` and the tag to GitHub `origin`.
+5. **Distribution Build:** Runs `uv build backend --out-dir dist`.
+6. **Isolated wheel smoke (hard gate):** Runs `scripts/smoke_uvx_wheel.sh` — installs the wheel alone (like `uvx`), asserts `greenlet`/asyncio import, `ak5.main:app`, embedded UI, and CLI help. **Release must not tag/push if this fails.**
+7. **Git Tag & Push:** Commits changes, tags `v<version>`, and pushes both `master` and the tag to GitHub `origin`.
 
 ---
 
