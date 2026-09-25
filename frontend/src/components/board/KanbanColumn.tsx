@@ -1,15 +1,38 @@
 "use client";
 
 import React from "react";
+import { useSortable } from "@dnd-kit/sortable";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { Column, Ticket } from "@/lib/types";
+import { emptyColumnSlotId } from "@/lib/boardDnD";
 import { TicketCard } from "./TicketCard";
 
 interface KanbanColumnProps {
   column: Column;
   onOpenTicket?: (ticket: Ticket) => void;
   onDelegateClick?: (ticket: Ticket) => void;
+}
+
+function EmptyColumnSlot({ id, label }: { id: string; label: string }) {
+  const { setNodeRef, attributes, listeners, isDragging } = useSortable({
+    id,
+    data: { type: "EmptySlot", columnId: id },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      aria-label={`Empty ${label} column. Drop here.`}
+      className={`flex h-24 items-center justify-center rounded-lg border border-dashed border-[var(--border)] text-[11px] text-[var(--muted)] outline-none focus-visible:border-[var(--accent)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+        isDragging ? "opacity-40" : ""
+      }`}
+    >
+      Drop tickets here
+    </div>
+  );
 }
 
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({
@@ -23,6 +46,9 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   });
 
   const isOverWip = column.wip_limit > 0 && column.tickets.length > column.wip_limit;
+  const emptySlotId = emptyColumnSlotId(column.column_id);
+  const sortableIds =
+    column.tickets.length > 0 ? column.tickets.map((t) => t.ticket_id) : [emptySlotId];
 
   const stageDot =
     column.stage === "open"
@@ -55,7 +81,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
       </div>
 
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain p-2.5">
-        <SortableContext items={column.tickets.map((t) => t.ticket_id)} strategy={verticalListSortingStrategy}>
+        <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
           {column.tickets.map((ticket) => (
             <TicketCard
               key={ticket.ticket_id}
@@ -64,13 +90,10 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
               onDelegateClick={onDelegateClick}
             />
           ))}
+          {column.tickets.length === 0 ? (
+            <EmptyColumnSlot id={emptySlotId} label={column.name} />
+          ) : null}
         </SortableContext>
-
-        {column.tickets.length === 0 ? (
-          <div className="flex h-24 items-center justify-center rounded-lg border border-dashed border-[var(--border)] text-[11px] text-[var(--muted)]">
-            Drop tickets here
-          </div>
-        ) : null}
       </div>
     </div>
   );

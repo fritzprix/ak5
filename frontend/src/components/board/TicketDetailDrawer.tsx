@@ -11,7 +11,7 @@ import {
   type ReviewDecision,
 } from "@/lib/reviewDecision";
 import { Column, Ticket, TicketComment } from "@/lib/types";
-import { preferInitialFocus, trapTabKey } from "@/lib/focusTrap";
+import { preferReaderFocus, trapTabKey } from "@/lib/focusTrap";
 import { ActorBadge } from "../actor/ActorBadge";
 
 interface TicketDetailDrawerProps {
@@ -92,8 +92,9 @@ export function TicketDetailDrawer({
       const panel = panelRef.current;
       if (!panel) return;
       if (!panel.hasAttribute("tabindex")) panel.tabIndex = -1;
-      // Prefer the review/comment box so keyboard users can type immediately.
-      preferInitialFocus(panel).focus();
+      // Reader mode: focus Close (not the bottom comment box) so mobile keyboards
+      // and screen-reader cursors stay at the top of the ticket.
+      preferReaderFocus(panel).focus();
     }, 0);
 
     return () => {
@@ -204,7 +205,13 @@ export function TicketDetailDrawer({
             <p className="font-mono text-[11px] text-[var(--muted)]">{detail.ticket_id}</p>
             <h2 className="mt-1 text-lg font-semibold leading-snug text-[var(--foreground)]">{detail.title}</h2>
           </div>
-          <button type="button" className="ak-btn-ghost p-1.5" aria-label="Close" onClick={onClose}>
+          <button
+            type="button"
+            className="ak-btn-ghost p-1.5"
+            aria-label="Close"
+            data-drawer-close
+            onClick={onClose}
+          >
             <X className="h-4 w-4" />
           </button>
         </div>

@@ -69,7 +69,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({
         </button>
         <button
           type="button"
-          className="min-w-0 flex-1 text-left"
+          className="min-w-0 flex-1 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
           onClick={() => onOpen?.(ticket)}
         >
           <h4 className="text-sm font-medium leading-snug text-[var(--foreground)] group-hover:text-[var(--accent-hover)]">

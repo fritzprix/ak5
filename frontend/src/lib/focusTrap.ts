@@ -1,6 +1,6 @@
 /**
  * Lightweight focus-trap helpers for modal dialogs and drawers.
- * Pure functions are unit-tested; the hook wires DOM listeners.
+ * Pure functions are unit-tested; callers wire DOM listeners.
  */
 
 const FOCUSABLE_SELECTOR = [
@@ -47,6 +47,7 @@ export function trapTabKey(root: HTMLElement, event: KeyboardEvent): boolean {
   return false;
 }
 
+/** For input-first modals (create ticket, delegate). Prefers text fields. */
 export function preferInitialFocus(root: HTMLElement): HTMLElement {
   const preferred = root.querySelector<HTMLElement>(
     "textarea:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled])"
@@ -54,4 +55,18 @@ export function preferInitialFocus(root: HTMLElement): HTMLElement {
   if (preferred) return preferred;
   const focusables = listFocusable(root);
   return focusables[0] ?? root;
+}
+
+/**
+ * For inspection panels (ticket drawer). Prefer Close / panel so mobile keyboards
+ * and screen-reader cursors are not yanked into the bottom comment box.
+ */
+export function preferReaderFocus(root: HTMLElement): HTMLElement {
+  const closeBtn = root.querySelector<HTMLElement>("[data-drawer-close]");
+  if (closeBtn) return closeBtn;
+  const focusables = listFocusable(root);
+  const nonField = focusables.find(
+    (el) => el.tagName !== "TEXTAREA" && el.tagName !== "INPUT" && el.tagName !== "SELECT"
+  );
+  return nonField ?? root;
 }

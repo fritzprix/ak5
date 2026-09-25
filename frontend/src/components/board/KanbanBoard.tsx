@@ -24,6 +24,13 @@ import {
 } from "@/lib/api";
 import { buildAgentSetupMarkdown } from "@/lib/agentSetup";
 import { decideLiveRefresh, shouldFlushDeferredRefresh } from "@/lib/liveRefresh";
+import {
+  buildTicketIndex,
+  isEmptyColumnSlotId,
+  resolveDropLabel,
+  resolveTargetColumnId,
+  resolveTicketTitle,
+} from "@/lib/boardDnD";
 import { Board, Column, Ticket, Actor } from "@/lib/types";
 import { KanbanColumn } from "./KanbanColumn";
 import { TicketCard } from "./TicketCard";
@@ -218,22 +225,19 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     if (!over || !board) return;
 
     const activeId = active.id as string;
+    if (isEmptyColumnSlotId(activeId)) return;
+
     const overId = over.id as string;
+    const targetColumnId = resolveTargetColumnId(overId, board);
+    if (!targetColumnId) return;
 
-    let targetCol: Column | undefined = board.columns.find((c) => c.column_id === overId);
-    let targetIndex = -1;
-
-    if (!targetCol) {
-      for (const col of board.columns) {
-        const idx = col.tickets.findIndex((t) => t.ticket_id === overId);
-        if (idx !== -1) {
-          targetCol = col;
-          targetIndex = idx;
-          break;
-        }
-      }
-    }
+    let targetCol: Column | undefined = board.columns.find((c) => c.column_id === targetColumnId);
     if (!targetCol) return;
+
+    let targetIndex = -1;
+    if (!isEmptyColumnSlotId(overId) && overId !== targetColumnId) {
+      targetIndex = targetCol.tickets.findIndex((t) => t.ticket_id === overId);
+    }
 
     const destTickets = targetCol.tickets.filter((t) => t.ticket_id !== activeId);
     let prevId: string | null = null;
@@ -324,6 +328,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   }
 
   const agents = actors.filter((a) => a.actor_type === "agent");
+  const ticketIndex = buildTicketIndex(board);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -394,18 +399,24 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
         accessibility={{
           announcements: {
             onDragStart({ active }) {
-              return `Picked up ticket ${String(active.id)}. Use arrow keys to move, Space to drop.`;
+              const title = resolveTicketTitle(String(active.id), ticketIndex);
+              return `Picked up ticket "${title}". Use arrow keys to move, Space to drop.`;
             },
             onDragOver({ active, over }) {
-              if (!over) return `Ticket ${String(active.id)} is no longer over a droppable area.`;
-              return `Ticket ${String(active.id)} is over ${String(over.id)}.`;
+              const title = resolveTicketTitle(String(active.id), ticketIndex);
+              if (!over) return `Ticket "${title}" is no longer over a droppable area.`;
+              const where = resolveDropLabel(String(over.id), board.columns, ticketIndex);
+              return `Ticket "${title}" is over ${where}.`;
             },
             onDragEnd({ active, over }) {
-              if (!over) return `Dragging cancelled for ticket ${String(active.id)}.`;
-              return `Dropped ticket ${String(active.id)} on ${String(over.id)}.`;
+              const title = resolveTicketTitle(String(active.id), ticketIndex);
+              if (!over) return `Dragging cancelled for ticket "${title}".`;
+              const where = resolveDropLabel(String(over.id), board.columns, ticketIndex);
+              return `Dropped "${title}" into ${where}.`;
             },
             onDragCancel({ active }) {
-              return `Dragging cancelled for ticket ${String(active.id)}.`;
+              const title = resolveTicketTitle(String(active.id), ticketIndex);
+              return `Dragging cancelled for ticket "${title}".`;
             },
           },
         }}
