@@ -1,6 +1,6 @@
 {
   "name": "ak5",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "AK5: Agent-Orchestrated Kanban Web Dashboard & Client SDK",
   "bin": {
     "ak5": "./bin/cli.js"
