@@ -6,12 +6,14 @@ import {
   DragEndEvent,
   DragOverlay,
   DragStartEvent,
+  KeyboardSensor,
   MouseSensor,
   TouchSensor,
   useSensor,
   useSensors,
   closestCorners,
 } from "@dnd-kit/core";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import {
   fetchBoard,
   fetchActors,
@@ -72,6 +74,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     useSensor(TouchSensor, {
       // Delay so vertical/horizontal board scroll is not stolen by drag on phones
       activationConstraint: { delay: 220, tolerance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
     })
   );
 
@@ -386,7 +391,29 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
         collisionDetection={closestCorners}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
+        accessibility={{
+          announcements: {
+            onDragStart({ active }) {
+              return `Picked up ticket ${String(active.id)}. Use arrow keys to move, Space to drop.`;
+            },
+            onDragOver({ active, over }) {
+              if (!over) return `Ticket ${String(active.id)} is no longer over a droppable area.`;
+              return `Ticket ${String(active.id)} is over ${String(over.id)}.`;
+            },
+            onDragEnd({ active, over }) {
+              if (!over) return `Dragging cancelled for ticket ${String(active.id)}.`;
+              return `Dropped ticket ${String(active.id)} on ${String(over.id)}.`;
+            },
+            onDragCancel({ active }) {
+              return `Dragging cancelled for ticket ${String(active.id)}.`;
+            },
+          },
+        }}
       >
+        <p className="sr-only">
+          Keyboard: focus a ticket handle, press Space to pick up, arrow keys to move between columns,
+          Space to drop.
+        </p>
         <div className="ak-board-scroll flex min-h-0 flex-1 gap-3 overflow-x-auto overflow-y-hidden pb-1">
           {board.columns.map((column) => (
             <KanbanColumn

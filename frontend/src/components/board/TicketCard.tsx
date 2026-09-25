@@ -59,9 +59,9 @@ export const TicketCard: React.FC<TicketCardProps> = ({
       <div className="mb-2 flex items-start gap-1.5">
         <button
           type="button"
-          className="mt-0.5 shrink-0 cursor-grab touch-none rounded p-0.5 text-[var(--muted)] active:cursor-grabbing"
-          aria-label={`Drag ticket ${ticket.ticket_id}`}
-          title="Drag to move"
+          className="mt-0.5 shrink-0 cursor-grab touch-none rounded p-0.5 text-[var(--muted)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] active:cursor-grabbing"
+          aria-label={`Move ticket ${ticket.ticket_id}. Press Space to pick up, arrow keys to move, Space to drop.`}
+          title="Drag or keyboard: Space + arrows"
           {...attributes}
           {...listeners}
         >

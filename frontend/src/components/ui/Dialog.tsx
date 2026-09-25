@@ -2,6 +2,7 @@
 
 import React, { useEffect, useId, useRef } from "react";
 import { X } from "lucide-react";
+import { preferInitialFocus, trapTabKey } from "@/lib/focusTrap";
 
 interface DialogProps {
   open: boolean;
@@ -24,25 +25,28 @@ export function Dialog({ open, onClose, title, children, footer, size = "md" }: 
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // Only run focus / body-lock when `open` flips — never on parent re-renders
-  // (unstable onClose identity used to re-focus the first control on every keystroke).
+  // Only run focus / body-lock when `open` flips — never on parent re-renders.
   useEffect(() => {
     if (!open) return;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
+      if (e.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+      const panel = panelRef.current;
+      if (panel) trapTabKey(panel, e);
     };
     document.addEventListener("keydown", onKey);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
     const previous = document.activeElement as HTMLElement | null;
-    // Defer so the dialog DOM is mounted before querying focusables.
     const focusTimer = window.setTimeout(() => {
-      const focusable = panelRef.current?.querySelector<HTMLElement>(
-        'input, select, textarea, button, [href], [tabindex]:not([tabindex="-1"])'
-      );
-      focusable?.focus();
+      const panel = panelRef.current;
+      if (!panel) return;
+      if (!panel.hasAttribute("tabindex")) panel.tabIndex = -1;
+      preferInitialFocus(panel).focus();
     }, 0);
 
     return () => {

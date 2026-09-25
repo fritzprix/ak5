@@ -11,6 +11,7 @@ import {
   type ReviewDecision,
 } from "@/lib/reviewDecision";
 import { Column, Ticket, TicketComment } from "@/lib/types";
+import { preferInitialFocus, trapTabKey } from "@/lib/focusTrap";
 import { ActorBadge } from "../actor/ActorBadge";
 
 interface TicketDetailDrawerProps {
@@ -39,6 +40,7 @@ export function TicketDetailDrawer({
   const [submitting, setSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
   const commentFieldId = useId();
+  const panelRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -72,15 +74,33 @@ export function TicketDetailDrawer({
 
   useEffect(() => {
     if (!ticketId) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
-    };
-    document.addEventListener("keydown", onKey);
+    const previous = document.activeElement as HTMLElement | null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+      const panel = panelRef.current;
+      if (panel) trapTabKey(panel, e);
+    };
+    document.addEventListener("keydown", onKey);
+
+    const focusTimer = window.setTimeout(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      if (!panel.hasAttribute("tabindex")) panel.tabIndex = -1;
+      // Prefer the review/comment box so keyboard users can type immediately.
+      preferInitialFocus(panel).focus();
+    }, 0);
+
     return () => {
+      window.clearTimeout(focusTimer);
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = previousOverflow;
+      previous?.focus?.();
     };
   }, [ticketId]);
 
@@ -173,6 +193,7 @@ export function TicketDetailDrawer({
         onClick={onClose}
       />
       <aside
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label={`Ticket ${detail.ticket_id}`}
