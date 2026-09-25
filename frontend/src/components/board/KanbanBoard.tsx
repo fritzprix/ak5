@@ -142,6 +142,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     }
   }, [isUiBlocking, reloadBoard]);
 
+  const closeNewTicket = useCallback(() => setIsNewTicketOpen(false), []);
+  const closeDelegate = useCallback(() => setDelegatingTicket(null), []);
+  const closeAgentSetup = useCallback(() => {
+    setIsAgentSetupOpen(false);
+    setCopyError(null);
+  }, []);
+  const closeDetail = useCallback(() => setDetailTicket(null), []);
+
   const copyAgentSetup = async () => {
     if (!board) return;
     const instructions = buildAgentSetupMarkdown(board, actors);
@@ -398,7 +406,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       <TicketDetailDrawer
         ticket={detailTicket}
         columns={board.columns}
-        onClose={() => setDetailTicket(null)}
+        onClose={closeDetail}
         onDelegate={setDelegatingTicket}
         onCommented={() => {
           // Drawer stays open (live refresh paused); flush board when it closes.
@@ -412,11 +420,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
       <Dialog
         open={isNewTicketOpen}
-        onClose={() => setIsNewTicketOpen(false)}
+        onClose={closeNewTicket}
         title="Create ticket"
         footer={
           <>
-            <button type="button" className="ak-btn-ghost" onClick={() => setIsNewTicketOpen(false)}>
+            <button type="button" className="ak-btn-ghost" onClick={closeNewTicket}>
               Cancel
             </button>
             <button type="submit" form="create-ticket-form" className="ak-btn-primary">
@@ -473,12 +481,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
       <Dialog
         open={Boolean(delegatingTicket)}
-        onClose={() => setDelegatingTicket(null)}
+        onClose={closeDelegate}
         title="Delegate subtask"
         size="lg"
         footer={
           <>
-            <button type="button" className="ak-btn-ghost" onClick={() => setDelegatingTicket(null)}>
+            <button type="button" className="ak-btn-ghost" onClick={closeDelegate}>
               Cancel
             </button>
             <button type="submit" form="delegate-form" className="ak-btn-primary">
@@ -536,22 +544,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
       <Dialog
         open={isAgentSetupOpen}
-        onClose={() => {
-          setIsAgentSetupOpen(false);
-          setCopyError(null);
-        }}
+        onClose={closeAgentSetup}
         title="Agent setup"
         size="xl"
         footer={
           <>
-            <button
-              type="button"
-              className="ak-btn-ghost"
-              onClick={() => {
-                setIsAgentSetupOpen(false);
-                setCopyError(null);
-              }}
-            >
+            <button type="button" className="ak-btn-ghost" onClick={closeAgentSetup}>
               Close
             </button>
             <button type="button" className="ak-btn-primary" onClick={copyAgentSetup}>

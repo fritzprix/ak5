@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useId, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { Check, RotateCcw, Send, X } from "lucide-react";
 import { addComment, fetchTicket, moveTicket } from "@/lib/api";
 import {
@@ -39,6 +39,8 @@ export function TicketDetailDrawer({
   const [submitting, setSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
   const commentFieldId = useId();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!ticketId) {
@@ -71,7 +73,7 @@ export function TicketDetailDrawer({
   useEffect(() => {
     if (!ticketId) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     const previousOverflow = document.body.style.overflow;
@@ -80,7 +82,7 @@ export function TicketDetailDrawer({
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = previousOverflow;
     };
-  }, [ticketId, onClose]);
+  }, [ticketId]);
 
   const appendCommentLocally = (created: TicketComment) => {
     setDetail((prev) => {

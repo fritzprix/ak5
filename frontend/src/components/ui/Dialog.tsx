@@ -21,29 +21,37 @@ const sizeClass: Record<NonNullable<DialogProps["size"]>, string> = {
 export function Dialog({ open, onClose, title, children, footer, size = "md" }: DialogProps) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
+  // Only run focus / body-lock when `open` flips — never on parent re-renders
+  // (unstable onClose identity used to re-focus the first control on every keystroke).
   useEffect(() => {
     if (!open) return;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
     const previous = document.activeElement as HTMLElement | null;
-    const focusable = panelRef.current?.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    focusable?.focus();
+    // Defer so the dialog DOM is mounted before querying focusables.
+    const focusTimer = window.setTimeout(() => {
+      const focusable = panelRef.current?.querySelector<HTMLElement>(
+        'input, select, textarea, button, [href], [tabindex]:not([tabindex="-1"])'
+      );
+      focusable?.focus();
+    }, 0);
 
     return () => {
+      window.clearTimeout(focusTimer);
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = previousOverflow;
       previous?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -52,7 +60,7 @@ export function Dialog({ open, onClose, title, children, footer, size = "md" }: 
       className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4"
       style={{ background: "rgba(6, 10, 16, 0.72)" }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) onCloseRef.current();
       }}
     >
       <div
@@ -69,7 +77,7 @@ export function Dialog({ open, onClose, title, children, footer, size = "md" }: 
           <button
             type="button"
             aria-label="Close dialog"
-            onClick={onClose}
+            onClick={() => onCloseRef.current()}
             className="ak-btn-ghost p-1.5"
           >
             <X className="h-4 w-4" />
