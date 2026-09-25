@@ -1,6 +1,6 @@
 [project]
 name = "ak5"
-version = "1.0.9"
+version = "1.0.10"
 description = "AK5: Agent-Orchestrated Kanban System Gateway, MCP Server & CLI"
 readme = "README.md"
 license = { text = "Apache-2.0" }
