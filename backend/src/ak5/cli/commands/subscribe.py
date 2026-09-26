@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shlex
 import time
 from typing import Any
 
@@ -13,9 +14,12 @@ from rich.panel import Panel
 console = Console()
 
 
-def extract_event_context(event_type: str, data: dict[str, Any], default_board_id: str | None = None) -> dict[str, str]:
+def extract_event_context(event_type: str, data: dict[str, Any]) -> dict[str, str]:
     """Extract standard template placeholders and summaries from an event payload."""
-    ticket = data.get("ticket") or data.get("subtask") or {}
+    ticket = data.get("ticket") or data.get("subtask")
+    if not isinstance(ticket, dict):
+        ticket = {}
+
     ticket_id = (
         ticket.get("ticket_id")
         or data.get("ticket_id")
@@ -25,11 +29,11 @@ def extract_event_context(event_type: str, data: dict[str, Any], default_board_i
     board_id = (
         data.get("board_id")
         or ticket.get("board_id")
-        or default_board_id
         or ""
     )
     title = ticket.get("title", "")
-    actor_id = data.get("actor_id") or data.get("comment", {}).get("actor_id") or ""
+    comment = data.get("comment") if isinstance(data.get("comment"), dict) else {}
+    actor_id = data.get("actor_id") or comment.get("actor_id") or ""
     status = ticket.get("status", "")
     column_id = ticket.get("column_id", "")
     from_column = data.get("from_column", "")
@@ -73,12 +77,18 @@ def extract_event_context(event_type: str, data: dict[str, Any], default_board_i
 
 
 def render_command_string(template: str, context: dict[str, str]) -> str:
-    """Substitute placeholders like {ticket_id} in the command template."""
+    """Substitute placeholders like {ticket_id} safely in the command template using shlex.quote.
+
+    Handles bare placeholders {key} as well as explicitly quoted '{key}' or "{key}".
+    Already-quoted forms are replaced first so wrapper quotes are not left behind.
+    """
     rendered = template
     for key, val in context.items():
-        placeholder = f"{{{key}}}"
-        if placeholder in rendered:
-            rendered = rendered.replace(placeholder, val)
+        quoted_val = shlex.quote(str(val))
+        placeholder = "{" + key + "}"
+        rendered = rendered.replace(f"'{placeholder}'", quoted_val)
+        rendered = rendered.replace(f'"{placeholder}"', quoted_val)
+        rendered = rendered.replace(placeholder, quoted_val)
     return rendered
 
 
@@ -174,12 +184,12 @@ async def run_subscription_loop(
                 if event_type.upper() == "CONNECTED" and (not event_filter or "CONNECTED" not in event_filter):
                     continue
 
-                context = extract_event_context(event_type, data, target_board_id)
+                context = extract_event_context(event_type, data)
 
                 # 1. Board ID filter (if specified and not wildcard)
                 if target_board_id and target_board_id not in ("*", "all"):
                     event_board = context["board_id"]
-                    if event_board and event_board != target_board_id:
+                    if not event_board or event_board != target_board_id:
                         continue
 
                 # 2. Event type filter

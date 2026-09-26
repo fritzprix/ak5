@@ -1,3 +1,5 @@
+import shlex
+
 import pytest
 from ak5.cli.commands.subscribe import (
     execute_subscriber_command,
@@ -58,6 +60,36 @@ def test_render_command_string():
     }
     rendered = render_command_string(template, ctx)
     assert rendered == "curl -X POST https://example.com/api?ticket=TK-007&event=TICKET_DELEGATED -d 'Secret Task'"
+
+
+def test_render_command_string_injection_safety():
+    # Attempting shell injection via title with quotes and commands
+    malicious = "Safe Title'; rm -rf /; echo 'pwned"
+    ctx = {"title": malicious}
+    expected = f"echo {shlex.quote(malicious)}"
+
+    rendered = render_command_string("echo {title}", ctx)
+    assert rendered == expected
+
+    # Template with explicit quotes around the placeholder must collapse to one safe token
+    rendered_single = render_command_string("echo '{title}'", ctx)
+    rendered_double = render_command_string('echo "{title}"', ctx)
+    assert rendered_single == expected
+    assert rendered_double == expected
+
+
+def test_extract_event_context_malformed_nested_data():
+    # Ticket and comment are not dicts
+    data = {
+        "ticket": "invalid_string_ticket",
+        "comment": 12345,
+        "actor_id": "tester",
+    }
+    ctx = extract_event_context("COMMENT_ADDED", data)
+    assert ctx["actor_id"] == "tester"
+    assert ctx["ticket_id"] == ""
+    assert ctx["board_id"] == ""
+
 
 
 @pytest.mark.asyncio
@@ -137,5 +169,62 @@ async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch)
     )
 
     assert output_file.exists()
-    assert output_file.read_text().strip() == "TICKET_CREATED:TK-777:Auto Trigger"
+    # Title contains a space, so shlex.quote wraps it in single quotes
+    assert output_file.read_text().strip() == "TICKET_CREATED:TK-777:'Auto Trigger'"
+
+
+@pytest.mark.asyncio
+async def test_subscription_loop_skips_unmatched_or_missing_board(tmp_path, monkeypatch):
+    output_file = tmp_path / "handled_unmatched.txt"
+    exec_cmd = f'echo "{{event}}:{{ticket_id}}" > "{output_file}"'
+
+    # 1. Event from different board
+    # 2. Event with no board_id at all
+    sse_lines = [
+        "event: TICKET_CREATED",
+        'data: {"board_id": "other-board", "ticket": {"ticket_id": "TK-888", "title": "Other Board Ticket"}}',
+        "",
+        "event: TICKET_CREATED",
+        'data: {"ticket": {"ticket_id": "TK-999", "title": "Missing Board Ticket"}}',
+        "",
+    ]
+
+    class FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+        async def aiter_lines(self):
+            for line in sse_lines:
+                yield line
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+        def stream(self, method, url):
+            return FakeStream()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+
+    from ak5.cli.commands.subscribe import run_subscription_loop
+
+    await run_subscription_loop(
+        api_url="http://test",
+        target_board_id="proj-core-engine",
+        exec_template=exec_cmd,
+        run_once=True,
+    )
+
+    # Neither event matches target_board_id "proj-core-engine", so output file should NOT be created
+    assert not output_file.exists()
+
 
