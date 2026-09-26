@@ -95,4 +95,4 @@ const unsubscribe = client.subscribeToEvents((event) => {
 ---
 
 ## License
-MIT © AK5 Team
+Apache-2.0 © AK5 Team

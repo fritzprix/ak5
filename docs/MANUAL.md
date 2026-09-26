@@ -49,15 +49,22 @@ AK5는 **인간 사용자(PM/엔지니어)와 자율 AI 에이전트가 단일 �
 ### 2.1 무설치 즉시 실행 (Zero-Install: `uvx`)
 패키지 설치나 코드 복제 없이 바로 체험할 수 있습니다:
 ```bash
-# 1. AI 협업 시뮬레이션 데모 1초 실행
-uvx ak5 demo
+# 1. 단일 포트 게이트웨이 + 웹 대시보드 실행 (:8000, 권장 엔트리포인트)
+uvx ak5 web
 
-# 2. 백엔드 게이트웨이 및 임베디드 MCP 서버 실행
+# 2. API 전용 게이트웨이 및 임베디드 MCP 서버 실행 (헤드리스)
 uvx ak5 serve
 
 # 3. 실시간 터미널 칸반 보드 뷰어
 uvx ak5 board --watch
+
+# 4. AI 협업 시뮬레이션 데모 실행
+uvx ak5 demo
 ```
+* **웹 대시보드:** `http://127.0.0.1:8000/` (Next.js 웹 UI가 내장되어 Node.js/npm 설치 불필요)
+* **Swagger API 문서:** `http://127.0.0.1:8000/docs`
+* **SSE 이벤트 스트림:** `http://127.0.0.1:8000/api/v1/events/stream`
+* **MCP SSE 브릿지:** `http://127.0.0.1:8000/mcp/sse`
 
 ### 2.2 패키지 설치 (`pip` / `uv`)
 ```bash
@@ -67,22 +74,32 @@ uv tool install ak5
 ```
 
 ### 2.3 저장소 소스코드 개발 환경 실행
-* **요구사항:** Python 3.11+, uv, Node.js 18+
+* **요구사항:** Python 3.11+, uv, Node.js 18+ (정적 빌드 시)
 ```bash
 # 1. 의존성 설치 및 로컬 패키지 동기화
 uv sync
 uv pip install -e backend
 
-# 2. 백엔드 게이트웨이 기동 (기본 포트 8000)
+# 2. 임베디드 웹 UI 정적 빌드 (Python 패키지에 Next.js 에셋 포함)
+./scripts/build_web_ui.sh
+
+# 3. 단일 포트 게이트웨이 + 웹 UI 실행 (:8000)
+uv run ak5 web --reload
+
+# 4. API 전용 게이트웨이 기동
 uv run ak5 serve --reload
 ```
 * 서버가 정상 기동되면 SQLite WAL DB (`ak5.db`)가 자동 생성되며, 기본 보드(`proj-core-engine`)와 기본 액터(`user_pm`, `agent_image_worker`, `agent_code_reviewer`)가 자동 시딩됩니다.
 * **Swagger API 문서:** `http://127.0.0.1:8000/docs`
 * **MCP SSE 브릿지:** `http://127.0.0.1:8000/mcp/sse`
 
-### 2.3 프론트엔드 (Next.js 15 Web UI) 실행
+### 2.4 프론트엔드 핫 리로드 개발 환경 (Next.js 15 Web UI)
+프론트엔드 소스코드를 실시간으로 수정하며 개발할 때 사용하는 듀얼 포트 모드입니다:
 ```bash
-# 별도 터미널 창에서 실행
+# 터미널 A: 백엔드 게이트웨이 기동 (:8000)
+uv run ak5 serve --reload
+
+# 터미널 B: Next.js 개발 서버 기동 (:3000, /api/* 요청을 게이트웨이로 프록시)
 cd frontend
 npm install
 npm run dev
@@ -284,7 +301,20 @@ Claude Desktop, Cursor, Antigravity, LibrAgent 등의 자율 AI 에이전트가 
 
 ### 5.1 MCP 클라이언트 설정 예시
 
-#### Claude Desktop (`claude_desktop_config.json`) 또는 Cursor / Antigravity
+#### 무설치 실행 (Zero-Install: `uvx` 권장)
+Claude Desktop (`claude_desktop_config.json`) 또는 Cursor, Antigravity, Windsurf:
+```json
+{
+  "mcpServers": {
+    "ak5": {
+      "command": "uvx",
+      "args": ["ak5-mcp"]
+    }
+  }
+}
+```
+
+#### 로컬 저장소 개발 환경 (소스코드 직접 실행)
 ```json
 {
   "mcpServers": {
@@ -323,21 +353,37 @@ Claude Desktop, Cursor, Antigravity, LibrAgent 등의 자율 AI 에이전트가 
 
 ## 6. REST API 엔드포인트 요약
 
-모든 엔드포인트는 `http://127.0.0.1:8000/api/v1` 기본 접두사를 갖습니다.
+핵심 비즈니스 엔드포인트는 `http://127.0.0.1:8000/api/v1` 접두사를 가지며, 대시보드 웹 인증 게이트는 `/api/auth`, 시스템 상태는 `/health`에 위치합니다. 전체 대화형 스웨거 문서는 `http://127.0.0.1:8000/docs`에서 확인할 수 있습니다.
+
+### 6.1 핵심 비즈니스 API (`/api/v1`)
 
 | 메서드 | 경로 | 설명 |
 | :--- | :--- | :--- |
 | `POST` | `/auth/identify` | 액터 등록/갱신 및 JWT 토큰 발급 |
-| `GET` | `/actors/discovery` | 역량(`?capability=`) 및 쿼리(`?query=`) 기반 에이전트 검색 |
-| `GET` | `/actors` | 전체 액터 목록 조회 |
+| `GET` | `/actors/discovery` | 역량(`?capability=`), 상태(`?status=`), 쿼리(`?query=`) 기반 에이전트 검색 |
+| `GET` | `/actors` | 전체 액터 목록 조회 (`?actor_type=human\|agent`) |
+| `GET` | `/actors/{actor_id}` | 특정 액터 상세 정보 조회 |
+| `PATCH`| `/actors/{actor_id}` | 액터 정보(이름, 역할, 상태, 역량 등) 수정 |
 | `GET` | `/boards` | 전체 보드 목록 요약 조회 |
+| `POST` | `/boards` | 신규 보드 개설 및 표준 4개 컬럼 자동 생성 |
 | `GET` | `/boards/{board_id}` | 보드 컬럼 및 순서화된 티켓 계층 트리 반환 |
+| `POST` | `/boards/{board_id}/columns` | 특정 보드에 커스텀 컬럼 추가 |
 | `POST` | `/tickets` | 신규 티켓 생성 및 Lexorank 부여 |
 | `GET` | `/tickets/{ticket_id}` | 티켓 상세, 서브태스크 통계, 코멘트 목록 조회 |
+| `PATCH`| `/tickets/{ticket_id}` | 티켓 필드 수정 (제목, 설명, 우선순위, 담당자, 상태, 블록 사유 등) |
 | `PATCH`| `/tickets/{ticket_id}/move` | 티켓 컬럼 이동 및 인접 카드 기반 새 Lexorank 계산 |
 | `POST` | `/tickets/{ticket_id}/delegate` | 서브태스크 생성, 부모-자식 연결, 위임 코멘트 기록 |
 | `POST` | `/tickets/{ticket_id}/comments` | 일반 또는 에이전트 내부 추론(`is_internal=true`) 코멘트 작성 |
 | `GET` | `/events/stream` | Server-Sent Events (SSE) 실시간 브로드캐스트 스트림 |
+
+### 6.2 웹 대시보드 인증 및 시스템 API
+
+| 메서드 | 경로 | 설명 |
+| :--- | :--- | :--- |
+| `POST` | `/api/auth/login` | 웹 대시보드 로그인 (비밀번호 게이트 활성화 시, 브루트포스 방어 적용) |
+| `POST` | `/api/auth/logout` | 웹 대시보드 세션 쿠키(`ak5_auth`) 만료 및 로그아웃 |
+| `GET` | `/api/auth/status` | 현재 웹 인증 게이트 활성화 여부 및 세션 유효 상태 조회 |
+| `GET` | `/health` | 게이트웨이 상태 확인 및 버전 정보 반환 |
 
 ---
 
@@ -359,6 +405,12 @@ Claude Desktop, Cursor, Antigravity, LibrAgent 등의 자율 AI 에이전트가 
 
 ## 8. 테스트 실행
 ```bash
-# 19개 전체 유닛 및 통합 테스트 실행
+# 전체 백엔드 유닛 및 통합 테스트 실행 (38개 테스트)
 uv run pytest backend/tests
+
+# 코드 스타일 및 린트 검사
+uv run ruff check backend
+
+# 프론트엔드 유닛 테스트 실행
+npm --prefix frontend test
 ```
