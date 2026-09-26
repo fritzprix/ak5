@@ -170,6 +170,10 @@ def view_ticket_cmd(ticket_id: str) -> None:
         labels = t.get("labels", [])
         if labels:
             meta_table.add_row("Labels", ", ".join(labels))
+        if t.get("is_archived"):
+            arch_at = t.get("archived_at") or ""
+            arch_str = f" (at {arch_at[:19].replace('T', ' ')})" if arch_at else ""
+            meta_table.add_row("Archived", f"[bold red]YES[/bold red]{arch_str}")
 
         desc = t.get("description") or "[dim](No description provided)[/dim]"
 
@@ -521,6 +525,162 @@ def download_attachment_cmd(ticket_id: str, attachment_id: str, output: str | No
         console.print(
             f"[bold red]✗ Attachment download failed ({e.response.status_code}):[/bold red] {e.response.text}"
         )
+    except Exception as e:
+        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+
+
+@ticket_group.command("list")
+@click.option("--board", "-b", "board_id", default=None, help="Filter by Board ID")
+@click.option("--archived", is_flag=True, default=False, help="List only archived tickets")
+@click.option("--all", "include_all", is_flag=True, default=False, help="List all tickets (active and archived)")
+@click.option(
+    "--status", "-s", default=None, type=click.Choice(["open", "in_progress", "blocked", "done"]), help="Filter by status"
+)
+@click.option(
+    "--stage", default=None, type=click.Choice(["open", "in_progress", "review", "done"]), help="Filter by column stage"
+)
+@click.option("--assign", "-a", "assigned_to", default=None, help="Filter by assignee actor ID")
+@click.option("--creator", default=None, help="Filter by creator actor ID")
+@click.option("--label", "-l", "labels", multiple=True, help="Filter by labels (repeatable)")
+@click.option("--query", "-q", default=None, help="Search text across title and description")
+@click.option("--limit", default=20, type=int, help="Maximum tickets to return (default: 20)")
+def list_tickets_cmd(
+    board_id: str | None,
+    archived: bool,
+    include_all: bool,
+    status: str | None,
+    stage: str | None,
+    assigned_to: str | None,
+    creator: str | None,
+    labels: tuple[str, ...],
+    query: str | None,
+    limit: int,
+) -> None:
+    """List tickets with rich selection and filtering options."""
+    api_url = get_api_url()
+    params: dict[str, Any] = {"limit": limit}
+    if board_id:
+        params["board_id"] = board_id
+    if include_all:
+        params["include_all"] = "true"
+    elif archived:
+        params["is_archived"] = "true"
+    else:
+        params["is_archived"] = "false"
+
+    if status:
+        params["status"] = status
+    if stage:
+        params["stage"] = stage
+    if assigned_to:
+        params["assigned_to"] = assigned_to
+    if creator:
+        params["created_by"] = creator
+    if labels:
+        params["labels"] = ",".join(labels)
+    if query:
+        params["q"] = query
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{api_url}/tickets", params=params)
+            resp.raise_for_status()
+            tickets = resp.json()
+
+        if not tickets:
+            console.print("[yellow]No tickets found matching criteria.[/yellow]")
+            return
+
+        table = Table(
+            title=f"📋 Tickets ({len(tickets)} result{'s' if len(tickets) > 1 else ''})",
+            show_header=True,
+            header_style="bold cyan",
+            expand=True,
+        )
+        table.add_column("ID", style="bold cyan", width=10)
+        table.add_column("Title", style="bold white")
+        table.add_column("Status", width=12)
+        table.add_column("Priority", width=10)
+        table.add_column("Assignee", width=15)
+        table.add_column("Archived", width=10)
+        table.add_column("Updated", width=20, style="dim")
+
+        for t in tickets:
+            p_color = (
+                "red"
+                if t.get("priority") in ("urgent", "high")
+                else ("yellow" if t.get("priority") == "medium" else "dim")
+            )
+            s_color = "green" if t.get("status") == "done" else ("red" if t.get("status") == "blocked" else "yellow")
+            status_text = f"[{s_color}]{t.get('status', 'open').upper()}[/{s_color}]"
+            priority_text = f"[{p_color}][{t.get('priority', 'medium').upper()}][/{p_color}]"
+            assignee = f"@{t['assigned_to']}" if t.get("assigned_to") else "[dim]Unassigned[/dim]"
+            archived_text = "[bold red]YES[/bold red]" if t.get("is_archived") else "[dim]No[/dim]"
+            updated = t.get("updated_at", "")[:19].replace("T", " ")
+
+            table.add_row(
+                t["ticket_id"],
+                t["title"],
+                status_text,
+                priority_text,
+                assignee,
+                archived_text,
+                updated,
+            )
+
+        console.print(table)
+    except httpx.ConnectError:
+        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+    except httpx.HTTPStatusError as e:
+        console.print(f"[bold red]✗ Query failed ({e.response.status_code}):[/bold red] {e.response.text}")
+    except Exception as e:
+        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+
+
+@ticket_group.command("archive")
+@click.argument("ticket_id")
+def archive_ticket_cmd(ticket_id: str) -> None:
+    """Archive a ticket to hide it from active Kanban board view."""
+    api_url = get_api_url()
+    headers = get_auth_headers(api_url)
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{api_url}/tickets/{ticket_id}/archive", headers=headers)
+            resp.raise_for_status()
+            t = resp.json()
+
+        console.print(f"[bold green]✓ Ticket '{ticket_id}' archived successfully.[/bold green]")
+        console.print(f"  Title: {t['title']}")
+        console.print("  [dim]This ticket is now hidden from standard board view. Use 'ak5 ticket list --archived' to view.[/dim]")
+    except httpx.ConnectError:
+        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+    except httpx.HTTPStatusError as e:
+        console.print(f"[bold red]✗ Archive failed ({e.response.status_code}):[/bold red] {e.response.text}")
+    except Exception as e:
+        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+
+
+@ticket_group.command("unarchive")
+@click.argument("ticket_id")
+def unarchive_ticket_cmd(ticket_id: str) -> None:
+    """Unarchive an archived ticket back to active Kanban board view."""
+    api_url = get_api_url()
+    headers = get_auth_headers(api_url)
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{api_url}/tickets/{ticket_id}/unarchive", headers=headers)
+            resp.raise_for_status()
+            t = resp.json()
+
+        console.print(f"[bold green]✓ Ticket '{ticket_id}' unarchived successfully.[/bold green]")
+        console.print(f"  Title: {t['title']}")
+        console.print("  [dim]This ticket is now restored to the active board view.[/dim]")
+    except httpx.ConnectError:
+        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+    except httpx.HTTPStatusError as e:
+        console.print(f"[bold red]✗ Unarchive failed ({e.response.status_code}):[/bold red] {e.response.text}")
     except Exception as e:
         console.print(f"[bold red]✗ Error:[/bold red] {e}")
 

@@ -38,6 +38,7 @@ class Ticket(Base, TimestampMixin):
         Index("idx_tickets_column_rank", "column_id", "rank"),
         Index("idx_tickets_assigned", "assigned_to"),
         Index("idx_tickets_parent", "parent_ticket_id"),
+        Index("idx_tickets_archived", "is_archived"),
     )
 
     ticket_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -76,6 +77,8 @@ class Ticket(Base, TimestampMixin):
     blocked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_context: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     board: Mapped["Board"] = relationship("Board", back_populates="tickets")

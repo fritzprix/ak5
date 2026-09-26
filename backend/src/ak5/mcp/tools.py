@@ -174,3 +174,62 @@ async def ak5_report_block(
     mention_str = f" @{required_actor_id}" if required_actor_id else ""
     result_text = f"⚠️ Ticket '{ticket_id}' is now BLOCKED.{mention_str}\n  Reason: {blocking_reason}"
     return [TextContent(type="text", text=result_text)]
+
+
+@server.tool()
+async def ak5_search_tickets(
+    query: str | None = None,
+    board_id: str | None = None,
+    is_archived: bool | None = False,
+    include_all: bool = False,
+    status: str | None = None,
+    stage: str | None = None,
+    assigned_to: str | None = None,
+    labels: str | None = None,
+    limit: int = 5,
+) -> list[TextContent]:
+    """티켓 목록을 다양한 조건(검색어, 아카이브 여부, 상태, 담당자, 라벨 등)으로 필터링/검색합니다.
+
+    과거 완료되어 아카이브된 티켓(is_archived=True)을 검색하여 유사 작업 컨텍스트를 회수하거나,
+    현재 진행 중인 활성 티켓(is_archived=False) 또는 전체 티켓(include_all=True)을 선별 조회할 때 사용합니다.
+    """
+    client = get_client()
+    tickets = await client.search_tickets(
+        board_id=board_id,
+        query=query,
+        is_archived=is_archived,
+        include_all=include_all,
+        status=status,
+        stage=stage,
+        assigned_to=assigned_to,
+        labels=labels,
+        limit=limit,
+    )
+    if not tickets:
+        return [TextContent(type="text", text="No tickets found matching the specified criteria.")]
+
+    lines = [f"Found {len(tickets)} matching ticket(s):"]
+    for t in tickets:
+        archived_flag = " [ARCHIVED]" if t.get("is_archived") else ""
+        lines.append(
+            f"- [{t.get('status', 'open').upper()}]{archived_flag} {t['ticket_id']}: {t['title']} "
+            f"(Priority: {t.get('priority')}, Assignee: @{t.get('assigned_to') or 'unassigned'})"
+        )
+        if t.get("description"):
+            short_desc = t["description"][:120].replace("\n", " ")
+            if len(t["description"]) > 120:
+                short_desc += "..."
+            lines.append(f"  Desc: {short_desc}")
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+@server.tool()
+async def ak5_archive_ticket(
+    ticket_id: str,
+    unarchive: bool = False,
+) -> list[TextContent]:
+    """티켓을 아카이브(보관) 처리하여 일반 활성 보드 뷰에서 숨기거나, 필요 시 아카이브를 해제(unarchive=True)합니다."""
+    client = get_client()
+    res = await client.archive_ticket(ticket_id=ticket_id, unarchive=unarchive)
+    action_text = "unarchived" if unarchive else "archived"
+    return [TextContent(type="text", text=f"✓ Ticket '{ticket_id}' successfully {action_text}.")]

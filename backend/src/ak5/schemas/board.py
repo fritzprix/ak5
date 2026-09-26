@@ -25,6 +25,7 @@ class BoardOut(BoardBase):
 
 class ColumnWithTicketsOut(ColumnOut):
     tickets: list[TicketOut] = Field(default_factory=list)
+    total_ticket_count: int | None = None
 
 
 class BoardDetailOut(BoardOut):

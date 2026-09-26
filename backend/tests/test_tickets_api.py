@@ -429,3 +429,143 @@ async def test_ticket_update_fields_and_clear_assignee(client: AsyncClient, auth
         headers=headers,
     )
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_ticket_archive_and_selection(client: AsyncClient, auth_headers):
+    headers = auth_headers("user_pm", "human")
+
+    # 1. Create two tickets
+    t1_resp = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Alpha Feature",
+            "description": "Important alpha task",
+            "board_id": "proj-core-engine",
+            "column_id": "col_todo",
+            "labels": ["alpha", "core"],
+        },
+        headers=headers,
+    )
+    assert t1_resp.status_code == 201
+    t1_id = t1_resp.json()["ticket_id"]
+    assert t1_resp.json()["is_archived"] is False
+
+    t2_resp = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Beta Feature",
+            "description": "Another task",
+            "board_id": "proj-core-engine",
+            "column_id": "col_todo",
+            "labels": ["beta"],
+        },
+        headers=headers,
+    )
+    assert t2_resp.status_code == 201
+    t2_id = t2_resp.json()["ticket_id"]
+
+    # 2. Archive t1
+    arc_resp = await client.post(f"/api/v1/tickets/{t1_id}/archive", headers=headers)
+    assert arc_resp.status_code == 200, arc_resp.text
+    arc_data = arc_resp.json()
+    assert arc_data["is_archived"] is True
+    assert arc_data["archived_at"] is not None
+
+    # Direct lookup still works on archived ticket
+    get_arc = await client.get(f"/api/v1/tickets/{t1_id}")
+    assert get_arc.status_code == 200
+    assert get_arc.json()["is_archived"] is True
+
+    # 3. List active only (default)
+    list_active = await client.get("/api/v1/tickets?is_archived=false")
+    assert list_active.status_code == 200
+    active_ids = [t["ticket_id"] for t in list_active.json()]
+    assert t1_id not in active_ids
+    assert t2_id in active_ids
+
+    # 4. List archived only
+    list_archived = await client.get("/api/v1/tickets?is_archived=true")
+    assert list_archived.status_code == 200
+    archived_ids = [t["ticket_id"] for t in list_archived.json()]
+    assert t1_id in archived_ids
+    assert t2_id not in archived_ids
+
+    # 5. Search with query and labels
+    search_resp = await client.get("/api/v1/tickets?q=Alpha&is_archived=true")
+    assert search_resp.status_code == 200
+    assert any(t["ticket_id"] == t1_id for t in search_resp.json())
+
+    # Search with % wildcard does not fail or misbehave
+    wildcard_resp = await client.get("/api/v1/tickets?q=%&is_archived=true")
+    assert wildcard_resp.status_code == 200
+
+    label_resp = await client.get("/api/v1/tickets?labels=core&is_archived=true")
+    assert label_resp.status_code == 200
+    assert any(t["ticket_id"] == t1_id for t in label_resp.json())
+
+    # 5.1 Test include_all returns both
+    list_all = await client.get("/api/v1/tickets?include_all=true")
+    assert list_all.status_code == 200
+    all_ids = [t["ticket_id"] for t in list_all.json()]
+    assert t1_id in all_ids
+    assert t2_id in all_ids
+
+    # 6. Unarchive t1
+    unarc_resp = await client.post(f"/api/v1/tickets/{t1_id}/unarchive", headers=headers)
+    assert unarc_resp.status_code == 200
+    assert unarc_resp.json()["is_archived"] is False
+    assert unarc_resp.json()["archived_at"] is None
+
+    # Now t1 appears in active list again
+    list_active_after = await client.get("/api/v1/tickets?is_archived=false")
+    active_after_ids = [t["ticket_id"] for t in list_active_after.json()]
+    assert t1_id in active_after_ids
+
+
+@pytest.mark.asyncio
+async def test_wip_limit_frees_slot_on_archive(client: AsyncClient, auth_headers):
+    headers = auth_headers("user_pm", "human")
+
+    # 1. Fill In Progress to WIP limit (3)
+    ticket_ids = []
+    for i in range(3):
+        create = await client.post(
+            "/api/v1/tickets",
+            json={
+                "title": f"Active Worker {i}",
+                "board_id": "proj-core-engine",
+                "column_id": "col_in_progress",
+            },
+            headers=headers,
+        )
+        assert create.status_code == 201
+        ticket_ids.append(create.json()["ticket_id"])
+
+    # 2. 4th ticket must be blocked by WIP limit (409)
+    blocked_resp = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Blocked Worker",
+            "board_id": "proj-core-engine",
+            "column_id": "col_in_progress",
+        },
+        headers=headers,
+    )
+    assert blocked_resp.status_code == 409
+
+    # 3. Archive one of the tickets in col_in_progress
+    arc_resp = await client.post(f"/api/v1/tickets/{ticket_ids[0]}/archive", headers=headers)
+    assert arc_resp.status_code == 200
+
+    # 4. Now adding the 4th ticket must SUCCEED because the archived ticket freed a WIP slot!
+    success_resp = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Now Allowed Worker",
+            "board_id": "proj-core-engine",
+            "column_id": "col_in_progress",
+        },
+        headers=headers,
+    )
+    assert success_resp.status_code == 201, success_resp.text

@@ -32,7 +32,13 @@ def render_board_view(board_data: dict) -> Table:
     for col in board_data.get("columns", []):
         color = stage_colors.get(col.get("stage"), "white")
         count = len(col.get("tickets", []))
-        wip_info = f" [WIP: {count}/{col['wip_limit']}]" if col.get("wip_limit", 0) > 0 else f" ({count})"
+        total = col.get("total_ticket_count", count)
+        if col.get("wip_limit", 0) > 0:
+            wip_info = f" [WIP: {count}/{col['wip_limit']}]"
+        elif total > count:
+            wip_info = f" ({count}/{total})"
+        else:
+            wip_info = f" ({count})"
         main_table.add_column(f"[{color}]{col['name']}{wip_info}[/{color}]")
 
     # Find maximum number of rows among columns
@@ -58,8 +64,10 @@ def render_board_view(board_data: dict) -> Table:
                 if t.get("subtask_count", 0) > 0:
                     subtask_badge = f"\n[bold cyan]Subtasks: {t['subtask_done_count']}/{t['subtask_count']} Done[/bold cyan]"
 
+                archived_badge = " [bold red][ARCHIVED][/bold red]" if t.get("is_archived") else ""
+
                 content = (
-                    f"[bold white]{t['title']}[/bold white]\n"
+                    f"[bold white]{t['title']}[/bold white]{archived_badge}\n"
                     f"{status_badge} [dim]{t['ticket_id']}[/dim] | {assignee}"
                     f"{subtask_badge}"
                 )
@@ -70,20 +78,40 @@ def render_board_view(board_data: dict) -> Table:
                 row_cells.append(Text(""))
         main_table.add_row(*row_cells)
 
+    # Check if any column was limited
+    has_more = any(col.get("total_ticket_count", 0) > len(col.get("tickets", [])) for col in board_data.get("columns", []))
+    if has_more:
+        more_cells = []
+        for col in board_data.get("columns", []):
+            diff = col.get("total_ticket_count", 0) - len(col.get("tickets", []))
+            if diff > 0:
+                more_cells.append(Panel(f"[dim]+ {diff} more tickets\n(--done-limit=0 to see all)[/dim]", border_style="dim", expand=True))
+            else:
+                more_cells.append(Text(""))
+        main_table.add_row(*more_cells)
+
     return main_table
 
 
-def fetch_board(api_url: str, board_id: str) -> dict:
+def fetch_board(api_url: str, board_id: str, include_archived: bool = False, done_limit: int | None = 10) -> dict:
+    params: dict[str, Any] = {}
+    if include_archived:
+        params["include_archived"] = "true"
+    if done_limit is not None and done_limit > 0:
+        params["done_limit"] = done_limit
+    elif done_limit == 0:
+        params["done_limit"] = 0
+
     with httpx.Client(timeout=10.0) as client:
-        resp = client.get(f"{api_url}/boards/{board_id}")
+        resp = client.get(f"{api_url}/boards/{board_id}", params=params)
         resp.raise_for_status()
         return resp.json()
 
 
-async def watch_board_live(api_url: str, board_id: str) -> None:
+async def watch_board_live(api_url: str, board_id: str, include_archived: bool = False, done_limit: int | None = 10) -> None:
     """Stream SSE events and re-render board on changes."""
     console.print(f"[bold cyan]Connecting to real-time event stream for board '{board_id}'...[/bold cyan]")
-    board_data = fetch_board(api_url, board_id)
+    board_data = fetch_board(api_url, board_id, include_archived=include_archived, done_limit=done_limit)
 
     with Live(render_board_view(board_data), console=console, refresh_per_second=4) as live:
         async with (
@@ -93,10 +121,10 @@ async def watch_board_live(api_url: str, board_id: str) -> None:
             async for line in stream.aiter_lines():
                 if line.startswith("event:"):
                     event_type = line.split(":", 1)[1].strip()
-                    if event_type in ("TICKET_CREATED", "TICKET_MOVED", "TICKET_DELEGATED", "TICKET_UPDATED", "COMMENT_ADDED"):
+                    if event_type in ("TICKET_CREATED", "TICKET_MOVED", "TICKET_DELEGATED", "TICKET_UPDATED", "TICKET_ARCHIVED", "TICKET_UNARCHIVED", "COMMENT_ADDED"):
                         # Refresh board
                         try:
-                            board_data = fetch_board(api_url, board_id)
+                            board_data = fetch_board(api_url, board_id, include_archived=include_archived, done_limit=done_limit)
                             live.update(render_board_view(board_data))
                         except (httpx.HTTPError, OSError):
                             pass
@@ -107,7 +135,16 @@ async def watch_board_live(api_url: str, board_id: str) -> None:
 @click.option("--board-id", default=None, help="Target Board ID (alternative to positional argument)")
 @click.option("--watch", is_flag=True, help="Watch board with live real-time SSE updates")
 @click.option("--list", "-l", "list_boards_flag", is_flag=True, help="List all available Kanban boards")
-def board_command(target_board: str | None, board_id: str | None, watch: bool, list_boards_flag: bool) -> None:
+@click.option("--done-limit", default=10, type=int, help="Limit completed tickets shown in Done column (default: 10, 0 for all)")
+@click.option("--include-archived", is_flag=True, default=False, help="Include archived tickets in board view")
+def board_command(
+    target_board: str | None,
+    board_id: str | None,
+    watch: bool,
+    list_boards_flag: bool,
+    done_limit: int,
+    include_archived: bool,
+) -> None:
     """View Kanban board in terminal.
 
     Optionally specify BOARD_ID positionally (e.g. 'ak5 board proj-harbor-eval')
@@ -145,9 +182,9 @@ def board_command(target_board: str | None, board_id: str | None, watch: bool, l
 
     try:
         if watch:
-            asyncio.run(watch_board_live(api_url, resolved_board_id))
+            asyncio.run(watch_board_live(api_url, resolved_board_id, include_archived=include_archived, done_limit=done_limit))
         else:
-            board_data = fetch_board(api_url, resolved_board_id)
+            board_data = fetch_board(api_url, resolved_board_id, include_archived=include_archived, done_limit=done_limit)
             console.print(render_board_view(board_data))
             console.print(
                 f"[dim]💡 Active Board: [bold cyan]{board_data['board_id']}[/bold cyan] | "

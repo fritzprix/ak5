@@ -8,6 +8,8 @@ from ak5.mcp.tools import (
     ak5_list_boards,
     ak5_report_block,
     ak5_update_ticket_status,
+    ak5_search_tickets,
+    ak5_archive_ticket,
 )
 from httpx import AsyncClient
 
@@ -74,6 +76,28 @@ async def test_mcp_tools_flow(client: AsyncClient, auth_headers, monkeypatch):
         blocking_reason="Missing API keys for cloud WebP optimizer",
         required_actor_id="user_pm",
     )
-    assert len(block_res) == 1
     assert "is now BLOCKED" in block_res[0].text
     assert "@user_pm" in block_res[0].text
+
+    # 6. Test ak5_search_tickets (active only by default)
+    search_res = await ak5_search_tickets(query="Master Feature")
+    assert len(search_res) == 1
+    assert parent_id in search_res[0].text
+
+    # 7. Test ak5_archive_ticket
+    arc_res = await ak5_archive_ticket(ticket_id=parent_id)
+    assert len(arc_res) == 1
+    assert f"Ticket '{parent_id}' successfully archived" in arc_res[0].text
+
+    # Search active should no longer show archived ticket
+    search_active_res = await ak5_search_tickets(query="Master Feature", is_archived=False)
+    assert "No tickets found" in search_active_res[0].text
+
+    # Search archived should show it
+    search_arc_res = await ak5_search_tickets(query="Master Feature", is_archived=True)
+    assert parent_id in search_arc_res[0].text
+    assert "[ARCHIVED]" in search_arc_res[0].text
+
+    # 8. Test ak5_archive_ticket with unarchive=True
+    unarc_res = await ak5_archive_ticket(ticket_id=parent_id, unarchive=True)
+    assert "successfully unarchived" in unarc_res[0].text

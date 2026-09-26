@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import json
 import uuid
 from pathlib import Path
@@ -42,7 +43,10 @@ async def _assert_wip_allows(
     if column.wip_limit <= 0:
         return
 
-    stmt = select(func.count()).select_from(Ticket).where(Ticket.column_id == column.column_id)
+    stmt = select(func.count()).select_from(Ticket).where(
+        Ticket.column_id == column.column_id,
+        Ticket.is_archived.is_(False),
+    )
     count = (await db.execute(stmt)).scalar_one() or 0
     if count >= column.wip_limit:
         raise HTTPException(
@@ -83,6 +87,8 @@ def _format_ticket_out(t: Ticket, subtask_stats: tuple[int, int] = (0, 0)) -> Ti
         blocked_by=t.blocked_by,
         execution_context=t.execution_context_dict,
         due_date=t.due_date,
+        is_archived=t.is_archived,
+        archived_at=t.archived_at,
         created_at=t.created_at,
         updated_at=t.updated_at,
         subtask_count=count,
@@ -162,6 +168,69 @@ async def create_ticket(
     )
 
     return ticket_out
+
+
+@router.get("", response_model=list[TicketOut])
+async def list_tickets(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    board_id: str | None = None,
+    is_archived: bool = False,
+    include_all: bool = False,
+    stage: str | None = None,
+    status: str | None = None,
+    assigned_to: str | None = None,
+    created_by: str | None = None,
+    priority: str | None = None,
+    labels: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[TicketOut]:
+    """List and filter tickets with rich selection parameters.
+
+    - is_archived: False by default (only active). Set True for archived only. Ignored if include_all is True.
+    - include_all: If True, returns both active and archived tickets without filtering by archive status.
+    - q: Text search across ticket title and description.
+    - stage: Stage name (open, in_progress, review, done).
+    - labels: Comma-separated list of labels to filter by.
+    """
+    safe_limit = min(max(1, limit), 200)
+    stmt = select(Ticket).options(selectinload(Ticket.subtasks))
+    if board_id:
+        stmt = stmt.where(Ticket.board_id == board_id)
+    if not include_all:
+        stmt = stmt.where(Ticket.is_archived == is_archived)
+    if status:
+        stmt = stmt.where(Ticket.status == status)
+    if stage:
+        stmt = stmt.join(Column, Ticket.column_id == Column.column_id).where(Column.stage == stage)
+    if assigned_to:
+        stmt = stmt.where(Ticket.assigned_to == assigned_to)
+    if created_by:
+        stmt = stmt.where(Ticket.created_by == created_by)
+    if priority:
+        stmt = stmt.where(Ticket.priority == priority)
+    if q:
+        escaped_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search_pat = f"%{escaped_q}%"
+        stmt = stmt.where(
+            (Ticket.title.ilike(search_pat, escape="\\")) | (Ticket.description.ilike(search_pat, escape="\\"))
+        )
+    if labels:
+        target_labels = [lbl.strip() for lbl in labels.split(",") if lbl.strip()]
+        for lbl in target_labels:
+            stmt = stmt.where(Ticket.labels.contains(f'"{lbl}"'))
+
+    stmt = stmt.order_by(Ticket.updated_at.desc(), Ticket.created_at.desc()).limit(safe_limit).offset(max(0, offset))
+    result = await db.execute(stmt)
+    tickets = result.scalars().all()
+
+    outs = []
+    for t in tickets:
+        subtasks = t.subtasks or []
+        subtask_done = sum(1 for s in subtasks if s.status == "done")
+        outs.append(_format_ticket_out(t, (len(subtasks), subtask_done)))
+    return outs
 
 
 @router.get("/{ticket_id}", response_model=TicketDetailOut)
@@ -276,8 +345,20 @@ async def update_ticket(
     if "due_date" in data:
         changes["due_date"] = (ticket.due_date, data["due_date"])
         ticket.due_date = data["due_date"]
+    if "is_archived" in data and data["is_archived"] is not None:
+        new_archived = bool(data["is_archived"])
+        if ticket.is_archived != new_archived:
+            changes["is_archived"] = (ticket.is_archived, new_archived)
+            ticket.is_archived = new_archived
+            ticket.archived_at = datetime.now(timezone.utc) if new_archived else None
 
-    action = "STATUS_CHANGE" if "status" in changes else "UPDATED"
+    action = (
+        "ARCHIVED"
+        if ("is_archived" in changes and ticket.is_archived)
+        else "UNARCHIVED"
+        if ("is_archived" in changes and not ticket.is_archived)
+        else ("STATUS_CHANGE" if "status" in changes else "UPDATED")
+    )
     audit = AuditLog(
         actor_id=current_actor.actor_id,
         action=action,
@@ -297,6 +378,74 @@ async def update_ticket(
         data={"ticket": ticket_out.model_dump(mode="json"), "actor_id": current_actor.actor_id, "changes": changes},
     )
 
+    return ticket_out
+
+
+@router.post("/{ticket_id}/archive", response_model=TicketOut)
+async def archive_ticket(
+    ticket_id: str,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TicketOut:
+    """Archive a ticket and record audit log."""
+    ticket = await db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
+
+    changes = {"is_archived": (ticket.is_archived, True)}
+    ticket.is_archived = True
+    ticket.archived_at = datetime.now(timezone.utc)
+
+    audit = AuditLog(
+        actor_id=current_actor.actor_id,
+        action="ARCHIVED",
+        target_type="ticket",
+        target_id=ticket_id,
+        payload=json.dumps(changes, default=str),
+    )
+    db.add(audit)
+    await db.commit()
+    await db.refresh(ticket)
+
+    ticket_out = _format_ticket_out(ticket)
+    await event_bus.publish(
+        event_type="TICKET_ARCHIVED",
+        data={"ticket": ticket_out.model_dump(mode="json"), "actor_id": current_actor.actor_id},
+    )
+    return ticket_out
+
+
+@router.post("/{ticket_id}/unarchive", response_model=TicketOut)
+async def unarchive_ticket(
+    ticket_id: str,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TicketOut:
+    """Unarchive an archived ticket back to active view."""
+    ticket = await db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
+
+    changes = {"is_archived": (ticket.is_archived, False)}
+    ticket.is_archived = False
+    ticket.archived_at = None
+
+    audit = AuditLog(
+        actor_id=current_actor.actor_id,
+        action="UNARCHIVED",
+        target_type="ticket",
+        target_id=ticket_id,
+        payload=json.dumps(changes, default=str),
+    )
+    db.add(audit)
+    await db.commit()
+    await db.refresh(ticket)
+
+    ticket_out = _format_ticket_out(ticket)
+    await event_bus.publish(
+        event_type="TICKET_UNARCHIVED",
+        data={"ticket": ticket_out.model_dump(mode="json"), "actor_id": current_actor.actor_id},
+    )
     return ticket_out
 
 

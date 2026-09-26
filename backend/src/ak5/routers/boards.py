@@ -59,6 +59,8 @@ def _to_ticket_out(t: Ticket, subtask_stats: dict[str, tuple[int, int]]) -> Tick
         blocked_by=t.blocked_by,
         execution_context=t.execution_context_dict,
         due_date=t.due_date,
+        is_archived=t.is_archived,
+        archived_at=t.archived_at,
         created_at=t.created_at,
         updated_at=t.updated_at,
         subtask_count=count,
@@ -81,8 +83,14 @@ async def list_boards(
 async def get_board(
     board_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    include_archived: bool = False,
+    done_limit: int | None = 10,
 ) -> BoardDetailOut:
-    """Retrieve full board details including columns and tickets ordered by rank."""
+    """Retrieve full board details including columns and tickets ordered by rank.
+
+    - include_archived: If False (default), filters out archived tickets.
+    - done_limit: If specified (default 10), limits tickets in 'done' stage columns to the most recent N tickets.
+    """
     stmt = (
         select(Board)
         .where(Board.board_id == board_id)
@@ -109,7 +117,19 @@ async def get_board(
     # Sort columns by position
     sorted_columns = sorted(board.columns, key=lambda c: c.position)
     for col in sorted_columns:
-        sorted_tickets = sorted(col.tickets, key=lambda t: t.rank)
+        col_tickets = [
+            t for t in col.tickets
+            if include_archived or not t.is_archived
+        ]
+        total_count = len(col_tickets)
+
+        if col.stage == "done" and done_limit is not None and done_limit > 0 and len(col_tickets) > done_limit:
+            # Pick most recently updated done tickets, then sort by rank
+            recent_done = sorted(col_tickets, key=lambda t: t.updated_at, reverse=True)[:done_limit]
+            sorted_tickets = sorted(recent_done, key=lambda t: t.rank)
+        else:
+            sorted_tickets = sorted(col_tickets, key=lambda t: t.rank)
+
         ticket_outs = [_to_ticket_out(t, subtask_stats) for t in sorted_tickets]
         columns_out.append(
             ColumnWithTicketsOut(
@@ -121,6 +141,7 @@ async def get_board(
                 wip_limit=col.wip_limit,
                 created_at=col.created_at,
                 tickets=ticket_outs,
+                total_ticket_count=total_count,
             )
         )
 

@@ -84,6 +84,8 @@ def migrate_sqlite_blocked_by_to_text(sync_conn: Connection) -> None:
                 blocked_by TEXT,
                 execution_context TEXT,
                 due_date DATETIME,
+                is_archived BOOLEAN NOT NULL DEFAULT 0,
+                archived_at DATETIME,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 FOREIGN KEY(board_id) REFERENCES boards (board_id) ON DELETE CASCADE,
@@ -100,18 +102,22 @@ def migrate_sqlite_blocked_by_to_text(sync_conn: Connection) -> None:
             """
         )
     )
+    t_cols = {row["name"] for row in sync_conn.execute(text("PRAGMA table_info(tickets)")).mappings().all()}
+    arc_col = "is_archived" if "is_archived" in t_cols else "0 AS is_archived"
+    arc_at_col = "archived_at" if "archived_at" in t_cols else "NULL AS archived_at"
+
     sync_conn.execute(
         text(
-            """
+            f"""
             INSERT INTO tickets__mig_blocked_by (
                 ticket_id, board_id, column_id, parent_ticket_id, title, description,
                 priority, rank, labels, assigned_to, created_by, status, blocked_by,
-                execution_context, due_date, created_at, updated_at
+                execution_context, due_date, is_archived, archived_at, created_at, updated_at
             )
             SELECT
                 ticket_id, board_id, column_id, parent_ticket_id, title, description,
                 priority, rank, labels, assigned_to, created_by, status, blocked_by,
-                execution_context, due_date, created_at, updated_at
+                execution_context, due_date, {arc_col}, {arc_at_col}, created_at, updated_at
             FROM tickets
             """
         )
@@ -131,12 +137,29 @@ def migrate_sqlite_blocked_by_to_text(sync_conn: Connection) -> None:
     sync_conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
+def migrate_sqlite_archive_fields(sync_conn: Connection) -> None:
+    """Ensure is_archived and archived_at columns exist on tickets table."""
+    exists = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tickets'")
+    ).scalar()
+    if not exists:
+        return
+    rows = sync_conn.execute(text("PRAGMA table_info(tickets)")).mappings().all()
+    col_names = {row["name"] for row in rows}
+    if "is_archived" not in col_names:
+        sync_conn.execute(text("ALTER TABLE tickets ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT 0"))
+        sync_conn.execute(text("CREATE INDEX IF NOT EXISTS idx_tickets_archived ON tickets (is_archived)"))
+    if "archived_at" not in col_names:
+        sync_conn.execute(text("ALTER TABLE tickets ADD COLUMN archived_at DATETIME"))
+
+
 async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> None:
     """Apply SQLite-only schema fixes that create_all cannot express."""
     if "sqlite" not in str(async_engine.url):
         return
     async with async_engine.begin() as conn:
         await conn.run_sync(migrate_sqlite_blocked_by_to_text)
+        await conn.run_sync(migrate_sqlite_archive_fields)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:

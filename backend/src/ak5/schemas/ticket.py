@@ -50,6 +50,7 @@ class TicketUpdate(BaseModel):
     blocked_by: str | None = Field(default=None, max_length=2048)
     execution_context: dict[str, Any] | None = None
     due_date: datetime | None = None
+    is_archived: bool | None = None
 
 
 class TicketMoveRequest(BaseModel):
@@ -78,6 +79,8 @@ class TicketOut(TicketBase):
     status: Literal["open", "in_progress", "blocked", "done"]
     blocked_by: str | None = None
     execution_context: dict[str, Any] | None = None
+    is_archived: bool = False
+    archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

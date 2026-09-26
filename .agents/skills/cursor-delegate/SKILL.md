@@ -64,29 +64,92 @@ agent --list-models
 
 ---
 
-## 3. Cursor Agent CLI Execution Reference
+---
 
-Cursor Agent supports headless, non-interactive execution via the `-p` (`--print`) flag.
+## 3. Recommended Execution Methods
 
-### Common Execution Modes
+There are two ways to invoke Cursor Agent. **Always prefer Method 1 (`cursor_delegate.py`)** to avoid CLI quoting issues and empty-output quirks.
 
-| Goal | Command Pattern | Description |
+### Method 1 (Primary & Strongly Recommended): Companion Runner Script
+
+The companion runner at [`.agents/skills/cursor-delegate/scripts/cursor_delegate.py`](file:///home/fritzprix/my_works/ak5/.agents/skills/cursor-delegate/scripts/cursor_delegate.py) auto-detects the binary, constructs hardened read-only prompts, captures stdout safely, and handles AK5 ticket synchronization.
+
+```bash
+# 1. Quick Ad-hoc Code Review (Review uncommitted working tree diff without a ticket)
+python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
+  --title "Review uncommitted working tree changes" \
+  --mode review
+
+# 2. Full AK5 Subtask Review (Review, post comment, attach report, and move to Review column)
+python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
+  --ticket-id TK-025 \
+  --title "Code Review for Feature" \
+  --mode review \
+  --comment \
+  --attach \
+  --move-to col_review
+
+# 3. Autonomous Fix in an Isolated Git Worktree (-w)
+python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
+  --ticket-id TK-026 \
+  --title "Fix shlex.quote in command renderer" \
+  --mode fix \
+  --worktree \
+  --comment
+```
+
+---
+
+### Method 2 (Fallback / Direct CLI): Low-Level Invocation
+
+> [!CAUTION]
+> **CLI Quirk with `--mode plan` in `-p` mode**:
+> In non-interactive print mode (`-p` / `--print`), passing `--mode plan` can cause the Cursor Agent CLI to initialize an interactive planning session and exit with **empty output (0 bytes)**.
+> **DO NOT** use `agent -p --mode plan`. Instead, omit `--mode plan` and explicitly instruct read-only behavior inside the prompt string:
+
+```bash
+# ✅ CORRECT Direct Review Pattern (Instruct read-only in the prompt):
+agent -p "
+You are an autonomous code reviewer.
+Review the latest git diff (or uncommitted changes) in the workspace.
+DO NOT edit or modify any files.
+Provide:
+1. Executive Summary
+2. Potential Bugs & Security/Edge Cases
+3. Actionable Recommendations
+" > /tmp/cursor_review.md
+
+# ❌ INCORRECT (May exit with empty output!):
+# agent -p --mode plan "Review git diff" > /tmp/cursor_review.md
+```
+
+| Goal | Direct CLI Pattern | Notes |
 |---|---|---|
-| **Read-Only Review** | `agent -p --mode plan "<PROMPT>"` | Analyzes codebase/diff without modifying files. |
-| **Q&A / Assessment** | `agent -p --mode ask "<PROMPT>"` | Explanations and advisory queries (read-only). |
-| **Active Fix / Code Edit** | `agent -p --force "<PROMPT>"` | Applies code modifications and tool calls without prompting. |
-| **Isolated Worktree** | `agent -p -w --force "<PROMPT>"` | Creates and runs in a separate git worktree at `~/.cursor/worktrees/`. |
-| **Model Selection** | `agent -p --model claude-3.7-sonnet "<PROMPT>"` | Explicitly specifies the model to utilize. |
+| **Read-Only Review** | `agent -p "Review diff... DO NOT edit files."` | Do NOT use `--mode plan` with `-p`. |
+| **Active Fix / Code Edit** | `agent -p --force "<PROMPT>"` | Allows file edits and test execution. |
+| **Isolated Worktree Fix** | `agent -p -w --force "<PROMPT>"` | Runs in `~/.cursor/worktrees/<repo>/`. |
+| **Model Selection** | `agent -p --model claude-3.7-sonnet "<PROMPT>"` | Overrides default model. |
 
 ---
 
 ## 4. AK5 Task Delegation Workflows
 
-### Workflow A: Manual / Direct Delegation (Step-by-Step)
+### Workflow A: Quick Ad-hoc Workspace Review (No Ticket Required)
 
-#### Step 1: Create or Delegate an AK5 Subtask
+When you simply need a second-opinion review on current uncommitted changes or recent commits:
+
 ```bash
-# Delegate code review subtask to @cursor-agent
+python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
+  --title "Review current working tree diff" \
+  --mode review
+```
+
+---
+
+### Workflow B: Full AK5 Subtask Lifecycle (Step-by-Step)
+
+#### Step 1: Delegate Subtask on Board
+```bash
 ak5 delegate TK-020 \
   --title "Security and Injection Review for subscribe CLI" \
   --agent cursor-agent \
@@ -99,31 +162,20 @@ ak5 delegate TK-020 \
 ak5 move TK-025 col_in_progress
 ```
 
-#### Step 3: Run Cursor Agent Review
+#### Step 3: Run Cursor Agent & Automatically Sync
 ```bash
-agent -p --mode plan "
-Review the latest git diff (git diff HEAD~1) for ticket TK-025.
-Focus on backend/src/ak5/cli/commands/subscribe.py.
-Evaluate shell safety, quoting, and error handling.
-Provide a 3-bullet executive summary followed by prioritized recommendations.
-" > /tmp/cursor_review.md
-```
-
-#### Step 4: Sync Findings back to AK5 Ticket
-```bash
-# 1. Post findings as a comment
-ak5 comment TK-025 --file /tmp/cursor_review.md
-
-# 2. Attach the full review report as a deliverable
-ak5 attach TK-025 /tmp/cursor_review.md --desc "Cursor Agent Code Review Report"
-
-# 3. Move subtask to Review or Done
-ak5 move TK-025 col_review
+python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
+  --ticket-id TK-025 \
+  --title "Security and Injection Review for subscribe CLI" \
+  --mode review \
+  --comment \
+  --attach \
+  --move-to col_review
 ```
 
 ---
 
-### Workflow B: Automated Event-Driven Pipeline (`ak5 subscribe`)
+### Workflow C: Automated Event-Driven Pipeline (`ak5 subscribe`)
 
 You can run an automated background observer that triggers Cursor Agent whenever a ticket is assigned to `@cursor-agent`:
 
@@ -137,50 +189,6 @@ ak5 subscribe proj-core-engine \
 
 > [!IMPORTANT]
 > **Shell Injection Prevention**: In `--exec` strings, always use shell environment variables (**`$AK5_TICKET_ID`**, **`$AK5_TITLE`**, **`$AK5_BOARD_ID`**) instead of curly-bracket string substitutions (`{title}`). AK5 exports these variables directly into the subprocess environment.
-
----
-
-## 5. Companion Runner Script (`cursor_delegate.py`)
-
-AK5 provides a turnkey companion runner located at:
-[`.agents/skills/cursor-delegate/scripts/cursor_delegate.py`](file:///home/fritzprix/my_works/ak5/.agents/skills/cursor-delegate/scripts/cursor_delegate.py)
-
-### Capabilities
-- Auto-detects `agent` or `cursor agent` executable.
-- Crafts tailored, structured prompts based on mode (`review`, `plan`, `fix`, `custom`).
-- Captures output and optionally:
-  - Posts concise summary comment via `ak5 comment` (`--comment`).
-  - Attaches markdown report file via `ak5 attach` (`--attach`).
-  - Transitions ticket to target column via `ak5 move` (`--move-to <col_id>`).
-  - Supports `--dry-run` to inspect commands before running.
-
-### Command Usage Examples:
-
-```bash
-# 1. Preview prompt and command without running
-python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
-  --dry-run \
-  --ticket-id TK-025 \
-  --title "Code Review for Subscription Feature" \
-  --mode review
-
-# 2. Execute Code Review, comment, attach report, and move to Review column
-python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
-  --ticket-id TK-025 \
-  --title "Code Review for Subscription Feature" \
-  --mode review \
-  --comment \
-  --attach \
-  --move-to col_review
-
-# 3. Autonomous Bugfix in an isolated Git Worktree
-python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
-  --ticket-id TK-026 \
-  --title "Fix shlex.quote in render_command_string" \
-  --mode fix \
-  --worktree \
-  --comment
-```
 
 ---
 

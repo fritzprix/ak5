@@ -51,9 +51,9 @@ def craft_prompt(mode: str, title: str, ticket_id: str, custom_prompt: str | Non
 
     if mode == "review":
         return (
-            f"You are acting as an autonomous code reviewer for AK5 ticket [{ticket_id}]: '{title}'.\n"
-            "Review the latest git diff or relevant code changes in the workspace.\n"
-            "Provide a concise, high-value code review covering:\n"
+            f"You are acting as an autonomous code reviewer for AK5 ticket [{ticket_id or 'WORKSPACE'}]: '{title}'.\n"
+            "Review the latest git diff (or uncommitted working tree changes) in the workspace.\n"
+            "Do NOT edit or modify any files. Perform a read-only code review covering:\n"
             "1. Architectural & Logic Assessment\n"
             "2. Potential Bugs, Edge Cases, or Security/Injection Risks\n"
             "3. Code Quality & Test Coverage\n"
@@ -182,9 +182,12 @@ def main() -> int:
         sys.stderr.write(f"Cursor Agent failed with return code {result.returncode}:\n{stderr_output}\n")
         return result.returncode
 
+    if not stdout_output.strip():
+        sys.stderr.write("⚠️ Warning: Cursor Agent returned empty output. Check prompt parameters, CLI auth status, and network connectivity.\n")
+
     # Print output to terminal
     print("\n--- Cursor Agent Output ---")
-    print(stdout_output.strip())
+    print(stdout_output.strip() or "(Empty response)")
     print("---------------------------\n")
 
     # Sync with AK5 if ticket_id is present

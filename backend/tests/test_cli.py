@@ -42,6 +42,9 @@ def test_cli_ticket_help():
     assert "comment" in result.output
     assert "block" in result.output
     assert "update" in result.output
+    assert "list" in result.output
+    assert "archive" in result.output
+    assert "unarchive" in result.output
 
 
 def test_cli_ticket_create_help():
@@ -79,6 +82,8 @@ def test_cli_board_help():
     assert result.exit_code == 0
     assert "--board-id" in result.output
     assert "--list" in result.output
+    assert "--done-limit" in result.output
+    assert "--include-archived" in result.output
     assert "[BOARD_ID]" in result.output
 
 

@@ -55,6 +55,8 @@ export interface Ticket {
   updated_at: string;
   subtask_count: number;
   subtask_done_count: number;
+  is_archived?: boolean;
+  archived_at?: string | null;
   subtasks?: Ticket[];
   comments?: TicketComment[];
   attachments?: TicketAttachment[];
@@ -69,6 +71,7 @@ export interface Column {
   wip_limit: number;
   created_at: string;
   tickets: Ticket[];
+  total_ticket_count?: number | null;
 }
 
 export interface BoardSummary {

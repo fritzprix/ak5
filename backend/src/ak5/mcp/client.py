@@ -165,5 +165,48 @@ class AK5Client:
         )
         return resp.json()
 
+    async def search_tickets(
+        self,
+        board_id: str | None = None,
+        query: str | None = None,
+        is_archived: bool | None = False,
+        include_all: bool = False,
+        status: str | None = None,
+        stage: str | None = None,
+        assigned_to: str | None = None,
+        labels: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit}
+        if board_id:
+            params["board_id"] = board_id
+        if include_all or is_archived is None:
+            params["include_all"] = "true"
+        else:
+            params["is_archived"] = "true" if is_archived else "false"
+        if query:
+            params["q"] = query
+        if status:
+            params["status"] = status
+        if stage:
+            params["stage"] = stage
+        if assigned_to:
+            params["assigned_to"] = assigned_to
+        if labels:
+            params["labels"] = labels
+        resp = await self._http.get(f"{self.base_url.rstrip('/')}/tickets", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def archive_ticket(self, ticket_id: str, unarchive: bool = False) -> dict[str, Any]:
+        headers = await self._headers()
+        action = "unarchive" if unarchive else "archive"
+        resp = await self._http.post(
+            f"{self.base_url.rstrip('/')}/tickets/{ticket_id}/{action}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def close(self) -> None:
         await self._http.aclose()
