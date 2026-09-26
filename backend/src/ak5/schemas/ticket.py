@@ -47,7 +47,7 @@ class TicketUpdate(BaseModel):
     labels: list[str] | None = None
     assigned_to: str | None = None
     status: Literal["open", "in_progress", "blocked", "done"] | None = None
-    blocked_by: str | None = None
+    blocked_by: str | None = Field(default=None, max_length=2048)
     execution_context: dict[str, Any] | None = None
     due_date: datetime | None = None
 

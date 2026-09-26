@@ -1,3 +1,4 @@
+import type { TicketUpdatePayload } from "./ticketEdit";
 import { Board, BoardSummary, Ticket, TicketComment, Actor } from "./types";
 
 /** Same-origin by default so embedded FastAPI (`ak5 web`) needs no CORS/port split. */
@@ -169,6 +170,25 @@ export async function delegateSubtask(
       priority,
       labels: ["delegated"],
     }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function updateTicket(
+  ticketId: string,
+  payload: TicketUpdatePayload
+): Promise<Ticket> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     throw new Error(await readErrorDetail(res));

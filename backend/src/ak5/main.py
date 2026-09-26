@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.config import settings
-from ak5.database import AsyncSessionLocal, engine
+from ak5.database import AsyncSessionLocal, engine, run_sqlite_schema_migrations
 from ak5.mcp.tools import server as mcp_server
 from ak5.models.actor import Actor
 from ak5.models.base import Base
@@ -105,6 +105,7 @@ async def lifespan(app: FastAPI):
     # Initialize DB tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await run_sqlite_schema_migrations()
     # Seed initial entities
     await seed_initial_data()
     yield

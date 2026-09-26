@@ -22,7 +22,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test src/lib/liveRefresh.test.ts src/lib/reviewDecision.test.ts src/lib/focusTrap.test.ts src/lib/boardDnD.test.ts"
+    "test": "tsx --test src/lib/liveRefresh.test.ts src/lib/reviewDecision.test.ts src/lib/focusTrap.test.ts src/lib/boardDnD.test.ts src/lib/ticketEdit.test.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

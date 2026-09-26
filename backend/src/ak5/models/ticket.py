@@ -71,11 +71,8 @@ class Ticket(Base, TimestampMixin):
         nullable=False,
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
-    blocked_by: Mapped[str | None] = mapped_column(
-        String(64),
-        ForeignKey("tickets.ticket_id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    # Free-text block reason (not a ticket FK). Agents/PMs record why work is blocked.
+    blocked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_context: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

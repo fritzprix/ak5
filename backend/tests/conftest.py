@@ -7,6 +7,7 @@ from ak5.main import app
 from ak5.models.base import Base
 from ak5.routers.auth import create_access_token
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Use in-memory SQLite database for tests
@@ -17,6 +18,15 @@ test_engine = create_async_engine(
     connect_args={"check_same_thread": False},
     future=True,
 )
+
+
+@event.listens_for(test_engine.sync_engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+    # Match production database.py so FK mismatches fail in tests.
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON;")
+    cursor.close()
+
 
 TestAsyncSessionLocal = async_sessionmaker(
     bind=test_engine,

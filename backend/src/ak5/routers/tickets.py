@@ -217,35 +217,64 @@ async def update_ticket(
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TicketOut:
-    """Update ticket fields, status, or assignee."""
+    """Update ticket fields, status, or assignee.
+
+    Uses exclude_unset so explicit JSON null can clear nullable fields
+    (e.g. assigned_to, blocked_by) without requiring a sentinel value.
+    """
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
 
+    data = req.model_dump(exclude_unset=True)
+    if not data:
+        return _format_ticket_out(ticket)
+
     changes: dict[str, Any] = {}
 
-    if req.title is not None:
-        changes["title"] = (ticket.title, req.title)
-        ticket.title = req.title
-    if req.description is not None:
-        ticket.description = req.description
-    if req.priority is not None:
-        changes["priority"] = (ticket.priority, req.priority)
-        ticket.priority = req.priority
-    if req.labels is not None:
-        ticket.label_list = req.labels
-    if req.assigned_to is not None:
-        changes["assigned_to"] = (ticket.assigned_to, req.assigned_to)
-        ticket.assigned_to = req.assigned_to
-    if req.status is not None:
-        changes["status"] = (ticket.status, req.status)
-        ticket.status = req.status
-    if req.blocked_by is not None:
-        ticket.blocked_by = req.blocked_by
-    if req.execution_context is not None:
-        ticket.execution_context_dict = req.execution_context
-    if req.due_date is not None:
-        ticket.due_date = req.due_date
+    if "title" in data:
+        title = data["title"]
+        if title is None or not str(title).strip():
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Title cannot be empty")
+        changes["title"] = (ticket.title, title)
+        ticket.title = title
+    if "description" in data:
+        changes["description"] = (ticket.description, data["description"])
+        ticket.description = data["description"]
+    if "priority" in data and data["priority"] is not None:
+        changes["priority"] = (ticket.priority, data["priority"])
+        ticket.priority = data["priority"]
+    if "labels" in data and data["labels"] is not None:
+        changes["labels"] = (ticket.label_list, data["labels"])
+        ticket.label_list = data["labels"]
+    if "assigned_to" in data:
+        # Normalize "" → None so actor FK is never set to an empty string.
+        new_assignee = data["assigned_to"] or None
+        if new_assignee:
+            assignee = await db.get(Actor, new_assignee)
+            if not assignee:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Assignee '{new_assignee}' not found",
+                )
+        changes["assigned_to"] = (ticket.assigned_to, new_assignee)
+        ticket.assigned_to = new_assignee
+    if "status" in data and data["status"] is not None:
+        changes["status"] = (ticket.status, data["status"])
+        ticket.status = data["status"]
+    if "blocked_by" in data:
+        raw_blocked = data["blocked_by"]
+        new_blocked_by = raw_blocked.strip() if isinstance(raw_blocked, str) else raw_blocked
+        if new_blocked_by == "":
+            new_blocked_by = None
+        changes["blocked_by"] = (ticket.blocked_by, new_blocked_by)
+        ticket.blocked_by = new_blocked_by
+    if "execution_context" in data:
+        changes["execution_context"] = True
+        ticket.execution_context_dict = data["execution_context"]
+    if "due_date" in data:
+        changes["due_date"] = (ticket.due_date, data["due_date"])
+        ticket.due_date = data["due_date"]
 
     action = "STATUS_CHANGE" if "status" in changes else "UPDATED"
     audit = AuditLog(

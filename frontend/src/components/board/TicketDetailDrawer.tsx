@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useEffect, useId, useRef, useState } from "react";
-import { Check, RotateCcw, Send, X } from "lucide-react";
-import { addComment, fetchTicket, moveTicket } from "@/lib/api";
+import { AlertOctagon, Check, RotateCcw, Save, Send, X } from "lucide-react";
+import { addComment, fetchTicket, moveTicket, updateTicket } from "@/lib/api";
 import {
   buildReviewDecisionComment,
   columnStageForTicket,
@@ -10,36 +10,58 @@ import {
   reviewDecisionRequiresNote,
   type ReviewDecision,
 } from "@/lib/reviewDecision";
-import { Column, Ticket, TicketComment } from "@/lib/types";
+import {
+  buildTicketUpdatePayload,
+  isTicketEditDirty,
+  ticketToEditFields,
+  type TicketEditFields,
+} from "@/lib/ticketEdit";
+import { Actor, Column, Ticket, TicketComment, TicketPriority } from "@/lib/types";
 import { preferReaderFocus, trapTabKey } from "@/lib/focusTrap";
 import { ActorBadge } from "../actor/ActorBadge";
 
 interface TicketDetailDrawerProps {
   ticket: Ticket | null;
   columns: Column[];
+  actors: Actor[];
   onClose: () => void;
   onDelegate?: (ticket: Ticket) => void;
   /** Called after a successful comment so the parent can queue a board refresh. */
   onCommented?: () => void;
+  /** Called after fields are saved so the parent can queue a board refresh. */
+  onUpdated?: () => void;
   /** Called after approve / request-changes so the parent can refresh and close. */
   onReviewDecision?: () => void;
 }
 
+const PRIORITIES: TicketPriority[] = ["low", "medium", "high", "urgent"];
+
 export function TicketDetailDrawer({
   ticket,
   columns,
+  actors,
   onClose,
   onDelegate,
   onCommented,
+  onUpdated,
   onReviewDecision,
 }: TicketDetailDrawerProps) {
   const ticketId = ticket?.ticket_id ?? null;
   const [detail, setDetail] = useState<Ticket | null>(ticket);
+  const [edit, setEdit] = useState<TicketEditFields | null>(null);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
   const commentFieldId = useId();
+  const titleFieldId = useId();
+  const descFieldId = useId();
+  const priorityFieldId = useId();
+  const assigneeFieldId = useId();
+  const blockedFieldId = useId();
+  const blockedByFieldId = useId();
   const panelRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -47,21 +69,31 @@ export function TicketDetailDrawer({
   useEffect(() => {
     if (!ticketId) {
       setDetail(null);
+      setEdit(null);
       setDraft("");
       setCommentError(null);
+      setEditError(null);
       return;
     }
     setDetail(ticket);
+    setEdit(ticket ? ticketToEditFields(ticket) : null);
     setDraft("");
     setCommentError(null);
+    setEditError(null);
     let cancelled = false;
     setLoading(true);
     fetchTicket(ticketId)
       .then((full) => {
-        if (!cancelled) setDetail(full);
+        if (!cancelled) {
+          setDetail(full);
+          setEdit(ticketToEditFields(full));
+        }
       })
       .catch(() => {
-        if (!cancelled && ticket) setDetail(ticket);
+        if (!cancelled && ticket) {
+          setDetail(ticket);
+          setEdit(ticketToEditFields(ticket));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -112,9 +144,49 @@ export function TicketDetailDrawer({
     });
   };
 
+  const patchEdit = <K extends keyof TicketEditFields>(key: K, value: TicketEditFields[K]) => {
+    setEdit((prev) => (prev ? { ...prev, [key]: value } : prev));
+    setEditError(null);
+  };
+
+  const handleSaveEdits = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ticketId || !detail || !edit || saving || submitting) return;
+    if (!edit.title.trim()) {
+      setEditError("Title is required.");
+      return;
+    }
+    const stage = columnStageForTicket(columns, detail.column_id);
+    const payload = buildTicketUpdatePayload(detail, edit, stage);
+    if (!payload) return;
+
+    setSaving(true);
+    setEditError(null);
+    try {
+      const updated = await updateTicket(ticketId, payload);
+      setDetail((prev) => {
+        if (!prev) return updated;
+        return {
+          ...prev,
+          ...updated,
+          subtask_count: prev.subtask_count,
+          subtask_done_count: prev.subtask_done_count,
+          comments: prev.comments,
+          subtasks: prev.subtasks,
+        };
+      });
+      setEdit(ticketToEditFields(updated));
+      onUpdated?.();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Failed to save changes");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSubmitComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ticketId || !draft.trim() || submitting) return;
+    if (!ticketId || !draft.trim() || submitting || saving) return;
     setSubmitting(true);
     setCommentError(null);
     try {
@@ -130,7 +202,7 @@ export function TicketDetailDrawer({
   };
 
   const handleReviewDecision = async (decision: ReviewDecision) => {
-    if (!ticketId || !detail || submitting) return;
+    if (!ticketId || !detail || submitting || saving) return;
     if (reviewDecisionRequiresNote(decision, draft)) {
       setCommentError(
         decision === "approve"
@@ -170,10 +242,11 @@ export function TicketDetailDrawer({
     }
   };
 
-  if (!ticketId || !detail) return null;
+  if (!ticketId || !detail || !edit) return null;
 
   const stage = columnStageForTicket(columns, detail.column_id);
   const isReview = stage === "review";
+  const dirty = isTicketEditDirty(detail, edit);
 
   const progress =
     detail.subtask_count > 0
@@ -201,13 +274,24 @@ export function TicketDetailDrawer({
         className="relative flex h-[min(92dvh,100%)] w-full max-w-md flex-col rounded-t-2xl border border-[var(--border)] bg-[var(--surface)] shadow-xl sm:h-full sm:rounded-none sm:border-l sm:border-y-0 sm:border-r-0"
       >
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border)] px-4 py-4 pt-[max(1rem,env(safe-area-inset-top))] sm:px-5">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="font-mono text-[11px] text-[var(--muted)]">{detail.ticket_id}</p>
-            <h2 className="mt-1 text-lg font-semibold leading-snug text-[var(--foreground)]">{detail.title}</h2>
+            <label htmlFor={titleFieldId} className="sr-only">
+              Title
+            </label>
+            <input
+              id={titleFieldId}
+              form="ticket-edit-form"
+              className="ak-input mt-1 text-lg font-semibold leading-snug"
+              value={edit.title}
+              onChange={(e) => patchEdit("title", e.target.value)}
+              disabled={saving}
+              maxLength={256}
+            />
           </div>
           <button
             type="button"
-            className="ak-btn-ghost p-1.5"
+            className="ak-btn-ghost shrink-0 p-1.5"
             aria-label="Close"
             data-drawer-close
             onClick={onClose}
@@ -219,8 +303,14 @@ export function TicketDetailDrawer({
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 text-sm sm:px-5">
           {loading ? <p className="text-xs text-[var(--muted)]">Loading full context…</p> : null}
 
-          <div className="flex flex-wrap gap-2">
-            <span className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] uppercase text-[var(--muted)]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded-md border px-2 py-1 text-[11px] uppercase ${
+                detail.status === "blocked"
+                  ? "border-[var(--danger)]/40 text-[var(--danger)]"
+                  : "border-[var(--border)] text-[var(--muted)]"
+              }`}
+            >
               {detail.status}
             </span>
             {stage ? (
@@ -228,9 +318,6 @@ export function TicketDetailDrawer({
                 {stage.replace("_", " ")}
               </span>
             ) : null}
-            <span className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] uppercase text-[var(--muted)]">
-              {detail.priority}
-            </span>
             <ActorBadge actorId={detail.assigned_to} />
           </div>
 
@@ -241,14 +328,125 @@ export function TicketDetailDrawer({
             </p>
           ) : null}
 
-          <section>
-            <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-              Description
-            </h3>
-            <p className="whitespace-pre-wrap leading-relaxed text-[var(--foreground)]">
-              {detail.description || "No description."}
-            </p>
-          </section>
+          <form id="ticket-edit-form" onSubmit={handleSaveEdits} className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor={priorityFieldId}
+                  className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
+                >
+                  Priority
+                </label>
+                <select
+                  id={priorityFieldId}
+                  className="ak-input"
+                  value={edit.priority}
+                  onChange={(e) => patchEdit("priority", e.target.value as TicketPriority)}
+                  disabled={saving}
+                >
+                  {PRIORITIES.map((p) => (
+                    <option key={p} value={p}>
+                      {p.charAt(0).toUpperCase() + p.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor={assigneeFieldId}
+                  className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
+                >
+                  Assignee
+                </label>
+                <select
+                  id={assigneeFieldId}
+                  className="ak-input"
+                  value={edit.assigned_to}
+                  onChange={(e) => patchEdit("assigned_to", e.target.value)}
+                  disabled={saving}
+                >
+                  <option value="">Unassigned</option>
+                  {edit.assigned_to && !actors.some((a) => a.actor_id === edit.assigned_to) ? (
+                    <option value={edit.assigned_to}>@{edit.assigned_to}</option>
+                  ) : null}
+                  {actors.map((a) => (
+                    <option key={a.actor_id} value={a.actor_id}>
+                      {a.name} ({a.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor={descFieldId}
+                className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
+              >
+                Description
+              </label>
+              <textarea
+                id={descFieldId}
+                className="ak-input min-h-[5rem] resize-y"
+                rows={4}
+                value={edit.description}
+                onChange={(e) => patchEdit("description", e.target.value)}
+                placeholder="Acceptance criteria or agent instructions"
+                disabled={saving}
+              />
+            </div>
+
+            <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <input
+                  id={blockedFieldId}
+                  type="checkbox"
+                  className="h-4 w-4 accent-[var(--danger)]"
+                  checked={edit.blocked}
+                  onChange={(e) => patchEdit("blocked", e.target.checked)}
+                  disabled={saving}
+                />
+                <label
+                  htmlFor={blockedFieldId}
+                  className="flex items-center gap-1.5 text-xs font-medium text-[var(--foreground)]"
+                >
+                  <AlertOctagon className="h-3.5 w-3.5 text-[var(--danger)]" />
+                  Mark as blocked
+                </label>
+              </div>
+              {edit.blocked ? (
+                <div>
+                  <label
+                    htmlFor={blockedByFieldId}
+                    className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
+                  >
+                    Blocked by / reason
+                  </label>
+                  <input
+                    id={blockedByFieldId}
+                    className="ak-input"
+                    value={edit.blocked_by}
+                    onChange={(e) => patchEdit("blocked_by", e.target.value)}
+                    placeholder="e.g. waiting on API credentials"
+                    disabled={saving}
+                  />
+                </div>
+              ) : null}
+            </div>
+
+            {editError ? <p className="text-xs text-[var(--danger)]">{editError}</p> : null}
+
+            <div className="flex items-center justify-end">
+              <button
+                type="submit"
+                className="ak-btn-primary"
+                disabled={saving || submitting || !dirty || !edit.title.trim()}
+              >
+                <Save className="h-4 w-4" />
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </form>
 
           {progress !== null ? (
             <section>
@@ -323,7 +521,7 @@ export function TicketDetailDrawer({
                   ? "What looks good, or what should change…"
                   : "Notes, questions, or progress…"
               }
-              disabled={submitting}
+              disabled={submitting || saving}
             />
             {commentError ? <p className="text-xs text-[var(--danger)]">{commentError}</p> : null}
 
@@ -333,7 +531,7 @@ export function TicketDetailDrawer({
                   <button
                     type="button"
                     className="ak-btn-secondary w-full"
-                    disabled={submitting}
+                    disabled={submitting || saving}
                     onClick={() => void handleReviewDecision("request_changes")}
                   >
                     <RotateCcw className="h-4 w-4" />
@@ -342,7 +540,7 @@ export function TicketDetailDrawer({
                   <button
                     type="button"
                     className="ak-btn-primary w-full"
-                    disabled={submitting}
+                    disabled={submitting || saving}
                     onClick={() => void handleReviewDecision("approve")}
                   >
                     <Check className="h-4 w-4" />
@@ -356,7 +554,7 @@ export function TicketDetailDrawer({
                   <button
                     type="submit"
                     className="ak-btn-ghost text-[11px]"
-                    disabled={submitting || !draft.trim()}
+                    disabled={submitting || saving || !draft.trim()}
                     title="Post note without moving the ticket"
                   >
                     <Send className="h-3.5 w-3.5" />
@@ -386,7 +584,7 @@ export function TicketDetailDrawer({
                 <button
                   type="submit"
                   className="ak-btn-primary"
-                  disabled={submitting || !draft.trim()}
+                  disabled={submitting || saving || !draft.trim()}
                 >
                   <Send className="h-4 w-4" />
                   {submitting ? "Posting…" : "Post"}

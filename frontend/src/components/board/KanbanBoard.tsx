@@ -444,11 +444,16 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       <TicketDetailDrawer
         ticket={detailTicket}
         columns={board.columns}
+        actors={actors}
         onClose={closeDetail}
         onDelegate={setDelegatingTicket}
         onCommented={() => {
           // Drawer stays open (live refresh paused); flush board when it closes.
           pendingLiveRefreshRef.current = true;
+        }}
+        onUpdated={() => {
+          pendingLiveRefreshRef.current = true;
+          void reloadBoard({ silent: true });
         }}
         onReviewDecision={() => {
           pendingLiveRefreshRef.current = true;
