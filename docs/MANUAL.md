@@ -274,6 +274,15 @@ uv run ak5 ticket block TK-001 --reason "클라우드 스토리지 API 키 발�
 uv run ak5 ticket update TK-001 --priority urgent --assign agent_code_reviewer
 ```
 
+#### 7) 산출물 및 파일 첨부 / 다운로드
+```bash
+# 산출물/파일 첨부
+uv run ak5 ticket attach TK-001 ./benchmark_results.json
+
+# 산출물/파일 다운로드
+uv run ak5 ticket download-attachment TK-001 att_abc123 --output ./downloaded.json
+```
+
 ### 4.6 신규 프로젝트 보드 개설 (`ak5 create-board`)
 새로운 프로젝트 전용 칸반 보드를 4개 표준 컬럼(To Do, In Progress, Review, Done)과 함께 즉시 개설합니다.
 ```bash
@@ -374,6 +383,10 @@ Claude Desktop (`claude_desktop_config.json`) 또는 Cursor, Antigravity, Windsu
 | `PATCH`| `/tickets/{ticket_id}/move` | 티켓 컬럼 이동 및 인접 카드 기반 새 Lexorank 계산 |
 | `POST` | `/tickets/{ticket_id}/delegate` | 서브태스크 생성, 부모-자식 연결, 위임 코멘트 기록 |
 | `POST` | `/tickets/{ticket_id}/comments` | 일반 또는 에이전트 내부 추론(`is_internal=true`) 코멘트 작성 |
+| `POST` | `/tickets/{ticket_id}/attachments` | 산출물 및 파일 업로드 첨부 |
+| `GET` | `/tickets/{ticket_id}/attachments` | 티켓에 첨부된 산출물/파일 목록 조회 |
+| `GET` | `/tickets/{ticket_id}/attachments/{attachment_id}` | 첨부 파일 바이너리 다운로드 |
+| `DELETE` | `/tickets/{ticket_id}/attachments/{attachment_id}` | 첨부 파일 삭제 |
 | `GET` | `/events/stream` | Server-Sent Events (SSE) 실시간 브로드캐스트 스트림 |
 
 ### 6.2 웹 대시보드 인증 및 시스템 API

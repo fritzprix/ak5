@@ -16,6 +16,7 @@ from ak5.schemas.board import (
 from ak5.schemas.column import ColumnBase, ColumnCreate, ColumnOut
 from ak5.schemas.event import SSEEventOut
 from ak5.schemas.ticket import (
+    TicketAttachmentOut,
     TicketBase,
     TicketCommentBase,
     TicketCommentCreate,
@@ -43,6 +44,7 @@ __all__ = [
     "ColumnOut",
     "ColumnWithTicketsOut",
     "SSEEventOut",
+    "TicketAttachmentOut",
     "TicketBase",
     "TicketCommentBase",
     "TicketCommentCreate",

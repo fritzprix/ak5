@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     func,
@@ -100,6 +101,12 @@ class Ticket(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="TicketComment.created_at",
     )
+    attachments: Mapped[list["TicketAttachment"]] = relationship(
+        "TicketAttachment",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketAttachment.created_at",
+    )
 
     @property
     def label_list(self) -> list[str]:
@@ -152,3 +159,37 @@ class TicketComment(Base):
 
     ticket: Mapped["Ticket"] = relationship("Ticket", back_populates="comments")
     author: Mapped["Actor"] = relationship("Actor", foreign_keys=[actor_id])
+
+
+class TicketAttachment(Base):
+    __tablename__ = "ticket_attachments"
+    __table_args__ = (Index("idx_attachments_ticket", "ticket_id"),)
+
+    attachment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.ticket_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    actor_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("actors.actor_id"),
+        nullable=False,
+    )
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        default="application/octet-stream",
+    )
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    ticket: Mapped["Ticket"] = relationship("Ticket", back_populates="attachments")
+    uploader: Mapped["Actor"] = relationship("Actor", foreign_keys=[actor_id])

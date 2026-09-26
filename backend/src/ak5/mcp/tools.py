@@ -120,6 +120,14 @@ async def ak5_get_ticket_context(ticket_id: str) -> list[TextContent]:
             int_flag = " [INTERNAL]" if c.get("is_internal") else ""
             lines.append(f"  - @{c['actor_id']}{int_flag}: {c['content']}")
 
+    attachments = ticket.get("attachments", [])
+    if attachments:
+        lines.append(f"\nAttachments ({len(attachments)} total):")
+        for a in attachments:
+            lines.append(
+                f"  - [{a.get('attachment_id')}] {a.get('filename')} ({a.get('file_size')} bytes, uploaded by @{a.get('actor_id')})"
+            )
+
     exec_ctx = ticket.get("execution_context")
     if exec_ctx:
         lines.append(f"\nExecution Context:\n{json.dumps(exec_ctx, indent=2)}")
@@ -164,8 +172,5 @@ async def ak5_report_block(
         required_actor_id=required_actor_id,
     )
     mention_str = f" @{required_actor_id}" if required_actor_id else ""
-    result_text = (
-        f"⚠️ Ticket '{ticket_id}' is now BLOCKED.{mention_str}\n"
-        f"  Reason: {blocking_reason}"
-    )
+    result_text = f"⚠️ Ticket '{ticket_id}' is now BLOCKED.{mention_str}\n  Reason: {blocking_reason}"
     return [TextContent(type="text", text=result_text)]

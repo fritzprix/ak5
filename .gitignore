@@ -32,12 +32,13 @@ ENV/
 .env.*.local
 
 
-# Database
+# Database & Storage
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
+data/
 
 # Node / Frontend
 node_modules/

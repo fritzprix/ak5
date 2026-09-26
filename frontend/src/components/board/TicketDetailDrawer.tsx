@@ -1,8 +1,16 @@
 "use client";
 
 import React, { useEffect, useId, useRef, useState } from "react";
-import { AlertOctagon, Check, RotateCcw, Save, Send, X } from "lucide-react";
-import { addComment, fetchTicket, moveTicket, updateTicket } from "@/lib/api";
+import { AlertOctagon, Check, Download, Loader2, Paperclip, RotateCcw, Save, Send, Trash2, X } from "lucide-react";
+import {
+  addComment,
+  deleteAttachment,
+  fetchTicket,
+  getAttachmentDownloadUrl,
+  moveTicket,
+  updateTicket,
+  uploadAttachment,
+} from "@/lib/api";
 import {
   buildReviewDecisionComment,
   columnStageForTicket,
@@ -16,7 +24,7 @@ import {
   ticketToEditFields,
   type TicketEditFields,
 } from "@/lib/ticketEdit";
-import { Actor, Column, Ticket, TicketComment, TicketPriority } from "@/lib/types";
+import { Actor, Column, Ticket, TicketAttachment, TicketComment, TicketPriority } from "@/lib/types";
 import { preferReaderFocus, trapTabKey } from "@/lib/focusTrap";
 import { ActorBadge } from "../actor/ActorBadge";
 
@@ -55,6 +63,9 @@ export function TicketDetailDrawer({
   const [saving, setSaving] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const commentFieldId = useId();
   const titleFieldId = useId();
   const descFieldId = useId();
@@ -73,6 +84,7 @@ export function TicketDetailDrawer({
       setDraft("");
       setCommentError(null);
       setEditError(null);
+      setAttachmentError(null);
       return;
     }
     setDetail(ticket);
@@ -80,6 +92,7 @@ export function TicketDetailDrawer({
     setDraft("");
     setCommentError(null);
     setEditError(null);
+    setAttachmentError(null);
     let cancelled = false;
     setLoading(true);
     fetchTicket(ticketId)
@@ -242,6 +255,54 @@ export function TicketDetailDrawer({
     }
   };
 
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !ticketId) return;
+
+    setUploadingFile(true);
+    setAttachmentError(null);
+    try {
+      const created = await uploadAttachment(ticketId, file);
+      setDetail((prev) =>
+        prev
+          ? {
+              ...prev,
+              attachments: [...(prev.attachments ?? []), created],
+            }
+          : null
+      );
+      onUpdated?.();
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : "Failed to upload file");
+    } finally {
+      setUploadingFile(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const handleDeleteAttachment = async (attachmentId: string) => {
+    if (!ticketId) return;
+    setAttachmentError(null);
+    try {
+      await deleteAttachment(ticketId, attachmentId);
+      setDetail((prev) =>
+        prev
+          ? {
+              ...prev,
+              attachments: (prev.attachments ?? []).filter(
+                (a) => a.attachment_id !== attachmentId
+              ),
+            }
+          : null
+      );
+      onUpdated?.();
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : "Failed to delete attachment");
+    }
+  };
+
   if (!ticketId || !detail || !edit) return null;
 
   const stage = columnStageForTicket(columns, detail.column_id);
@@ -254,6 +315,7 @@ export function TicketDetailDrawer({
       : null;
 
   const comments = detail.comments ?? [];
+  const attachments = detail.attachments ?? [];
 
   return (
     <div
@@ -474,6 +536,101 @@ export function TicketDetailDrawer({
               ) : null}
             </section>
           ) : null}
+
+          <section>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)] flex items-center gap-1.5">
+                <Paperclip className="h-3.5 w-3.5" />
+                Attachments & Deliverables {attachments.length > 0 ? `(${attachments.length})` : ""}
+              </h3>
+              <div>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileSelect}
+                  className="hidden"
+                  disabled={uploadingFile || saving}
+                />
+                <button
+                  type="button"
+                  className="ak-btn-secondary py-1 px-2.5 text-xs inline-flex items-center gap-1.5"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadingFile || saving}
+                >
+                  {uploadingFile ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span>Uploading…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Paperclip className="h-3 w-3" />
+                      <span>Attach file</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {attachmentError ? (
+              <p className="mb-2 text-xs text-[var(--danger)]">{attachmentError}</p>
+            ) : null}
+
+            {attachments.length === 0 ? (
+              <p className="text-xs text-[var(--muted)]">No deliverables or files attached.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {attachments.map((att) => {
+                  const sizeKb =
+                    att.file_size >= 1024 * 1024
+                      ? `${(att.file_size / (1024 * 1024)).toFixed(1)} MB`
+                      : att.file_size >= 1024
+                      ? `${(att.file_size / 1024).toFixed(1)} KB`
+                      : `${att.file_size} B`;
+                  const downloadUrl = getAttachmentDownloadUrl(ticketId, att.attachment_id);
+
+                  return (
+                    <li
+                      key={att.attachment_id}
+                      className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Paperclip className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
+                        <div className="truncate">
+                          <span className="font-medium text-[var(--foreground)] truncate block">
+                            {att.filename}
+                          </span>
+                          <span className="text-[10px] text-[var(--muted)]">
+                            {sizeKb} · @{att.actor_id}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <a
+                          href={downloadUrl}
+                          download={att.filename}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ak-btn-ghost p-1 text-[var(--accent)] hover:text-[var(--accent-hover)]"
+                          title="Download file"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                        </a>
+                        <button
+                          type="button"
+                          className="ak-btn-ghost p-1 text-[var(--danger)] hover:bg-[var(--danger)]/10"
+                          onClick={() => handleDeleteAttachment(att.attachment_id)}
+                          title="Delete attachment"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
 
           <section>
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">

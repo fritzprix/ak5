@@ -88,6 +88,19 @@ class TicketOut(TicketBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TicketAttachmentOut(BaseModel):
+    attachment_id: str
+    ticket_id: str
+    actor_id: str
+    filename: str
+    file_size: int
+    content_type: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TicketDetailOut(TicketOut):
     comments: list[TicketCommentOut] = Field(default_factory=list)
     subtasks: list[TicketOut] = Field(default_factory=list)
+    attachments: list[TicketAttachmentOut] = Field(default_factory=list)

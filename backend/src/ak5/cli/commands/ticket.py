@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from typing import Any
 
 import click
@@ -50,10 +51,18 @@ def ticket_group() -> None:
 @ticket_group.command("create")
 @click.option("--title", "-t", required=True, help="Ticket title")
 @click.option("--desc", "-d", "description", default="", help="Detailed ticket description")
-@click.option("--board", "-b", "board_id", default="proj-core-engine", help="Target Board ID (default: proj-core-engine)")
-@click.option("--column", "-c", "column_name", default=None, help="Target column name, stage, or ID (default: first open column)")
-@click.option("--priority", "-p", type=click.Choice(["low", "medium", "high", "urgent"]), default="medium", help="Priority")
-@click.option("--assign", "-a", "assigned_to", default=None, help="Assignee Actor ID (e.g. user_pm, agent_image_worker)")
+@click.option(
+    "--board", "-b", "board_id", default="proj-core-engine", help="Target Board ID (default: proj-core-engine)"
+)
+@click.option(
+    "--column", "-c", "column_name", default=None, help="Target column name, stage, or ID (default: first open column)"
+)
+@click.option(
+    "--priority", "-p", type=click.Choice(["low", "medium", "high", "urgent"]), default="medium", help="Priority"
+)
+@click.option(
+    "--assign", "-a", "assigned_to", default=None, help="Assignee Actor ID (e.g. user_pm, agent_image_worker)"
+)
 @click.option("--labels", "-l", default="", help="Comma-separated labels (e.g. 'auth,backend,p1')")
 @click.option("--due", default=None, help="Due date (ISO format, e.g. '2026-10-01T00:00:00')")
 def create_ticket_cmd(
@@ -81,7 +90,9 @@ def create_ticket_cmd(
                 target_col = resolve_column(board_data, column_name)
                 if not target_col:
                     avail = ", ".join(f"'{c['name']}'" for c in board_data.get("columns", []))
-                    console.print(f"[bold red]✗ Column '{column_name}' not found on board '{board_id}'. Available: {avail}[/bold red]")
+                    console.print(
+                        f"[bold red]✗ Column '{column_name}' not found on board '{board_id}'. Available: {avail}[/bold red]"
+                    )
                     return
             else:
                 # Default to first column (usually To Do / stage open)
@@ -108,7 +119,9 @@ def create_ticket_cmd(
             ticket = resp.json()
 
         p_color = "red" if priority in ("urgent", "high") else ("yellow" if priority == "medium" else "dim")
-        console.print(f"[bold green]✓[/bold green] Ticket [cyan bold]{ticket['ticket_id']}[/cyan bold] created successfully!")
+        console.print(
+            f"[bold green]✓[/bold green] Ticket [cyan bold]{ticket['ticket_id']}[/cyan bold] created successfully!"
+        )
         console.print(
             f"  Title: [bold white]{ticket['title']}[/bold white]\n"
             f"  Board: [cyan]{board_id}[/cyan] | Column: [yellow]{target_col['name']}[/yellow] | Priority: [{p_color}][{priority.upper()}][/{p_color}]\n"
@@ -134,7 +147,9 @@ def view_ticket_cmd(ticket_id: str) -> None:
             resp.raise_for_status()
             t = resp.json()
 
-        p_color = "red" if t.get("priority") in ("urgent", "high") else ("yellow" if t.get("priority") == "medium" else "dim")
+        p_color = (
+            "red" if t.get("priority") in ("urgent", "high") else ("yellow" if t.get("priority") == "medium" else "dim")
+        )
         s_color = "green" if t.get("status") == "done" else ("red" if t.get("status") == "blocked" else "yellow")
 
         # Basic metadata table
@@ -185,13 +200,43 @@ def view_ticket_cmd(ticket_id: str) -> None:
             syntax = Syntax(json.dumps(exec_ctx, indent=2), "json", theme="monokai", line_numbers=False)
             console.print(Panel(syntax, title="⚡ Execution Context", expand=False))
 
+        # Attachments section
+        attachments = t.get("attachments", [])
+        if attachments:
+            att_table = Table(
+                title=f"📎 Attachments ({len(attachments)})", show_header=True, header_style="bold magenta"
+            )
+            att_table.add_column("ID", style="dim")
+            att_table.add_column("Filename", style="cyan")
+            att_table.add_column("Size", style="green")
+            att_table.add_column("Uploader", style="yellow")
+            att_table.add_column("Uploaded At", style="dim")
+            for a in attachments:
+                size_bytes = a.get("file_size", 0)
+                if size_bytes >= 1024 * 1024:
+                    size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+                elif size_bytes >= 1024:
+                    size_str = f"{size_bytes / 1024:.1f} KB"
+                else:
+                    size_str = f"{size_bytes} B"
+                att_table.add_row(
+                    a.get("attachment_id", ""),
+                    a.get("filename", ""),
+                    size_str,
+                    f"@{a.get('actor_id', '')}",
+                    str(a.get("created_at", "")),
+                )
+            console.print(att_table)
+
         # Comments section
         comments = t.get("comments", [])
         if comments:
             cmt_lines = []
             for c in comments:
                 internal_badge = " [bold magenta][INTERNAL][/bold magenta]" if c.get("is_internal") else ""
-                cmt_lines.append(f"[bold cyan]@{c['actor_id']}[/bold cyan]{internal_badge} [dim]({c['created_at']})[/dim]:\n  {c['content']}")
+                cmt_lines.append(
+                    f"[bold cyan]@{c['actor_id']}[/bold cyan]{internal_badge} [dim]({c['created_at']})[/dim]:\n  {c['content']}"
+                )
             console.print(Panel("\n\n".join(cmt_lines), title=f"💬 Recent Comments ({len(comments)})", expand=False))
 
     except httpx.ConnectError:
@@ -229,7 +274,9 @@ def execute_move_ticket(ticket_id: str, target_column: str, note: str | None = N
             matched_col = resolve_column(board_data, target_column)
             if not matched_col:
                 avail = ", ".join(f"'{c['name']}'" for c in board_data.get("columns", []))
-                console.print(f"[bold red]✗ Target column '{target_column}' not found on board '{board_id}'. Available: {avail}[/bold red]")
+                console.print(
+                    f"[bold red]✗ Target column '{target_column}' not found on board '{board_id}'. Available: {avail}[/bold red]"
+                )
                 return
 
             # Move ticket
@@ -287,7 +334,9 @@ def execute_comment_ticket(ticket_id: str, content: str, internal: bool = False)
             c = resp.json()
 
         int_flag = " [INTERNAL]" if c.get("is_internal") else ""
-        console.print(f"[bold green]✓[/bold green] Comment added to [cyan]{ticket_id}[/cyan]{int_flag} by [magenta]@{c['actor_id']}[/magenta]")
+        console.print(
+            f"[bold green]✓[/bold green] Comment added to [cyan]{ticket_id}[/cyan]{int_flag} by [magenta]@{c['actor_id']}[/magenta]"
+        )
     except httpx.ConnectError:
         console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
     except httpx.HTTPStatusError as e:
@@ -325,7 +374,9 @@ def block_ticket_cmd(ticket_id: str, reason: str, mention: str | None) -> None:
             )
 
         mention_info = f" (@{mention})" if mention else ""
-        console.print(f"[bold red]⚠️[/bold red] Ticket [cyan]{ticket_id}[/cyan] marked as [bold red]BLOCKED[/bold red]{mention_info}")
+        console.print(
+            f"[bold red]⚠️[/bold red] Ticket [cyan]{ticket_id}[/cyan] marked as [bold red]BLOCKED[/bold red]{mention_info}"
+        )
         console.print(f"  Reason: {reason}")
     except httpx.ConnectError:
         console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
@@ -387,6 +438,89 @@ def update_ticket_cmd(
         console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
     except httpx.HTTPStatusError as e:
         console.print(f"[bold red]✗ Update failed ({e.response.status_code}):[/bold red] {e.response.text}")
+    except Exception as e:
+        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+
+
+@ticket_group.command("attach")
+@click.argument("ticket_id")
+@click.argument("filepath", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def attach_cmd(ticket_id: str, filepath: Path) -> None:
+    """Attach a deliverable or file to a ticket."""
+    api_url = get_api_url()
+    headers = get_auth_headers(api_url)
+
+    try:
+        with open(filepath, "rb") as f:
+            files = {"file": (filepath.name, f, "application/octet-stream")}
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(
+                    f"{api_url}/tickets/{ticket_id}/attachments",
+                    files=files,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+        console.print(f"[bold green]✓ File attached successfully:[/bold green] [cyan]{data['filename']}[/cyan]")
+        console.print(f"  Attachment ID: [dim]{data['attachment_id']}[/dim]")
+        console.print(f"  Size: {data['file_size']} bytes")
+    except httpx.ConnectError:
+        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+    except httpx.HTTPStatusError as e:
+        console.print(f"[bold red]✗ Attachment upload failed ({e.response.status_code}):[/bold red] {e.response.text}")
+    except Exception as e:
+        console.print(f"[bold red]✗ Error:[/bold red] {e}")
+
+
+@ticket_group.command("download-attachment")
+@click.argument("ticket_id")
+@click.argument("attachment_id")
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    help="Output file destination path (default: original filename in current directory)",
+)
+def download_attachment_cmd(ticket_id: str, attachment_id: str, output: str | None) -> None:
+    """Download an attachment file from a ticket."""
+    api_url = get_api_url()
+    headers = get_auth_headers(api_url)
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(
+                f"{api_url}/tickets/{ticket_id}/attachments/{attachment_id}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+
+            # Determine destination filename
+            if output:
+                out_path = Path(output)
+            else:
+                cd_header = resp.headers.get("content-disposition", "")
+                filename = f"{attachment_id}.bin"
+                if "filename=" in cd_header:
+                    import re
+
+                    match = re.search(r'filename="?([^";]+)"?', cd_header)
+                    if match:
+                        filename = Path(match.group(1)).name or f"{attachment_id}.bin"
+                out_path = Path.cwd() / filename
+
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(resp.content)
+
+        console.print(
+            f"[bold green]✓ Downloaded attachment to:[/bold green] [cyan]{out_path.resolve()}[/cyan] ({len(resp.content)} bytes)"
+        )
+    except httpx.ConnectError:
+        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+    except httpx.HTTPStatusError as e:
+        console.print(
+            f"[bold red]✗ Attachment download failed ({e.response.status_code}):[/bold red] {e.response.text}"
+        )
     except Exception as e:
         console.print(f"[bold red]✗ Error:[/bold red] {e}")
 

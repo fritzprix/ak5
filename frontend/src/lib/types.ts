@@ -25,6 +25,16 @@ export interface TicketComment {
   created_at: string;
 }
 
+export interface TicketAttachment {
+  attachment_id: string;
+  ticket_id: string;
+  actor_id: string;
+  filename: string;
+  file_size: number;
+  content_type: string;
+  created_at: string;
+}
+
 export interface Ticket {
   ticket_id: string;
   board_id: string;
@@ -47,6 +57,7 @@ export interface Ticket {
   subtask_done_count: number;
   subtasks?: Ticket[];
   comments?: TicketComment[];
+  attachments?: TicketAttachment[];
 }
 
 export interface Column {

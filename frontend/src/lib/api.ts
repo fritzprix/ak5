@@ -1,5 +1,5 @@
 import type { TicketUpdatePayload } from "./ticketEdit";
-import { Board, BoardSummary, Ticket, TicketComment, Actor } from "./types";
+import { Board, BoardSummary, Ticket, TicketAttachment, TicketComment, Actor } from "./types";
 
 /** Same-origin by default so embedded FastAPI (`ak5 web`) needs no CORS/port split. */
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
@@ -220,6 +220,47 @@ export async function addComment(
   return res.json();
 }
 
+export function getAttachmentDownloadUrl(ticketId: string, attachmentId: string): string {
+  return `${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`;
+}
+
+export async function uploadAttachment(
+  ticketId: string,
+  file: File
+): Promise<TicketAttachment> {
+  const token = await getAuthToken();
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/attachments`, {
+    method: "POST",
+    headers: {
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: formData,
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function deleteAttachment(
+  ticketId: string,
+  attachmentId: string
+): Promise<void> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+}
+
 export function subscribeToBoardEvents(
   onEvent: (eventType: string, data: unknown) => void,
   options?: {
@@ -229,7 +270,15 @@ export function subscribeToBoardEvents(
 ): () => void {
   const eventSource = new EventSource(`${API_BASE}/events/stream`);
 
-  const events = ["TICKET_CREATED", "TICKET_MOVED", "TICKET_DELEGATED", "TICKET_UPDATED", "COMMENT_ADDED"];
+  const events = [
+    "TICKET_CREATED",
+    "TICKET_MOVED",
+    "TICKET_DELEGATED",
+    "TICKET_UPDATED",
+    "COMMENT_ADDED",
+    "ATTACHMENT_ADDED",
+    "ATTACHMENT_DELETED",
+  ];
 
   eventSource.onopen = () => {
     options?.onOpen?.();

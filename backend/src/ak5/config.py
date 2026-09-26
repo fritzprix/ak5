@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     WEB_USER: str = ""
     WEB_PASSWORD: str = ""
 
+    # Attachments configuration
+    ATTACHMENTS_DIR: str = "./data/attachments"
+    MAX_ATTACHMENT_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

@@ -1,20 +1,24 @@
 import json
 import uuid
+from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ak5.config import settings
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.models.audit import AuditLog
 from ak5.models.board import Board
 from ak5.models.column import Column
-from ak5.models.ticket import Ticket, TicketComment
+from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.routers.auth import get_current_actor
 from ak5.schemas.ticket import (
+    TicketAttachmentOut,
     TicketCommentCreate,
     TicketCommentOut,
     TicketCreate,
@@ -43,10 +47,7 @@ async def _assert_wip_allows(
     if count >= column.wip_limit:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"WIP limit ({column.wip_limit}) exceeded for column "
-                f"'{column.name}' ({column.column_id})"
-            ),
+            detail=(f"WIP limit ({column.wip_limit}) exceeded for column '{column.name}' ({column.column_id})"),
         )
 
 
@@ -102,7 +103,9 @@ async def create_ticket(
 
     column = await db.get(Column, req.column_id)
     if not column or column.board_id != req.board_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Column '{req.column_id}' does not belong to board")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Column '{req.column_id}' does not belong to board"
+        )
 
     if req.assigned_to:
         assignee = await db.get(Actor, req.assigned_to)
@@ -114,12 +117,7 @@ async def create_ticket(
     ticket_id = req.ticket_id or await _generate_ticket_id(db)
 
     # Find the last ticket in this column to place new ticket at the bottom
-    stmt_last = (
-        select(Ticket)
-        .where(Ticket.column_id == req.column_id)
-        .order_by(Ticket.rank.desc())
-        .limit(1)
-    )
+    stmt_last = select(Ticket).where(Ticket.column_id == req.column_id).order_by(Ticket.rank.desc()).limit(1)
     res_last = await db.execute(stmt_last)
     last_ticket = res_last.scalar_one_or_none()
     new_rank = rank_between(last_ticket.rank if last_ticket else None, None)
@@ -178,6 +176,7 @@ async def get_ticket_detail(
         .options(
             selectinload(Ticket.comments),
             selectinload(Ticket.subtasks),
+            selectinload(Ticket.attachments),
         )
     )
     result = await db.execute(stmt)
@@ -202,11 +201,13 @@ async def get_ticket_detail(
         for c in ticket.comments
     ]
     subtasks_out = [_format_ticket_out(s) for s in ticket.subtasks]
+    attachments_out = [TicketAttachmentOut.model_validate(a) for a in ticket.attachments]
 
     return TicketDetailOut(
         **base_out.model_dump(),
         comments=comments_out,
         subtasks=subtasks_out,
+        attachments=attachments_out,
     )
 
 
@@ -313,7 +314,9 @@ async def move_ticket(
 
     target_column = await db.get(Column, req.target_column_id)
     if not target_column:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Target column '{req.target_column_id}' not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Target column '{req.target_column_id}' not found"
+        )
 
     # WIP applies only when entering a different column (reorders within a column are allowed)
     if ticket.column_id != req.target_column_id:
@@ -354,12 +357,14 @@ async def move_ticket(
         action="MOVED",
         target_type="ticket",
         target_id=ticket_id,
-        payload=json.dumps({
-            "from_column": prev_col_id,
-            "to_column": req.target_column_id,
-            "new_rank": new_rank,
-            "status": ticket.status,
-        }),
+        payload=json.dumps(
+            {
+                "from_column": prev_col_id,
+                "to_column": req.target_column_id,
+                "new_rank": new_rank,
+                "status": ticket.status,
+            }
+        ),
     )
     db.add(audit)
 
@@ -370,7 +375,12 @@ async def move_ticket(
 
     await event_bus.publish(
         event_type="TICKET_MOVED",
-        data={"ticket": ticket_out.model_dump(mode="json"), "from_column": prev_col_id, "to_column": req.target_column_id, "actor_id": current_actor.actor_id},
+        data={
+            "ticket": ticket_out.model_dump(mode="json"),
+            "from_column": prev_col_id,
+            "to_column": req.target_column_id,
+            "actor_id": current_actor.actor_id,
+        },
     )
 
     return ticket_out
@@ -390,7 +400,9 @@ async def delegate_subtask(
 
     target_actor = await db.get(Actor, req.target_actor_id)
     if not target_actor:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Target actor '{req.target_actor_id}' not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Target actor '{req.target_actor_id}' not found"
+        )
 
     subtask_id = await _generate_ticket_id(db)
 
@@ -404,12 +416,7 @@ async def delegate_subtask(
     await _assert_wip_allows(db, target_col)
 
     # Determine rank in target column
-    stmt_last = (
-        select(Ticket)
-        .where(Ticket.column_id == target_col.column_id)
-        .order_by(Ticket.rank.desc())
-        .limit(1)
-    )
+    stmt_last = select(Ticket).where(Ticket.column_id == target_col.column_id).order_by(Ticket.rank.desc()).limit(1)
     res_last = await db.execute(stmt_last)
     last_ticket = res_last.scalar_one_or_none()
     new_rank = rank_between(last_ticket.rank if last_ticket else None, None)
@@ -448,11 +455,13 @@ async def delegate_subtask(
         action="DELEGATED",
         target_type="ticket",
         target_id=subtask_id,
-        payload=json.dumps({
-            "parent_ticket_id": parent.ticket_id,
-            "target_actor_id": target_actor.actor_id,
-            "title": req.subtask_title,
-        }),
+        payload=json.dumps(
+            {
+                "parent_ticket_id": parent.ticket_id,
+                "target_actor_id": target_actor.actor_id,
+                "title": req.subtask_title,
+            }
+        ),
     )
     db.add(audit)
 
@@ -515,3 +524,175 @@ async def add_comment(
     )
 
     return comment_out
+
+
+@router.post(
+    "/{ticket_id}/attachments",
+    response_model=TicketAttachmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_attachment(
+    ticket_id: str,
+    file: Annotated[UploadFile, File(...)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TicketAttachmentOut:
+    """Upload an attachment file to a ticket."""
+    ticket = await db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Ticket '{ticket_id}' not found",
+        )
+
+    raw_filename = file.filename or "attachment.bin"
+    # Extract only the base name to prevent directory traversal
+    clean_filename = Path(raw_filename).name or "attachment.bin"
+    attachment_id = f"att_{uuid.uuid4().hex[:12]}"
+    safe_disk_filename = f"{attachment_id}_{clean_filename}"
+
+    storage_dir = Path(settings.ATTACHMENTS_DIR).resolve()
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = storage_dir / safe_disk_filename
+
+    total_size = 0
+    try:
+        with open(dest_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):  # 1MB buffer
+                total_size += len(chunk)
+                if total_size > settings.MAX_ATTACHMENT_SIZE_BYTES:
+                    buffer.close()
+                    dest_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=f"File exceeds maximum allowed size ({settings.MAX_ATTACHMENT_SIZE_BYTES} bytes)",
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        dest_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save uploaded file: {exc}",
+        ) from exc
+
+    attachment = TicketAttachment(
+        attachment_id=attachment_id,
+        ticket_id=ticket_id,
+        actor_id=current_actor.actor_id,
+        filename=clean_filename,
+        file_size=total_size,
+        content_type=file.content_type or "application/octet-stream",
+        storage_path=str(dest_path),
+    )
+    db.add(attachment)
+
+    audit = AuditLog(
+        actor_id=current_actor.actor_id,
+        action="ATTACHMENT_UPLOADED",
+        target_type="ticket",
+        target_id=ticket_id,
+        payload=json.dumps({"attachment_id": attachment_id, "filename": clean_filename, "size": total_size}),
+    )
+    db.add(audit)
+    await db.commit()
+    await db.refresh(attachment)
+
+    attachment_out = TicketAttachmentOut.model_validate(attachment)
+    await event_bus.publish(
+        event_type="ATTACHMENT_ADDED",
+        data={"ticket_id": ticket_id, "attachment": attachment_out.model_dump(mode="json")},
+    )
+    return attachment_out
+
+
+@router.get("/{ticket_id}/attachments", response_model=list[TicketAttachmentOut])
+async def list_attachments(
+    ticket_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[TicketAttachmentOut]:
+    """List all attachments for a ticket."""
+    ticket = await db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Ticket '{ticket_id}' not found",
+        )
+
+    stmt = (
+        select(TicketAttachment)
+        .where(TicketAttachment.ticket_id == ticket_id)
+        .order_by(TicketAttachment.created_at.asc())
+    )
+    result = await db.execute(stmt)
+    attachments = result.scalars().all()
+    return [TicketAttachmentOut.model_validate(a) for a in attachments]
+
+
+@router.get("/{ticket_id}/attachments/{attachment_id}")
+async def download_attachment(
+    ticket_id: str,
+    attachment_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> FileResponse:
+    """Download an attachment file from a ticket."""
+    attachment = await db.get(TicketAttachment, attachment_id)
+    if not attachment or attachment.ticket_id != ticket_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Attachment '{attachment_id}' not found on ticket '{ticket_id}'",
+        )
+
+    storage_dir = Path(settings.ATTACHMENTS_DIR).resolve()
+    file_path = Path(attachment.storage_path).resolve()
+    if not file_path.is_relative_to(storage_dir) or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attachment file not found on storage",
+        )
+
+    return FileResponse(
+        path=file_path,
+        filename=attachment.filename,
+        media_type=attachment.content_type,
+    )
+
+
+@router.delete("/{ticket_id}/attachments/{attachment_id}")
+async def delete_attachment(
+    ticket_id: str,
+    attachment_id: str,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Delete an attachment file from a ticket."""
+    attachment = await db.get(TicketAttachment, attachment_id)
+    if not attachment or attachment.ticket_id != ticket_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Attachment '{attachment_id}' not found on ticket '{ticket_id}'",
+        )
+
+    storage_dir = Path(settings.ATTACHMENTS_DIR).resolve()
+    file_path = Path(attachment.storage_path).resolve()
+    if file_path.is_relative_to(storage_dir) and file_path.is_file():
+        file_path.unlink(missing_ok=True)
+
+    await db.delete(attachment)
+    audit = AuditLog(
+        actor_id=current_actor.actor_id,
+        action="ATTACHMENT_DELETED",
+        target_type="ticket",
+        target_id=ticket_id,
+        payload=json.dumps({"attachment_id": attachment_id, "filename": attachment.filename}),
+    )
+    db.add(audit)
+    await db.commit()
+
+    await event_bus.publish(
+        event_type="ATTACHMENT_DELETED",
+        data={"ticket_id": ticket_id, "attachment_id": attachment_id},
+    )
+
+    return {"deleted": True, "attachment_id": attachment_id}
