@@ -17,8 +17,10 @@ from ak5.routers.actors import router as actors_router
 from ak5.routers.auth import router as auth_router
 from ak5.routers.boards import router as boards_router
 from ak5.routers.events import router as events_router
+from ak5.routers.subscriptions import router as subscriptions_router
 from ak5.routers.tickets import router as tickets_router
 from ak5.routers.web_auth import router as web_auth_router
+from ak5.services.subscription_service import subscription_service
 from ak5.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 from ak5.web_ui_static import mount_web_ui, web_ui_available
 
@@ -108,7 +110,11 @@ async def lifespan(app: FastAPI):
     await run_sqlite_schema_migrations()
     # Seed initial entities
     await seed_initial_data()
+    # Start background event subscriber service
+    await subscription_service.start()
     yield
+    # Stop background event subscriber service
+    await subscription_service.stop()
     # Shutdown engine
     await engine.dispose()
 
@@ -138,7 +144,9 @@ app.include_router(actors_router, prefix=settings.API_V1_STR)
 app.include_router(boards_router, prefix=settings.API_V1_STR)
 app.include_router(tickets_router, prefix=settings.API_V1_STR)
 app.include_router(events_router, prefix=settings.API_V1_STR)
+app.include_router(subscriptions_router, prefix=settings.API_V1_STR)
 app.include_router(web_auth_router)
+
 
 # Mount Embedded MCP Bridge Endpoint (/mcp/sse, /mcp/messages)
 app.mount("/mcp", mcp_server.sse_app())

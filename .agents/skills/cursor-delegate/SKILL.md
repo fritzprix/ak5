@@ -180,15 +180,15 @@ python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
 You can run an automated background observer that triggers Cursor Agent whenever a ticket is assigned to `@cursor-agent`:
 
 ```bash
-# Launch real-time event listener on board
-ak5 subscribe proj-core-engine \
-  --event TICKET_DELEGATED \
+# Register a non-blocking server-side hook (exits immediately)
+ak5 subscribe create proj-core-engine \
+  --events TICKET_DELEGATED \
   --for-agent cursor-agent \
   --exec 'python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py --ticket-id "$AK5_TICKET_ID" --title "$AK5_TITLE" --mode review --comment --attach --move-to col_review'
 ```
 
 > [!IMPORTANT]
-> **Shell Injection Prevention**: In `--exec` strings, always use shell environment variables (**`$AK5_TICKET_ID`**, **`$AK5_TITLE`**, **`$AK5_BOARD_ID`**) instead of curly-bracket string substitutions (`{title}`). AK5 exports these variables directly into the subprocess environment.
+> **Hook contract**: `--exec` is run **literally**. Pass event data via **`$AK5_TICKET_ID`**, **`$AK5_TITLE`**, **`$AK5_SUMMARY`**, **`$AK5_BOARD_ID`**, or stdin JSON. Curly-brace tokens like `{title}` are **not** expanded.
 
 ---
 

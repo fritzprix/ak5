@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ak5.authz import RESERVED_ADMIN_ROLES, is_admin
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.routers.auth import get_current_actor
@@ -76,17 +77,32 @@ async def update_actor(
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ActorOut:
-    """Update actor details or status."""
+    """Update actor details or status (self or admin only; role escalation restricted)."""
+    # 1. Authorization: Only the actor themselves or an admin can update
+    if not (is_admin(current_actor) or current_actor.actor_id == actor_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: you cannot modify another actor's profile",
+        )
+
     stmt = select(Actor).where(Actor.actor_id == actor_id)
     result = await db.execute(stmt)
     actor = result.scalar_one_or_none()
     if not actor:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Actor '{actor_id}' not found")
 
+    # 2. Prevent role escalation to admin by non-admins
+    if req.role is not None:
+        target_role_lower = req.role.lower()
+        if target_role_lower in RESERVED_ADMIN_ROLES and not is_admin(current_actor):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: cannot self-escalate role to administrative level",
+            )
+        actor.role = req.role
+
     if req.name is not None:
         actor.name = req.name
-    if req.role is not None:
-        actor.role = req.role
     if req.description is not None:
         actor.description = req.description
     if req.capabilities is not None:

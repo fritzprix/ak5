@@ -8,6 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ak5.authz import RESERVED_ADMIN_IDS, RESERVED_ADMIN_ROLES
 from ak5.config import settings
 from ak5.database import get_db
 from ak5.models.actor import Actor
@@ -86,7 +87,12 @@ async def identify_actor(
     req: ActorIdentifyRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenResponse:
-    """Identify or register an Actor (Human PM/Dev or AI Agent) and issue JWT token."""
+    if req.actor_id.lower() in RESERVED_ADMIN_IDS or req.role.lower() in RESERVED_ADMIN_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot self-assign reserved administrative actor ID or role via public identify",
+        )
+
     stmt = select(Actor).where(Actor.actor_id == req.actor_id)
     result = await db.execute(stmt)
     actor = result.scalar_one_or_none()

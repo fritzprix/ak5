@@ -1,12 +1,7 @@
-import shlex
-
 import pytest
-from ak5.cli.commands.subscribe import (
-    execute_subscriber_command,
-    extract_event_context,
-    render_command_string,
-)
+from ak5.cli.commands.subscribe import execute_subscriber_command
 from ak5.cli.main import cli
+from ak5.services.event_context import extract_event_context
 from click.testing import CliRunner
 
 
@@ -51,35 +46,7 @@ def test_extract_event_context_ticket_moved():
     assert "moved to col_review by @agent_coder" in ctx["summary"]
 
 
-def test_render_command_string():
-    template = "curl -X POST https://example.com/api?ticket={ticket_id}&event={event} -d '{title}'"
-    ctx = {
-        "ticket_id": "TK-007",
-        "event": "TICKET_DELEGATED",
-        "title": "Secret Task",
-    }
-    rendered = render_command_string(template, ctx)
-    assert rendered == "curl -X POST https://example.com/api?ticket=TK-007&event=TICKET_DELEGATED -d 'Secret Task'"
-
-
-def test_render_command_string_injection_safety():
-    # Attempting shell injection via title with quotes and commands
-    malicious = "Safe Title'; rm -rf /; echo 'pwned"
-    ctx = {"title": malicious}
-    expected = f"echo {shlex.quote(malicious)}"
-
-    rendered = render_command_string("echo {title}", ctx)
-    assert rendered == expected
-
-    # Template with explicit quotes around the placeholder must collapse to one safe token
-    rendered_single = render_command_string("echo '{title}'", ctx)
-    rendered_double = render_command_string('echo "{title}"', ctx)
-    assert rendered_single == expected
-    assert rendered_double == expected
-
-
 def test_extract_event_context_malformed_nested_data():
-    # Ticket and comment are not dicts
     data = {
         "ticket": "invalid_string_ticket",
         "comment": 12345,
@@ -91,11 +58,9 @@ def test_extract_event_context_malformed_nested_data():
     assert ctx["board_id"] == ""
 
 
-
 @pytest.mark.asyncio
-async def test_execute_subscriber_command(tmp_path):
+async def test_execute_subscriber_command_uses_env(tmp_path):
     output_file = tmp_path / "out.txt"
-    # Shell command writing env vars and reading stdin
     cmd = f'echo "$AK5_EVENT $AK5_TICKET_ID" > "{output_file}"'
     ctx = {
         "event": "TICKET_CREATED",
@@ -113,19 +78,52 @@ async def test_execute_subscriber_command(tmp_path):
     assert output_file.read_text().strip() == "TICKET_CREATED TK-999"
 
 
+@pytest.mark.asyncio
+async def test_execute_subscriber_command_passes_stdin(tmp_path):
+    output_file = tmp_path / "stdin.json"
+    cmd = f'cat > "{output_file}"'
+    ctx = {
+        "event": "TICKET_CREATED",
+        "event_type": "TICKET_CREATED",
+        "board_id": "board-1",
+        "ticket_id": "TK-1",
+        "title": "t",
+        "actor_id": "a",
+        "status": "open",
+        "summary": "s",
+        "data_json": "{}",
+    }
+    payload = {"event": "TICKET_CREATED", "data": {"ticket": {"ticket_id": "TK-1"}}}
+    code = await execute_subscriber_command(cmd, ctx, payload, pass_stdin=True)
+    assert code == 0
+    assert '"TICKET_CREATED"' in output_file.read_text()
+
+
 def test_cli_subscribe_dry_run_help():
     runner = CliRunner()
-    result = runner.invoke(cli, ["subscribe", "--help"])
+    result = runner.invoke(cli, ["subscribe", "create", "--help"])
     assert result.exit_code == 0
     assert "--exec" in result.output
     assert "--events" in result.output
     assert "--for-agent" in result.output
+    assert "placeholder" in result.output.lower() or "$AK5_" in result.output or "stdin" in result.output.lower()
+
+
+def test_cli_subscribe_dry_run_warns_on_legacy_placeholders():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["subscribe", "create", "proj-core-engine", "--exec", "echo {ticket_id}", "--dry-run"],
+    )
+    assert result.exit_code == 0
+    assert "Placeholder tokens are not expanded" in result.output
+    assert "Dry-run mode: Subscription was not registered." in result.output
 
 
 @pytest.mark.asyncio
 async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch):
     output_file = tmp_path / "handled.txt"
-    exec_cmd = f'echo "{{event}}:{{ticket_id}}:{{title}}" > "{output_file}"'
+    exec_cmd = f'echo "[$AK5_EVENT] $AK5_TICKET_ID:$AK5_TITLE" > "{output_file}"'
 
     sse_lines = [
         "event: TICKET_CREATED",
@@ -154,7 +152,7 @@ async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch)
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-        def stream(self, method, url):
+        def stream(self, method, url, **kwargs):
             return FakeStream()
 
     monkeypatch.setattr("httpx.AsyncClient", FakeClient)
@@ -164,22 +162,19 @@ async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch)
     await run_subscription_loop(
         api_url="http://test",
         target_board_id="proj-core-engine",
-        exec_template=exec_cmd,
+        exec_command=exec_cmd,
         run_once=True,
     )
 
     assert output_file.exists()
-    # Title contains a space, so shlex.quote wraps it in single quotes
-    assert output_file.read_text().strip() == "TICKET_CREATED:TK-777:'Auto Trigger'"
+    assert output_file.read_text().strip() == "[TICKET_CREATED] TK-777:Auto Trigger"
 
 
 @pytest.mark.asyncio
 async def test_subscription_loop_skips_unmatched_or_missing_board(tmp_path, monkeypatch):
     output_file = tmp_path / "handled_unmatched.txt"
-    exec_cmd = f'echo "{{event}}:{{ticket_id}}" > "{output_file}"'
+    exec_cmd = f'echo "$AK5_EVENT:$AK5_TICKET_ID" > "{output_file}"'
 
-    # 1. Event from different board
-    # 2. Event with no board_id at all
     sse_lines = [
         "event: TICKET_CREATED",
         'data: {"board_id": "other-board", "ticket": {"ticket_id": "TK-888", "title": "Other Board Ticket"}}',
@@ -210,7 +205,7 @@ async def test_subscription_loop_skips_unmatched_or_missing_board(tmp_path, monk
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-        def stream(self, method, url):
+        def stream(self, method, url, **kwargs):
             return FakeStream()
 
     monkeypatch.setattr("httpx.AsyncClient", FakeClient)
@@ -220,11 +215,27 @@ async def test_subscription_loop_skips_unmatched_or_missing_board(tmp_path, monk
     await run_subscription_loop(
         api_url="http://test",
         target_board_id="proj-core-engine",
-        exec_template=exec_cmd,
+        exec_command=exec_cmd,
         run_once=True,
     )
 
-    # Neither event matches target_board_id "proj-core-engine", so output file should NOT be created
     assert not output_file.exists()
 
 
+def test_subscribe_architecture_requirement():
+    """Register & Return: dry-run exits immediately without blocking."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "subscribe",
+            "create",
+            "proj-core-engine",
+            "--exec",
+            "echo hello",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Dry-run mode: Subscription was not registered." in result.output
+    assert "Hook Command (literal)" in result.output

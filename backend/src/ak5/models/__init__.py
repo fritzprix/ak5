@@ -3,6 +3,7 @@ from ak5.models.audit import AuditLog
 from ak5.models.base import Base
 from ak5.models.board import Board
 from ak5.models.column import Column
+from ak5.models.subscription import Subscription
 from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
 
 __all__ = [
@@ -11,7 +12,9 @@ __all__ = [
     "Base",
     "Board",
     "Column",
+    "Subscription",
     "Ticket",
     "TicketAttachment",
     "TicketComment",
 ]
+

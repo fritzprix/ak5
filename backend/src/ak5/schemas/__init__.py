@@ -15,6 +15,11 @@ from ak5.schemas.board import (
 )
 from ak5.schemas.column import ColumnBase, ColumnCreate, ColumnOut
 from ak5.schemas.event import SSEEventOut
+from ak5.schemas.subscription import (
+    SubscriptionBase,
+    SubscriptionCreate,
+    SubscriptionOut,
+)
 from ak5.schemas.ticket import (
     TicketAttachmentOut,
     TicketBase,
@@ -44,7 +49,11 @@ __all__ = [
     "ColumnOut",
     "ColumnWithTicketsOut",
     "SSEEventOut",
+    "SubscriptionBase",
+    "SubscriptionCreate",
+    "SubscriptionOut",
     "TicketAttachmentOut",
+
     "TicketBase",
     "TicketCommentBase",
     "TicketCommentCreate",

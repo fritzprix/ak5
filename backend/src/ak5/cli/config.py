@@ -32,7 +32,10 @@ def get_actor_id() -> str | None:
 
 
 def get_api_url() -> str:
-    return load_session().get("api_url", DEFAULT_API_URL)
+    import os
+
+    return os.environ.get("AK5_API_URL") or load_session().get("api_url", DEFAULT_API_URL)
+
 
 
 def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
