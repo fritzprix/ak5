@@ -230,6 +230,6 @@ async def ak5_archive_ticket(
 ) -> list[TextContent]:
     """티켓을 아카이브(보관) 처리하여 일반 활성 보드 뷰에서 숨기거나, 필요 시 아카이브를 해제(unarchive=True)합니다."""
     client = get_client()
-    res = await client.archive_ticket(ticket_id=ticket_id, unarchive=unarchive)
+    await client.archive_ticket(ticket_id=ticket_id, unarchive=unarchive)
     action_text = "unarchived" if unarchive else "archived"
     return [TextContent(type="text", text=f"✓ Ticket '{ticket_id}' successfully {action_text}.")]

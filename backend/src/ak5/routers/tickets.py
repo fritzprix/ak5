@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
 import json
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -350,7 +350,7 @@ async def update_ticket(
         if ticket.is_archived != new_archived:
             changes["is_archived"] = (ticket.is_archived, new_archived)
             ticket.is_archived = new_archived
-            ticket.archived_at = datetime.now(timezone.utc) if new_archived else None
+            ticket.archived_at = datetime.now(UTC) if new_archived else None
 
     action = (
         "ARCHIVED"
@@ -394,7 +394,7 @@ async def archive_ticket(
 
     changes = {"is_archived": (ticket.is_archived, True)}
     ticket.is_archived = True
-    ticket.archived_at = datetime.now(timezone.utc)
+    ticket.archived_at = datetime.now(UTC)
 
     audit = AuditLog(
         actor_id=current_actor.actor_id,
