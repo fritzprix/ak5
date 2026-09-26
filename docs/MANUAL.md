@@ -302,6 +302,45 @@ uv run ak5 whoami
 uv run ak5 demo
 ```
 
+### 4.9 실시간 보드 이벤트 구독 및 셸 명령 실행 (`ak5 subscribe`)
+외부 자율 에이전트 CLI, 웹훅 전송기(`curl`), 알림 스크립트, 로컬 배치 등이 특정 칸반 보드의 상태 변화(SSE 이벤트)를 실시간으로 관측(observe)하고, 이벤트 발생 시 사전에 정의한 셸 명령을 동적으로 실행합니다.
+
+```bash
+# 기본 사용법
+uv run ak5 subscribe <BOARD_ID> --exec "<SHELL_COMMAND>" [OPTIONS]
+
+# 예시 1: curl 웹훅으로 이벤트 페이로드 전달 ($AK5_DATA_JSON 환경변수 활용)
+uv run ak5 subscribe proj-core-engine \
+  --exec 'curl -X POST https://example.com/webhook -H "Content-Type: application/json" -d "$AK5_DATA_JSON"'
+
+# 예시 2: 템플릿 치환 변수를 활용한 알림 스크립트 또는 외부 CLI 호출
+uv run ak5 subscribe proj-core-engine \
+  --events TICKET_MOVED,TICKET_DELEGATED \
+  --exec 'agent -p "subscription from ak5: Ticket {ticket_id} ({title}) received {event}. Summary: {summary}"'
+
+# 예시 3: stdin 파이프를 통한 이벤트 스트림 가공 (jq 활용)
+uv run ak5 subscribe proj-core-engine \
+  --exec 'jq -c "{event: .event, ticket: .data.ticket.ticket_id}" >> /tmp/ak5_events.log'
+
+# 예시 4: 특정 에이전트에게 할당된 이벤트만 필터링 및 쿨다운(debounce) 적용
+uv run ak5 subscribe proj-core-engine \
+  --for-agent cursor-agent \
+  --debounce 2.0 \
+  --exec './scripts/on_assigned.sh "{ticket_id}" "{title}"'
+```
+
+#### 지원되는 템플릿 치환 변수 및 환경 변수
+| 템플릿 변수 | 환경 변수 | 설명 |
+| :--- | :--- | :--- |
+| `{event}` / `{event_type}` | `AK5_EVENT` / `AK5_EVENT_TYPE` | 이벤트 타입 (`TICKET_CREATED`, `TICKET_MOVED`, `TICKET_DELEGATED`, `COMMENT_ADDED` 등) |
+| `{board_id}` | `AK5_BOARD_ID` | 대상 보드 ID |
+| `{ticket_id}` | `AK5_TICKET_ID` | 대상 티켓 ID (예: `TK-001`) |
+| `{title}` | `AK5_TITLE` | 티켓 제목 |
+| `{actor_id}` | `AK5_ACTOR_ID` | 이벤트를 발생시킨 액터 ID |
+| `{status}` | `AK5_STATUS` | 현재 티켓 상태 (`open`, `in_progress`, `review`, `done`) |
+| `{summary}` | `AK5_SUMMARY` | 사람이 읽기 쉬운 이벤트 요약 문장 |
+| `{data_json}` | `AK5_DATA_JSON` | 이벤트 원본 JSON 문자열 (전체 페이로드) |
+
 ---
 
 ## 5. AI 에이전트 및 MCP (Model Context Protocol) 연동

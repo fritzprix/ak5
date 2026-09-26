@@ -9,6 +9,7 @@ from ak5.cli.commands.demo import demo_command
 from ak5.cli.commands.login import login_command
 from ak5.cli.commands.mcp import mcp_command
 from ak5.cli.commands.serve import serve_command
+from ak5.cli.commands.subscribe import subscribe_command
 from ak5.cli.commands.ticket import (
     comment_shortcut,
     move_shortcut,
@@ -40,6 +41,7 @@ cli.add_command(demo_command)
 cli.add_command(login_command)
 cli.add_command(whoami_command)
 cli.add_command(web_command)
+cli.add_command(subscribe_command)
 
 
 if __name__ == "__main__":

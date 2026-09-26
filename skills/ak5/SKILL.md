@@ -51,8 +51,11 @@ Do **not** exit after login. Continuously watch or pull the backlog until the ha
 
 #### A. Event-driven (preferred)
 ```bash
+# Automated trigger on matching events:
+uv run ak5 subscribe proj-core-engine --for-agent <YOUR_AGENT_ID> --exec "<RUN_COMMAND>"
+
+# Or watch live board in terminal:
 uv run ak5 board --watch --board-id "proj-core-engine"
-# or: curl -N http://127.0.0.1:8000/api/v1/events/stream
 ```
 On `TICKET_CREATED` / `TICKET_DELEGATED` / `TICKET_MOVED` / `TICKET_UPDATED`:
 1. If assigned to you and still open → claim

@@ -520,7 +520,11 @@ async def add_comment(
 
     await event_bus.publish(
         event_type="COMMENT_ADDED",
-        data={"ticket_id": ticket_id, "comment": comment_out.model_dump(mode="json")},
+        data={
+            "board_id": ticket.board_id,
+            "ticket_id": ticket_id,
+            "comment": comment_out.model_dump(mode="json"),
+        },
     )
 
     return comment_out
@@ -602,7 +606,11 @@ async def upload_attachment(
     attachment_out = TicketAttachmentOut.model_validate(attachment)
     await event_bus.publish(
         event_type="ATTACHMENT_ADDED",
-        data={"ticket_id": ticket_id, "attachment": attachment_out.model_dump(mode="json")},
+        data={
+            "board_id": ticket.board_id,
+            "ticket_id": ticket_id,
+            "attachment": attachment_out.model_dump(mode="json"),
+        },
     )
     return attachment_out
 
@@ -679,6 +687,9 @@ async def delete_attachment(
     if file_path.is_relative_to(storage_dir) and file_path.is_file():
         file_path.unlink(missing_ok=True)
 
+    ticket = await db.get(Ticket, ticket_id)
+    board_id = ticket.board_id if ticket else None
+
     await db.delete(attachment)
     audit = AuditLog(
         actor_id=current_actor.actor_id,
@@ -692,7 +703,7 @@ async def delete_attachment(
 
     await event_bus.publish(
         event_type="ATTACHMENT_DELETED",
-        data={"ticket_id": ticket_id, "attachment_id": attachment_id},
+        data={"board_id": board_id, "ticket_id": ticket_id, "attachment_id": attachment_id},
     )
 
     return {"deleted": True, "attachment_id": attachment_id}
