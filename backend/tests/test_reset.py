@@ -1,11 +1,11 @@
 import uuid
-import pytest
-from click.testing import CliRunner
 
+import pytest
 from ak5.cli.main import cli
 from ak5.database import AsyncSessionLocal
 from ak5.models.actor import Actor
 from ak5.models.board import Board
+from click.testing import CliRunner
 
 
 @pytest.mark.asyncio

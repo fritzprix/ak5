@@ -2,13 +2,13 @@ import asyncio
 import concurrent.futures
 import os
 import sys
-from typing import Any, Coroutine
+from collections.abc import Coroutine
+from typing import Any
 
 import click
+from ak5.seed import reset_kanban_data
 from rich.console import Console
 from rich.panel import Panel
-
-from ak5.seed import reset_kanban_data
 
 console = Console()
 

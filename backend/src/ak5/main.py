@@ -1,4 +1,3 @@
-import json
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
@@ -7,12 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.config import settings
-from ak5.database import AsyncSessionLocal, engine, run_sqlite_schema_migrations
+from ak5.database import engine, run_sqlite_schema_migrations
 from ak5.mcp.tools import server as mcp_server
-from ak5.models.actor import Actor
 from ak5.models.base import Base
-from ak5.models.board import Board
-from ak5.models.column import Column
 from ak5.routers.actors import router as actors_router
 from ak5.routers.auth import router as auth_router
 from ak5.routers.boards import router as boards_router
@@ -20,8 +16,8 @@ from ak5.routers.events import router as events_router
 from ak5.routers.subscriptions import router as subscriptions_router
 from ak5.routers.tickets import router as tickets_router
 from ak5.routers.web_auth import router as web_auth_router
-from ak5.services.subscription_service import subscription_service
 from ak5.seed import seed_initial_data
+from ak5.services.subscription_service import subscription_service
 from ak5.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 from ak5.web_ui_static import mount_web_ui, web_ui_available
 

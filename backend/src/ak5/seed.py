@@ -158,10 +158,8 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
     if att_dir.is_dir():
         for f in att_dir.iterdir():
             if f.is_file():
-                try:
+                with suppress(OSError):
                     f.unlink()
-                except OSError:
-                    pass
 
     # 9. Clean local project sessions and identity claims if requested
     if clear_sessions:
