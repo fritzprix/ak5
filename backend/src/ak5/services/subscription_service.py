@@ -169,6 +169,7 @@ class SubscriptionService:
                     env=env,
                 )
                 self._active_processes.add(proc)
+                started = time.monotonic()
                 try:
                     stdout, stderr = await asyncio.wait_for(
                         proc.communicate(input=stdin_bytes),
@@ -182,6 +183,41 @@ class SubscriptionService:
                         f"[Subscription {sub_id}] Command timed out after {timeout_seconds}s and was terminated: {command_str}"
                     )
                     return -1
+                except RuntimeError as e:
+                    # uvloop raises a bare RuntimeError ("... the handler is
+                    # closed") instead of BrokenPipeError/ConnectionResetError
+                    # when the child process exits (or closes stdin) before
+                    # asyncio finishes writing stdin_bytes. asyncio's own
+                    # _feed_stdin() only guards against the latter two, so this
+                    # uvloop-specific exception otherwise escapes as a scary
+                    # traceback even though the child process itself may have
+                    # run and exited normally. Treat it as a harmless race.
+                    if "handler is closed" not in str(e):
+                        raise
+                    # Keep the original deadline: a child that closed stdin but
+                    # is still running must not hang a semaphore slot forever.
+                    remaining = max(0.0, timeout_seconds - (time.monotonic() - started))
+                    if proc.stdin is not None and not proc.stdin.is_closing():
+                        with contextlib.suppress(OSError, RuntimeError):
+                            proc.stdin.close()
+                    try:
+                        # Drain stdout/stderr under the remaining budget so a
+                        # live child cannot deadlock on a full pipe buffer.
+                        await asyncio.wait_for(proc.communicate(), timeout=remaining)
+                    except TimeoutError:
+                        with contextlib.suppress(ProcessLookupError):
+                            proc.kill()
+                        await proc.wait()
+                        logger.error(
+                            f"[Subscription {sub_id}] Command timed out after {timeout_seconds}s and was terminated: {command_str}"
+                        )
+                        return -1
+                    returncode = proc.returncode or 0
+                    logger.warning(
+                        f"[Subscription {sub_id}] stdin write raced with early process exit "
+                        f"(child likely exited without reading stdin); returncode={returncode}: {command_str}"
+                    )
+                    return returncode
                 finally:
                     self._active_processes.discard(proc)
 
