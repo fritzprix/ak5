@@ -285,6 +285,21 @@ AK5_AUTH_PASSWORD=your_super_secret_password
 * **Session cookie:** HttpOnly, SameSite=Lax, 30-day **SHA-256 session digest** cookie named `ak5_auth` (not an encrypted payload).
 * **Header UI:** when auth is on, the dashboard shows the signed-in user and Sign Out.
 
+### API / agent secrets (login UX unchanged)
+
+When exposing the gateway beyond localhost, also set:
+
+```bash
+export AK5_JWT_SECRET=$(openssl rand -hex 32)          # Bearer JWT signing key
+export AK5_IDENTIFY_SECRET=$(openssl rand -hex 32)     # shared by gateway + agents
+```
+
+* **`ak5 login` / MCP / SDK:** unchanged commands; they send `AK5_IDENTIFY_SECRET` automatically when present.
+* **Web dashboard:** after web login, the `ak5_auth` cookie authorizes `/auth/identify` (no extra UI step).
+* **Local default:** if `AK5_JWT_SECRET` is unset, a key is auto-written to `.ak5/jwt_secret`. Leave `AK5_IDENTIFY_SECRET` empty for open local identify.
+
+**Write API authorization:** ticket/board mutations require a Bearer JWT from `/auth/identify`. `PATCH /actors/{id}` is self-or-admin only. Reserved admin ids/roles cannot be claimed via public identify.
+
 ---
 
 ## Local Development & Testing

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,12 @@ from ak5.config import settings
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.schemas.actor import ActorIdentifyRequest, ActorOut, TokenResponse
+from ak5.security import (
+    IDENTIFY_SECRET_HEADER,
+    extract_identify_secret,
+    get_jwt_secret,
+    is_identify_authorized,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer(auto_error=False)
@@ -25,7 +31,7 @@ def create_access_token(actor_id: str, actor_type: str) -> str:
         "actor_type": actor_type,
         "exp": expire,
     }
-    return jwt.encode(to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(to_encode, get_jwt_secret(), algorithm=settings.JWT_ALGORITHM)
 
 
 async def get_current_actor(
@@ -43,7 +49,7 @@ async def get_current_actor(
     token = credentials.credentials
     try:
         payload = jwt.decode(
-            token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
+            token, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM]
         )
         actor_id: str = payload.get("sub")
         if not actor_id:
@@ -85,8 +91,19 @@ async def get_current_actor_optional(
 @router.post("/identify", response_model=TokenResponse)
 async def identify_actor(
     req: ActorIdentifyRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenResponse:
+    provided = extract_identify_secret(request, req.identify_secret)
+    if not is_identify_authorized(request, provided):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "Identify secret required. Set AK5_IDENTIFY_SECRET on the client "
+                f"(header {IDENTIFY_SECRET_HEADER}) or sign in via the web auth gate."
+            ),
+        )
+
     if req.actor_id.lower() in RESERVED_ADMIN_IDS or req.role.lower() in RESERVED_ADMIN_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

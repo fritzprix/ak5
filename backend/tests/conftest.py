@@ -6,6 +6,7 @@ from ak5.database import get_db
 from ak5.main import app
 from ak5.models.base import Base
 from ak5.routers.auth import create_access_token
+from ak5.security import reset_secret_caches
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -35,6 +36,18 @@ TestAsyncSessionLocal = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_secrets(monkeypatch):
+    """Stable JWT for tests; identify gate off unless a test enables it."""
+    monkeypatch.setenv("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
+    monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
+    monkeypatch.delenv("IDENTIFY_SECRET", raising=False)
+    monkeypatch.delenv("AK5_JWT_SECRET_FILE", raising=False)
+    reset_secret_caches()
+    yield
+    reset_secret_caches()
 
 
 @pytest_asyncio.fixture(scope="function")

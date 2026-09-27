@@ -3,6 +3,8 @@ from typing import Any
 
 import httpx
 
+from ak5.security import identify_headers_from_env
+
 
 class AK5Client:
     def __init__(
@@ -31,6 +33,7 @@ class AK5Client:
                 "description": "Autonomous AI Agent connected via MCP",
                 "capabilities": ["orchestration", "delegation", "task-execution"],
             },
+            headers=identify_headers_from_env(),
         )
         resp.raise_for_status()
         self._token = resp.json()["access_token"]

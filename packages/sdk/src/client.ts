@@ -14,6 +14,8 @@ import {
   TicketMoveInput,
 } from "./types";
 
+const IDENTIFY_SECRET_HEADER = "X-AK5-Identify-Secret";
+
 export class AK5Client {
   public readonly baseUrl: string;
   private token: string | null;
@@ -21,6 +23,7 @@ export class AK5Client {
   private actorType: "human" | "agent";
   private actorRole: string;
   private actorCapabilities: string[];
+  private identifySecret: string | null;
 
   constructor(options?: AK5ClientOptions) {
     this.baseUrl = (options?.baseUrl || "http://127.0.0.1:8000/api/v1").replace(/\/+$/, "");
@@ -29,6 +32,16 @@ export class AK5Client {
     this.actorType = options?.actorType || "agent";
     this.actorRole = options?.actorRole || "Developer/Agent";
     this.actorCapabilities = options?.actorCapabilities || ["sdk-client"];
+    const envProcess = (
+      globalThis as { process?: { env?: Record<string, string | undefined> } }
+    ).process;
+    const fromEnv = envProcess?.env?.AK5_IDENTIFY_SECRET ?? "";
+    this.identifySecret = options?.identifySecret || fromEnv || null;
+  }
+
+  private identifyHeaders(): Record<string, string> {
+    if (!this.identifySecret) return {};
+    return { [IDENTIFY_SECRET_HEADER]: this.identifySecret };
   }
 
   /**
@@ -46,7 +59,10 @@ export class AK5Client {
 
     const res = await fetch(`${this.baseUrl}/auth/identify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...this.identifyHeaders(),
+      },
       body: JSON.stringify({
         actor_id: this.actorId,
         actor_type: this.actorType,
@@ -99,7 +115,10 @@ export class AK5Client {
   public async identify(input: ActorIdentifyInput): Promise<{ access_token: string; actor: Actor }> {
     const res = await fetch(`${this.baseUrl}/auth/identify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...this.identifyHeaders(),
+      },
       body: JSON.stringify(input),
     });
 

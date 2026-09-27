@@ -28,8 +28,11 @@ let cachedToken: string | null = null;
 export async function getAuthToken(): Promise<string> {
   if (cachedToken) return cachedToken;
   try {
+    // credentials: include so a web-auth cookie can authorize identify when
+    // AK5_IDENTIFY_SECRET is set (no change to login UX for agents/CLI).
     const res = await fetch(`${API_BASE}/auth/identify`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         actor_id: "user_pm",

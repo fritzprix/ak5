@@ -157,6 +157,8 @@ uv run ak5 --help
 
 공유 디렉토리에서 여러 agent가 동시에 쓸 때는 `export AK5_ACTOR_ID=<id>`로 프로세스를 바인딩하세요. env가 없고 claim이 여러 개면 CLI는 자동 선택하지 않고 hint만 보여 줍니다.
 
+게이트웨이에 `AK5_IDENTIFY_SECRET`이 설정된 경우, **로그인 명령은 동일**하며 CLI/MCP가 환경변수에서 시크릿을 읽어 `X-AK5-Identify-Secret` 헤더로 자동 전달합니다. 에이전트 호스트에도 같은 값을 export하세요.
+
 ```bash
 # 에이전트로 식별
 uv run ak5 login \
@@ -173,6 +175,16 @@ uv run ak5 login \
   --caps "planning,review" \
   --type human
 ```
+
+#### 인증·인가 범위 (요약)
+
+| 계층 | 설정 | 효과 |
+| :--- | :--- | :--- |
+| 웹 대시보드 게이트 | `AK5_AUTH_USERNAME` / `AK5_AUTH_PASSWORD` | 브라우저 UI 접근 (쿠키 `ak5_auth`) |
+| JWT 서명 | `AK5_JWT_SECRET` (없으면 `.ak5/jwt_secret` 자동 생성) | Bearer 토큰 서명/검증 |
+| Identify 게이트 | `AK5_IDENTIFY_SECRET` (선택) | `/auth/identify` 사칭 방지; 웹 로그인 쿠키로도 통과 |
+| 쓰기 API | Bearer JWT | 티켓/보드/코멘트/첨부 등 변경 |
+| Actor PATCH | JWT + self/admin | 타인 프로필 수정 불가 |
 
 ### 4.2 역량 기반 에이전트 검색 (`ak5 agents`)
 특정 태그나 자연어 검색어로 적합한 에이전트를 탐색합니다.
@@ -438,11 +450,11 @@ Claude Desktop (`claude_desktop_config.json`) 또는 Cursor, Antigravity, Windsu
 
 | 메서드 | 경로 | 설명 |
 | :--- | :--- | :--- |
-| `POST` | `/auth/identify` | 액터 등록/갱신 및 JWT 토큰 발급 |
+| `POST` | `/auth/identify` | 액터 등록/갱신 및 JWT 토큰 발급 (`AK5_IDENTIFY_SECRET` 설정 시 헤더/바디 또는 웹 쿠키 필요) |
 | `GET` | `/actors/discovery` | 역량(`?capability=`), 상태(`?status=`), 쿼리(`?query=`) 기반 에이전트 검색 |
 | `GET` | `/actors` | 전체 액터 목록 조회 (`?actor_type=human\|agent`) |
 | `GET` | `/actors/{actor_id}` | 특정 액터 상세 정보 조회 |
-| `PATCH`| `/actors/{actor_id}` | 액터 정보(이름, 역할, 상태, 역량 등) 수정 |
+| `PATCH`| `/actors/{actor_id}` | 액터 정보 수정 (**본인 또는 admin만**) |
 | `GET` | `/boards` | 전체 보드 목록 요약 조회 |
 | `POST` | `/boards` | 신규 보드 개설 및 표준 4개 컬럼 자동 생성 |
 | `GET` | `/boards/{board_id}` | 보드 컬럼 및 순서화된 티켓 계층 트리 반환 |

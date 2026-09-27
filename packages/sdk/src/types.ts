@@ -91,6 +91,8 @@ export interface AK5ClientOptions {
   actorType?: ActorType;
   actorRole?: string;
   actorCapabilities?: string[];
+  /** Shared secret when gateway has AK5_IDENTIFY_SECRET set (also read from process.env). */
+  identifySecret?: string;
   timeout?: number;
 }
 

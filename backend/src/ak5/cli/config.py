@@ -471,6 +471,8 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
     try:
         import httpx
 
+        from ak5.security import identify_headers_from_env
+
         with httpx.Client(timeout=5.0) as client:
             resp = client.post(
                 f"{target_url}/auth/identify",
@@ -480,6 +482,7 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
                     "name": "CLI User",
                     "role": "PM",
                 },
+                headers=identify_headers_from_env(),
             )
             if resp.is_success:
                 data = resp.json()

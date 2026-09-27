@@ -12,6 +12,7 @@ from pathlib import Path
 import click
 import uvicorn
 from ak5.cli.tailscale import detect_tailscale
+from ak5.security import get_identify_secret
 from ak5.web_auth import get_web_auth_config
 from ak5.web_ui_static import web_ui_available
 from rich.console import Console
@@ -72,6 +73,19 @@ def _print_ready_banner(host: str, port: int, is_ssl: bool = False) -> None:
         lines.append("[bold]Brute-force Shield:[/bold] [green]ACTIVE[/green] (5 / 5m, 10m lockout)")
     else:
         lines.append("[bold]Web Auth:[/bold]           [yellow]DISABLED[/yellow] (set AK5_AUTH_PASSWORD)")
+
+    if get_identify_secret():
+        lines.append("[bold]Identify Gate:[/bold]       [green]ENABLED[/green] (AK5_IDENTIFY_SECRET)")
+        if not cfg.enabled:
+            lines.append(
+                "[bold]Note:[/bold]                Dashboard writes need web auth cookie "
+                "or agents must share AK5_IDENTIFY_SECRET"
+            )
+    else:
+        lines.append(
+            "[bold]Identify Gate:[/bold]       [yellow]OPEN[/yellow] "
+            "(set AK5_IDENTIFY_SECRET when exposing the API)"
+        )
 
     console.print(
         Panel(

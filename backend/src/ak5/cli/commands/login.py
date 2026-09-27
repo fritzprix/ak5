@@ -62,8 +62,14 @@ def login_command(actor_id: str, role: str, caps: str, actor_type: str, url: str
     }
 
     try:
+        from ak5.security import identify_headers_from_env
+
         with httpx.Client(timeout=10.0) as client:
-            resp = client.post(f"{api_url}/auth/identify", json=payload)
+            resp = client.post(
+                f"{api_url}/auth/identify",
+                json=payload,
+                headers=identify_headers_from_env(),
+            )
             resp.raise_for_status()
             data = resp.json()
 

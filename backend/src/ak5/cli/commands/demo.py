@@ -29,6 +29,9 @@ async def run_collaboration_simulation(api_url: str) -> None:
     async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
         # Step 0: Ensure actors
         console.print("\n[bold yellow][Phase 0] Registering Actors...[/bold yellow]")
+        from ak5.security import identify_headers_from_env
+
+        id_headers = identify_headers_from_env()
         for actor in [
             {"id": "user_pm", "type": "human", "name": "David (PM)", "role": "PM", "caps": ["planning"]},
             {"id": "agent_orchestrator", "type": "agent", "name": "Orchestrator Agent", "role": "Lead Architect", "caps": ["orchestration", "breakdown"]},
@@ -41,7 +44,7 @@ async def run_collaboration_simulation(api_url: str) -> None:
                 "name": actor["name"],
                 "role": actor["role"],
                 "capabilities": actor["caps"],
-            })
+            }, headers=id_headers)
             resp.raise_for_status()
             token = resp.json()["access_token"]
             if actor["id"] == "user_pm":

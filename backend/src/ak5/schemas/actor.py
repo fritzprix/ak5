@@ -23,6 +23,11 @@ class ActorIdentifyRequest(BaseModel):
     description: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     avatar_url: str | None = None
+    # Optional; prefer header X-AK5-Identify-Secret. Kept for SDK compatibility.
+    identify_secret: str | None = Field(
+        default=None,
+        description="Shared identify secret when AK5_IDENTIFY_SECRET is configured",
+    )
 
 
 class ActorUpdate(BaseModel):
