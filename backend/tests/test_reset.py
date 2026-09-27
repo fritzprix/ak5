@@ -2,8 +2,9 @@ import uuid
 
 import pytest
 from ak5.cli.main import cli
-from ak5.database import AsyncSessionLocal
+from ak5.database import AsyncSessionLocal, engine
 from ak5.models.actor import Actor
+from ak5.models.base import Base
 from ak5.models.board import Board
 from click.testing import CliRunner
 
@@ -19,6 +20,11 @@ async def test_reset_command_interactive_abort():
 
 @pytest.mark.asyncio
 async def test_reset_command_with_yes():
+    # CI / fresh installs have no schema yet; reset itself create_all's, but the
+    # pre-check insert below needs tables first.
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     test_id = f"test_agent_{uuid.uuid4().hex[:6]}"
     async with AsyncSessionLocal() as db:
         dummy_actor = Actor(
