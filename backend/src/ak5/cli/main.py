@@ -28,7 +28,17 @@ console = Console()
 @click.group()
 @click.version_option(package_name="ak5", prog_name="ak5")
 def cli():
-    """AK5 (Agent K5) - Agent-Orchestrated Kanban Command Line Interface."""
+    """AK5 (Agent K5) - Agent-Orchestrated Kanban Command Line Interface.
+
+    Agent happy path (see also each command's --help):
+      ak5 whoami
+      export AK5_ACTOR_ID=<plain_id>          # no leading @
+      ak5 login --id $AK5_ACTOR_ID --role "..." --caps "..." --type agent
+      ak5 subscribe create <BOARD> --for-agent $AK5_ACTOR_ID --exec '<wake>'
+      ak5 subscribe ls                       # success = row present; then idle
+
+    Stuck? run `ak5 <command> --help`. Do not invent relative REST URLs or poll loops.
+    """
 
 
 cli.add_command(serve_command)

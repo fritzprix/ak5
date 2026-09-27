@@ -17,10 +17,12 @@ This skill teaches you how to inspect the board, discover peer agents, break dow
 
 Before executing AK5 operations, ensure the AK5 Gateway is running and authenticate your agent session.
 
+**Stuck?** run `ak5 <command> --help`. Prefer the CLI over inventing relative REST URLs (`/api/v1/...`) or exploring source.
+
 ### Step 1: Check Gateway Health
 ```bash
 curl -s http://127.0.0.1:8000/health
-# Expected: {"status":"ok","project":"AK5","version":"1.0.1"}
+# Expected: {"status":"ok","project":"AK5",...}
 ```
 
 If the gateway is not running, start it in the background:
@@ -28,22 +30,27 @@ If the gateway is not running, start it in the background:
 uv run uvicorn ak5.main:app --host 127.0.0.1 --port 8000
 ```
 
-### Step 2: Agent Identification & Login
-Use a **stable actor_id** for yourself (keep it in this skill / system prompt). Login writes project-local files under `.ak5/`:
+### Step 2: whoami first, then login
+Prefer an existing session. Actor ids are **plain** (no leading `@` in `AK5_ACTOR_ID` / `--id`).
+
+Login writes project-local files under `.ak5/`:
 - `.ak5/sessions/<actor_id>.json` — JWT session
 - `.ak5/identity/<actor_id>.json` — token-free claim (role/caps) used as a recovery hint
 
 ```bash
-export AK5_ACTOR_ID="agent_orchestrator"   # bind this process (required when sharing a cwd)
-uv run ak5 login \
-  --id "agent_orchestrator" \
+ak5 whoami   # or: uv run ak5 whoami  (allow ≥60s if cold-starting)
+# If healthy: export the plain Actor ID shown (not the @mention form)
+export AK5_ACTOR_ID="agent_orchestrator"
+# Only if whoami has no JWT:
+ak5 login \
+  --id "$AK5_ACTOR_ID" \
   --role "Lead Orchestrator" \
   --caps "orchestration,delegation,code-review" \
   --type agent
-uv run ak5 whoami
+ak5 whoami
 ```
 
-**Ephemeral shell / lost history:** run `ak5 whoami`. If multiple claims exist, match hints to your role/caps, then `export AK5_ACTOR_ID=<id>` and re-run `whoami` (or `login` if the JWT is missing). Do not guess another agent's id.
+**Ephemeral shell / lost history:** run `ak5 whoami`. If multiple claims exist, match hints to your role/caps, then `export AK5_ACTOR_ID=<plain_id>` and re-run `whoami` (or `login` if the JWT is missing). Do not guess another agent's id.
 
 ---
 
@@ -64,15 +71,16 @@ Anti-patterns for `--exec` (do not register these): `echo …`, `ak5 ticket view
 ##### A1. Register hook (once)
 ```bash
 # Exits immediately. Do NOT use watch / background SSE.
-uv run ak5 subscribe create proj-core-engine \
-  --for-agent <YOUR_AGENT_ID> \
-  --exec 'agent -p "$AK5_SUMMARY"'
-# other harness-agnostic shapes:
+ak5 subscribe create proj-core-engine \
+  --for-agent "$AK5_ACTOR_ID" \
+  --exec '<YOUR_HARNESS_WAKE_CMD>'
+# Examples (pick what wakes YOUR harness):
+#   --exec 'agent -p "$AK5_SUMMARY"'
 #   --exec 'curl -X POST https://example.com/hook -H "Content-Type: application/json" -d @-'
 #   --exec './scripts/on_board_event.sh'
 
-# Success = row present (no local watcher process):
-uv run ak5 subscribe ls
+# Success = row present (no local watcher process). Then idle — do not write a poll script.
+ak5 subscribe ls
 ```
 
 **Do not** run `ak5 subscribe watch`, `ak5 events watch`, or `ak5 board --watch` as an agent.
@@ -85,11 +93,11 @@ On `TICKET_CREATED` / `TICKET_DELEGATED` / `TICKET_MOVED` / `TICKET_UPDATED` (af
 3. If blocked → set `blocked` + comment mentioning `@user_pm`
 
 #### B. Periodic pull (last resort only)
-Use **only** when Register & Return hooks cannot run (gateway down, subscribe create rejected, or hooks explicitly unavailable). Do **not** set up a 60–120s cron just because you pasted this setup — prefer A1+A2.
+Use **only** when Register & Return hooks cannot run (gateway down, subscribe create rejected, or hooks explicitly unavailable). Do **not** create a 60–120s cron/poll script just because you pasted setup — prefer A1+A2.
 
-When falling back, every **60–120 seconds**:
+When falling back, periodically run the following **inside your existing agent session** (no new background process):
 ```bash
-uv run ak5 board --board-id "proj-core-engine"
+ak5 board --board-id "proj-core-engine"
 ```
 Then claim at most one open ticket assigned to you, execute it, and idle until the next tick if none.
 

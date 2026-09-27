@@ -5,7 +5,7 @@ from typing import Any
 
 import click
 import httpx
-from ak5.cli.config import get_api_url, require_auth_headers
+from ak5.cli.config import clean_actor_id, get_api_url, require_auth_headers
 from ak5.services.event_context import (
     build_hook_environ,
     extract_event_context,
@@ -240,8 +240,8 @@ def do_subscribe(
         "board_id": board_id,
         "exec_command": exec_command,
         "events": [e.strip().upper() for e in events.split(",") if e.strip()] if events else None,
-        "for_agent": for_agent,
-        "ignore_actor": ignore_actor,
+        "for_agent": clean_actor_id(for_agent) if for_agent else None,
+        "ignore_actor": clean_actor_id(ignore_actor) if ignore_actor else None,
         "debounce_seconds": debounce,
     }
     if custom_id:

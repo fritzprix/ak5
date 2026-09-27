@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from ak5.cli.commands.whoami import whoami_command
 from ak5.cli.config import (
+    clean_actor_id,
     find_project_root,
     get_actor_id,
     get_auth_headers,
@@ -209,6 +210,51 @@ def test_whoami_env_actor_without_session_file(project: Path, monkeypatch: pytes
     assert result.exit_code == 1
     assert "missing_agent" in result.output
     assert "no session file" in result.output.lower() or "login" in result.output.lower()
+
+
+def test_clean_actor_id_strips_at_prefix() -> None:
+    assert clean_actor_id("@agent-coder") == "agent-coder"
+    assert clean_actor_id("  @UUID-Case  ") == "UUID-Case"
+    assert clean_actor_id("plain") == "plain"
+
+
+def test_resolve_session_strips_at_from_env_actor(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    save_session(
+        {
+            "token": "jwt",
+            "actor_id": "b15fdf3e-6192-453d-9dc2-7b8ae6dab321",
+            "role": "Coding Expert",
+            "actor_type": "agent",
+            "capabilities": ["coding"],
+        },
+        project_root=project,
+    )
+    monkeypatch.setenv("AK5_ACTOR_ID", "@b15fdf3e-6192-453d-9dc2-7b8ae6dab321")
+    resolved = resolve_session()
+    assert resolved.data["actor_id"] == "b15fdf3e-6192-453d-9dc2-7b8ae6dab321"
+    assert resolved.source == "env_actor"
+    assert get_token() == "jwt"
+
+
+def test_whoami_shows_plain_actor_id_for_export(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    save_session(
+        {
+            "token": "jwt",
+            "actor_id": "agent_coder",
+            "role": "Coder",
+            "actor_type": "agent",
+            "capabilities": ["python"],
+        },
+        project_root=project,
+    )
+    monkeypatch.setenv("AK5_ACTOR_ID", "agent_coder")
+    runner = CliRunner()
+    result = runner.invoke(whoami_command)
+    assert result.exit_code == 0
+    assert "Actor ID" in result.output
+    assert "agent_coder" in result.output
+    assert "export AK5_ACTOR_ID=agent_coder" in result.output
+    assert "subscribe create" in result.output
 
 
 def test_write_claim_false_skips_identity(project: Path) -> None:

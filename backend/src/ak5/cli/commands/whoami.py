@@ -15,7 +15,14 @@ console = Console()
 
 @click.command("whoami")
 def whoami_command() -> None:
-    """Display current authenticated Actor session identity."""
+    """Show the bound actor session (run this before login / subscribe).
+
+    Agents:
+      - Prefer whoami over inventing a new --id.
+      - Copy the plain Actor ID (no leading @) into AK5_ACTOR_ID.
+      - If ambiguous, match role/caps under .ak5/identity/, then export + whoami.
+      - Next after a healthy session: ak5 subscribe create … && ak5 subscribe ls
+    """
     resolved = resolve_session()
     project_root = resolved.project_root
 
@@ -62,7 +69,9 @@ def whoami_command() -> None:
     table.add_column("Key", style="bold cyan")
     table.add_column("Value", style="white")
 
-    table.add_row("Actor ID", f"@{actor_id}")
+    # Plain id first so agents copy the correct export value (not @mention form).
+    table.add_row("Actor ID", str(actor_id))
+    table.add_row("Mention", f"@{actor_id}")
     table.add_row("Role", session.get("role", "Unknown"))
     table.add_row("Type", session.get("actor_type", "agent"))
     table.add_row("API Gateway", api_url)
@@ -89,3 +98,8 @@ def whoami_command() -> None:
         pass
 
     console.print(Panel(table, title="Current AK5 Session", expand=False))
+    console.print(
+        f"[dim]Bind shells:[/dim] export AK5_ACTOR_ID={actor_id}\n"
+        "[dim]Next (agents):[/dim] ak5 subscribe create <BOARD> "
+        f"--for-agent {actor_id} --exec '<YOUR_HARNESS_WAKE>' && ak5 subscribe ls"
+    )

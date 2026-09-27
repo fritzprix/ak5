@@ -4,6 +4,7 @@ from contextlib import suppress
 import click
 import httpx
 from ak5.cli.config import (
+    clean_actor_id,
     find_project_root,
     get_api_url,
     identity_path_for,
@@ -136,12 +137,17 @@ def _perform_device_flow(
 
 
 @click.command("login")
-@click.option("--id", "actor_id", required=True, help="Actor ID (e.g. agent-code-reviewer, user_pm)")
+@click.option(
+    "--id",
+    "actor_id",
+    required=True,
+    help="Stable actor id WITHOUT leading '@' (e.g. agent-code-reviewer). '@' is stripped if present.",
+)
 @click.option("--role", required=True, help="Display role (e.g. 'Senior Reviewer', 'PM')")
 @click.option("--caps", default="", help="Comma-separated capabilities (e.g. 'python,rust,security')")
 @click.option("--type", "actor_type", type=click.Choice(["human", "agent"]), default="agent", help="Actor type")
 @click.option("--board", default=None, help="Board ID to associate/enroll this agent with")
-@click.option("--url", default=None, help="AK5 Gateway API URL")
+@click.option("--url", default=None, help="AK5 Gateway API URL (default: http://127.0.0.1:8000/api/v1)")
 @click.option("--device/--no-device", default=None, help="Use browser Device Code Flow authorization")
 def login_command(
     actor_id: str,
@@ -152,7 +158,23 @@ def login_command(
     url: str | None,
     device: bool | None,
 ) -> None:
-    """Identify and authenticate as an Actor (Human or AI Agent)."""
+    """Identify and authenticate as an Actor (Human or AI Agent).
+
+    Agent happy path:
+      1. ak5 whoami          # reuse existing session if present
+      2. export AK5_ACTOR_ID=<plain_id>   # no leading @
+      3. ak5 login --id $AK5_ACTOR_ID --role "..." --caps "..." --type agent
+      4. ak5 subscribe create <BOARD> --for-agent $AK5_ACTOR_ID --exec '<wake>'
+      5. ak5 subscribe ls    # success = row present; then idle (no poll script)
+
+    Prefer whoami over inventing a new id. Do not explore source when stuck —
+    run `ak5 <cmd> --help` instead.
+    """
+    actor_id = clean_actor_id(actor_id)
+    if not actor_id:
+        console.print("[bold red]✗ --id must be a non-empty actor id (without leading @).[/bold red]")
+        raise SystemExit(1)
+
     api_url = url or get_api_url()
     capabilities = [c.strip() for c in caps.split(",") if c.strip()]
     project_root = find_project_root()
@@ -224,9 +246,10 @@ def login_command(
         console.print(f"[dim]Session:[/dim]  {session_path}")
         console.print(f"[dim]Identity:[/dim] {claim_path}")
         console.print(
-            "[dim]Tip: export AK5_ACTOR_ID="
+            "[dim]Next:[/dim] export AK5_ACTOR_ID="
             f"{actor_id}"
-            " so ephemeral shells bind to this identity.[/dim]"
+            " && ak5 whoami && ak5 subscribe create <BOARD> "
+            "--for-agent $AK5_ACTOR_ID --exec '<YOUR_HARNESS_WAKE>'"
         )
     except httpx.ConnectError:
         console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")

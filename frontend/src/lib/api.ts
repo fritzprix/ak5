@@ -15,12 +15,21 @@ export function getGatewayOrigin(): string {
   }
 }
 
+/** Absolute `/api/v1` base for shell/curl (never a relative `/api/v1`). */
+export function getAbsoluteApiBase(): string {
+  if (API_BASE.startsWith("http://") || API_BASE.startsWith("https://")) {
+    return API_BASE.replace(/\/$/, "");
+  }
+  const path = API_BASE.startsWith("/") ? API_BASE : `/${API_BASE}`;
+  return `${getGatewayOrigin()}${path}`.replace(/\/$/, "");
+}
+
 export function getHealthUrl(): string {
   return `${getGatewayOrigin()}/health`;
 }
 
 export function getEventsStreamUrl(): string {
-  return `${API_BASE}/events/stream`;
+  return `${getAbsoluteApiBase()}/events/stream`;
 }
 
 let cachedToken: string | null = null;

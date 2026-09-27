@@ -134,7 +134,11 @@ async def watch_board_live(api_url: str, board_id: str, include_archived: bool =
 @click.command("board")
 @click.argument("target_board", required=False, default=None, metavar="[BOARD_ID]")
 @click.option("--board-id", default=None, help="Target Board ID (alternative to positional argument)")
-@click.option("--watch", is_flag=True, help="Watch board with live real-time SSE updates")
+@click.option(
+    "--watch",
+    is_flag=True,
+    help="Human terminal SSE only (blocking). Agents: do NOT use — register `ak5 subscribe create` instead.",
+)
 @click.option("--list", "-l", "list_boards_flag", is_flag=True, help="List all available Kanban boards")
 @click.option("--done-limit", default=10, type=int, help="Limit completed tickets shown in Done column (default: 10, 0 for all)")
 @click.option("--include-archived", is_flag=True, default=False, help="Include archived tickets in board view")
@@ -148,8 +152,14 @@ def board_command(
 ) -> None:
     """View Kanban board in terminal.
 
-    Optionally specify BOARD_ID positionally (e.g. 'ak5 board proj-harbor-eval')
-    or list boards using 'ak5 board list' or 'ak5 boards'.
+    Examples:
+      ak5 board
+      ak5 board proj-core-engine
+      ak5 board --board-id proj-core-engine
+
+    Agents: use a one-shot board view to inspect tickets. Do not use --watch.
+    For wake-on-event, register `ak5 subscribe create` (then `ak5 subscribe ls`).
+    Prefer this CLI over inventing relative curl paths like `/api/v1/...`.
     """
     api_url = get_api_url()
 

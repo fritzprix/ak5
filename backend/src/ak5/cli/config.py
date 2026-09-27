@@ -58,8 +58,16 @@ class ResolvedSession:
     hints: tuple[dict[str, Any], ...] = ()
 
 
+def clean_actor_id(actor_id: str) -> str:
+    """Strip whitespace and a leading '@' (display/mention form → storage id).
+
+    Does not lower-case — keep UUID / intentional casing intact.
+    """
+    return actor_id.strip().lstrip("@")
+
+
 def _sanitize_actor_id(actor_id: str) -> str:
-    cleaned = _ACTOR_FILE_RE.sub("_", actor_id.strip())
+    cleaned = _ACTOR_FILE_RE.sub("_", clean_actor_id(actor_id))
     return cleaned or "unknown"
 
 
@@ -301,7 +309,8 @@ def resolve_session(project_root: Path | None = None) -> ResolvedSession:
 
     env_token = os.environ.get("AK5_ACTOR_TOKEN")
     if env_token:
-        actor_id = os.environ.get("AK5_ACTOR_ID") or "env_actor"
+        raw_id = os.environ.get("AK5_ACTOR_ID") or "env_actor"
+        actor_id = clean_actor_id(raw_id) or "env_actor"
         data = {
             "token": env_token,
             "actor_id": actor_id,
@@ -315,6 +324,8 @@ def resolve_session(project_root: Path | None = None) -> ResolvedSession:
     if session_file:
         path = Path(session_file).expanduser()
         data = _read_json(path) or {}
+        if isinstance(data.get("actor_id"), str):
+            data = {**data, "actor_id": clean_actor_id(data["actor_id"])}
         return ResolvedSession(
             data=data,
             source="session_file",
@@ -322,10 +333,13 @@ def resolve_session(project_root: Path | None = None) -> ResolvedSession:
             project_root=root,
         )
 
-    env_actor = os.environ.get("AK5_ACTOR_ID")
-    if env_actor:
+    env_actor_raw = os.environ.get("AK5_ACTOR_ID")
+    if env_actor_raw:
+        env_actor = clean_actor_id(env_actor_raw)
         path = session_path_for(env_actor, root)
         data = _read_json(path) or {}
+        if isinstance(data.get("actor_id"), str):
+            data = {**data, "actor_id": clean_actor_id(data["actor_id"])}
         if not data.get("actor_id"):
             data = {
                 **data,
