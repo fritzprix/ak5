@@ -54,11 +54,23 @@ def _print_ready_banner(host: str, port: int, is_ssl: bool = False) -> None:
     ts = detect_tailscale(port=port)
     cfg = get_web_auth_config()
     scheme = "https" if is_ssl else "http"
+    from ak5.config import settings
+    from ak5.paths import check_legacy_cwd_db
+
     local = f"{scheme}://127.0.0.1:{port}"
     lines = [
         f"[bold]Local:[/bold]              [cyan]{local}[/cyan]",
         f"[bold]API Docs:[/bold]           [cyan]{local}/docs[/cyan]",
+        f"[bold]Database:[/bold]           [cyan]{settings.DATABASE_URL}[/cyan]",
     ]
+    legacy_local_db = check_legacy_cwd_db()
+    if legacy_local_db:
+        lines.append(
+            f"[bold yellow]Local DB Found:[/bold yellow]    [yellow]{legacy_local_db}[/yellow] (ignoring; using global DB)"
+        )
+        lines.append(
+            "                         [dim]Run 'ak5 migrate-legacy' or set AK5_MIGRATE_LEGACY=1 to import[/dim]"
+        )
     if ts.https_active and ts.https_url:
         lines.append(f"[bold]Tailscale HTTPS:[/bold]   [green]{ts.https_url}[/green] (secure port 443)")
     elif ts.dns_name:

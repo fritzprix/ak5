@@ -296,7 +296,7 @@ export AK5_IDENTIFY_SECRET=$(openssl rand -hex 32)     # shared by gateway + age
 
 * **`ak5 login` / MCP / SDK:** unchanged commands; they send `AK5_IDENTIFY_SECRET` automatically when present.
 * **Web dashboard:** after web login, the `ak5_auth` cookie authorizes `/auth/identify` (no extra UI step).
-* **Local default:** if `AK5_JWT_SECRET` is unset, a key is auto-written to `.ak5/jwt_secret`. Leave `AK5_IDENTIFY_SECRET` empty for open local identify.
+* **Local default:** if `AK5_JWT_SECRET` is unset, a key is auto-written to app local storage (`jwt_secret`). Leave `AK5_IDENTIFY_SECRET` empty for open local identify. SQLite database (`ak5.db`) and attachments are stored in cross-platform OS app data (`~/.local/share/ak5/` on Linux, `~/Library/Application Support/ak5/` on macOS, `%LOCALAPPDATA%\ak5\` on Windows; override with `AK5_DATA_DIR`). To import a project-local `./ak5.db` (and `./data/attachments`) into that global store, run `ak5 migrate-legacy` from the project directory (`--force` overwrites an existing global DB).
 
 **Write API authorization:** ticket/board mutations require a Bearer JWT from `/auth/identify`. `PATCH /actors/{id}` is self-or-admin only. Reserved admin ids/roles cannot be claimed via public identify.
 

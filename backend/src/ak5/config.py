@@ -1,6 +1,9 @@
 from importlib.metadata import PackageNotFoundError, version
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from ak5.paths import get_default_attachments_dir, get_default_database_url
 
 try:
     _pkg_version = version("ak5")
@@ -13,10 +16,10 @@ class Settings(BaseSettings):
     VERSION: str = _pkg_version
     API_V1_STR: str = "/api/v1"
 
-    DATABASE_URL: str = "sqlite+aiosqlite:///./ak5.db"
+    DATABASE_URL: str = Field(default_factory=get_default_database_url)
     SQLITE_BUSY_TIMEOUT: int = 5000
 
-    # Prefer AK5_JWT_SECRET env. Empty → auto-generate/persist under .ak5/jwt_secret.
+    # Prefer AK5_JWT_SECRET env. Empty → auto-generate/persist under app local storage (jwt_secret).
     JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
@@ -42,7 +45,7 @@ class Settings(BaseSettings):
     WEB_PASSWORD: str = ""
 
     # Attachments configuration
-    ATTACHMENTS_DIR: str = "./data/attachments"
+    ATTACHMENTS_DIR: str = Field(default_factory=lambda: str(get_default_attachments_dir()))
     MAX_ATTACHMENT_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

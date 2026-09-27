@@ -10,10 +10,12 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import shutil
 from pathlib import Path
 
 from fastapi import Request
 
+from ak5.paths import get_app_data_dir
 from ak5.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 
 logger = logging.getLogger(__name__)
@@ -31,7 +33,21 @@ def jwt_secret_file() -> Path:
     override = os.environ.get("AK5_JWT_SECRET_FILE", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.cwd() / ".ak5" / "jwt_secret"
+
+    app_secret = get_app_data_dir() / "jwt_secret"
+    legacy_secret = Path.cwd() / ".ak5" / "jwt_secret"
+    if not app_secret.exists() and legacy_secret.is_file():
+        try:
+            shutil.copy2(legacy_secret, app_secret)
+            logger.info("Migrated legacy JWT secret from %s to %s", legacy_secret, app_secret)
+        except OSError as e:
+            logger.warning(
+                "Failed to copy legacy JWT secret from %s to %s: %s (a new secret will be generated)",
+                legacy_secret,
+                app_secret,
+                e,
+            )
+    return app_secret
 
 
 def reset_secret_caches() -> None:

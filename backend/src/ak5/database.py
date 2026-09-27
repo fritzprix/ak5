@@ -1,7 +1,9 @@
+import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from sqlalchemy import event, text
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -11,10 +13,22 @@ from sqlalchemy.ext.asyncio import (
 
 from ak5.config import settings
 
+logger = logging.getLogger(__name__)
+
 # Configure SQLite async engine with WAL mode and busy_timeout
 connect_args = {}
 if "sqlite" in settings.DATABASE_URL:
     connect_args["timeout"] = settings.SQLITE_BUSY_TIMEOUT / 1000.0
+    try:
+        url = make_url(settings.DATABASE_URL)
+        if url.database and url.database != ":memory:":
+            Path(url.database).parent.mkdir(parents=True, exist_ok=True)
+    except (ValueError, OSError) as e:
+        logger.warning(
+            "Failed to create SQLite database parent directory for %s: %s",
+            settings.DATABASE_URL,
+            e,
+        )
 
 engine = create_async_engine(
     settings.DATABASE_URL,

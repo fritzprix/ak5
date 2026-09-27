@@ -22,6 +22,45 @@ def test_cli_help():
     assert "web" in result.output
     assert "board" in result.output
     assert "demo" in result.output
+    assert "migrate-legacy" in result.output
+
+
+def test_cli_migrate_legacy_help():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["migrate-legacy", "--help"])
+    assert result.exit_code == 0
+    assert "--force" in result.output
+
+
+def test_cli_migrate_legacy_copies_cwd_data(tmp_path, monkeypatch):
+    runner = CliRunner()
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    (cwd / "ak5.db").write_text("project-db", encoding="utf-8")
+    attach = cwd / "data" / "attachments"
+    attach.mkdir(parents=True)
+    (attach / "note.txt").write_text("hello", encoding="utf-8")
+
+    app_data = tmp_path / "app_data"
+    monkeypatch.setenv("AK5_DATA_DIR", str(app_data))
+    monkeypatch.chdir(cwd)
+
+    result = runner.invoke(cli, ["migrate-legacy"])
+    assert result.exit_code == 0, result.output
+    assert "Migration complete" in result.output
+    assert (app_data / "ak5.db").read_text(encoding="utf-8") == "project-db"
+    assert (app_data / "attachments" / "note.txt").read_text(encoding="utf-8") == "hello"
+
+    # Second run without --force refuses overwrite
+    (cwd / "ak5.db").write_text("changed", encoding="utf-8")
+    blocked = runner.invoke(cli, ["migrate-legacy"])
+    assert blocked.exit_code == 2
+    assert "--force" in blocked.output
+    assert (app_data / "ak5.db").read_text(encoding="utf-8") == "project-db"
+
+    forced = runner.invoke(cli, ["migrate-legacy", "--force"])
+    assert forced.exit_code == 0, forced.output
+    assert (app_data / "ak5.db").read_text(encoding="utf-8") == "changed"
 
 
 def test_cli_web_help():

@@ -89,7 +89,16 @@ uv run ak5 web --reload
 # 4. API 전용 게이트웨이 기동
 uv run ak5 serve --reload
 ```
-* 서버가 정상 기동되면 SQLite WAL DB (`ak5.db`)가 자동 생성되며, 기본 보드(`proj-core-engine`)와 기본 액터(`user_pm`, `agent_image_worker`, `agent_code_reviewer`)가 자동 시딩됩니다.
+* 서버가 정상 기동되면 OS 표준 앱 로컬 스토리지(Linux: `~/.local/share/ak5/`, macOS: `~/Library/Application Support/ak5/`, Windows: `%LOCALAPPDATA%\ak5\`)에 SQLite WAL DB (`ak5.db`)가 자동 생성/로드되며, 기본 보드(`proj-core-engine`)와 기본 액터(`user_pm`, `agent_image_worker`, `agent_code_reviewer`)가 자동 시딩됩니다. 실행 디렉토리(CWD)를 바꾸더라도 전역적으로 동일한 데이터가 보존됩니다. (`AK5_DATA_DIR` 환경변수로 저장 경로 커스텀 가능)
+* **레거시 로컬 DB 이전:** 예전에 CWD에 두었던 `./ak5.db` / `./data/attachments`는 자동으로 옮기지 않습니다. 프로젝트 디렉터리에서 아래 명령으로 전역 스토리지로 이전하세요.
+  ```bash
+  # 로컬 CWD의 ak5.db 및 attachments를 전역 앱 로컬 스토리지로 이전
+  uv run ak5 migrate-legacy
+
+  # 이미 전역 DB가 존재하는 경우 덮어쓰기
+  uv run ak5 migrate-legacy --force
+  ```
+  (또는 기동 시 `AK5_MIGRATE_LEGACY=1`을 설정하면 동일하게 옵트인 이전을 수행합니다.)
 * **Swagger API 문서:** `http://127.0.0.1:8000/docs`
 * **MCP SSE 브릿지:** `http://127.0.0.1:8000/mcp/sse`
 
@@ -181,7 +190,7 @@ uv run ak5 login \
 | 계층 | 설정 | 효과 |
 | :--- | :--- | :--- |
 | 웹 대시보드 게이트 | `AK5_AUTH_USERNAME` / `AK5_AUTH_PASSWORD` | 브라우저 UI 접근 (쿠키 `ak5_auth`) |
-| JWT 서명 | `AK5_JWT_SECRET` (없으면 `.ak5/jwt_secret` 자동 생성) | Bearer 토큰 서명/검증 |
+| JWT 서명 | `AK5_JWT_SECRET` (없으면 앱 로컬 스토리지 `jwt_secret` 자동 생성) | Bearer 토큰 서명/검증 |
 | Identify 게이트 | `AK5_IDENTIFY_SECRET` (선택) | `/auth/identify` 사칭 방지; 웹 로그인 쿠키로도 통과 |
 | 쓰기 API | Bearer JWT | 티켓/보드/코멘트/첨부 등 변경 |
 | Actor PATCH | JWT + self/admin | 타인 프로필 수정 불가 |
