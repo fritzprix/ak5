@@ -17,6 +17,8 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import {
   fetchBoard,
   fetchActors,
+  fetchBoardMembers,
+  addBoardMember,
   moveTicket,
   createTicket,
   delegateSubtask,
@@ -53,6 +55,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [delegatingTicket, setDelegatingTicket] = useState<Ticket | null>(null);
   const [isNewTicketOpen, setIsNewTicketOpen] = useState(false);
   const [isAgentSetupOpen, setIsAgentSetupOpen] = useState(false);
+  const [isEnrollOpen, setIsEnrollOpen] = useState(false);
+  const [allSystemActors, setAllSystemActors] = useState<Actor[]>([]);
+  const [selectedEnrollActorId, setSelectedEnrollActorId] = useState("");
+  const [isEnrolling, setIsEnrolling] = useState(false);
+  const [enrollError, setEnrollError] = useState<string | null>(null);
   const [isConnectedSSE, setIsConnectedSSE] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -88,7 +95,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   );
 
   const isUiBlocking =
-    isNewTicketOpen || Boolean(delegatingTicket) || isAgentSetupOpen || Boolean(detailTicket);
+    isNewTicketOpen ||
+    Boolean(delegatingTicket) ||
+    isAgentSetupOpen ||
+    Boolean(detailTicket) ||
+    isEnrollOpen;
 
   useEffect(() => {
     boardIdRef.current = boardId;
@@ -189,7 +200,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     pendingLiveRefreshRef.current = false;
     if (liveRefreshTimer.current) clearTimeout(liveRefreshTimer.current);
     void reloadBoard();
-    fetchActors().then(setActors).catch(console.error);
+    fetchBoardMembers(boardId).then(setActors).catch(console.error);
 
     const cleanup = subscribeToBoardEvents(
       () => {
@@ -206,6 +217,31 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       if (liveRefreshTimer.current) clearTimeout(liveRefreshTimer.current);
     };
   }, [boardId, reloadBoard, scheduleLiveRefresh]);
+
+  useEffect(() => {
+    if (isEnrollOpen) {
+      setEnrollError(null);
+      setSelectedEnrollActorId("");
+      fetchActors().then(setAllSystemActors).catch(console.error);
+    }
+  }, [isEnrollOpen]);
+
+  const handleEnrollSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedEnrollActorId) return;
+    setIsEnrolling(true);
+    setEnrollError(null);
+    try {
+      await addBoardMember(boardId, selectedEnrollActorId);
+      const updated = await fetchBoardMembers(boardId);
+      setActors(updated);
+      setIsEnrollOpen(false);
+    } catch (err) {
+      setEnrollError(err instanceof Error ? err.message : "Failed to enroll member");
+    } finally {
+      setIsEnrolling(false);
+    }
+  };
 
   const handleDragStart = (event: DragStartEvent) => {
     const ticketId = event.active.id as string;
@@ -383,7 +419,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
         </div>
       </div>
 
-      <AgentFleetStrip actors={actors} />
+      <AgentFleetStrip actors={actors} onAddAgent={() => setIsEnrollOpen(true)} />
 
       {actionError ? (
         <div className="shrink-0 rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
@@ -609,6 +645,65 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
           {buildAgentSetupMarkdown(board, actors)}
         </pre>
         {copyError ? <p className="mt-2 text-sm text-[var(--danger)]">{copyError}</p> : null}
+      </Dialog>
+
+      {/* Enroll Agent / Member to Board Dialog */}
+      <Dialog
+        open={isEnrollOpen}
+        onClose={() => setIsEnrollOpen(false)}
+        title="Enroll Member or Agent"
+        footer={
+          <>
+            <button
+              type="button"
+              className="ak-btn-ghost"
+              onClick={() => setIsEnrollOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isEnrolling || !selectedEnrollActorId}
+              className="ak-btn-primary"
+              onClick={(e) => void handleEnrollSubmit(e as unknown as React.FormEvent)}
+            >
+              {isEnrolling ? "Enrolling..." : "Enroll to Board"}
+            </button>
+          </>
+        }
+      >
+        <form onSubmit={handleEnrollSubmit} className="space-y-4">
+          <p className="text-xs text-[var(--muted)]">
+            Select an existing registered agent or member to enroll into this board. Only enrolled members appear in this board&apos;s Assignee list and Agent Fleet.
+          </p>
+
+          <div>
+            <label className="mb-1 block text-xs text-[var(--muted)]">Select Actor</label>
+            <select
+              value={selectedEnrollActorId}
+              onChange={(e) => setSelectedEnrollActorId(e.target.value)}
+              className="ak-input w-full text-xs"
+              required
+            >
+              <option value="">Choose an actor...</option>
+              {allSystemActors
+                .filter((a) => !actors.some((m) => m.actor_id === a.actor_id))
+                .map((a) => (
+                  <option key={a.actor_id} value={a.actor_id}>
+                    @{a.actor_id} ({a.name}) — [{a.actor_type}] {a.role}
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          {allSystemActors.filter((a) => !actors.some((m) => m.actor_id === a.actor_id)).length === 0 && (
+            <p className="text-xs italic text-[var(--muted)]">
+              All registered system actors are already enrolled in this board.
+            </p>
+          )}
+
+          {enrollError ? <p className="text-xs text-[var(--danger)]">{enrollError}</p> : null}
+        </form>
       </Dialog>
     </div>
   );

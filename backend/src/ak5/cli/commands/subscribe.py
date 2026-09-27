@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import time
 from typing import Any
 
@@ -8,10 +7,12 @@ import click
 import httpx
 from ak5.cli.config import get_api_url, require_auth_headers
 from ak5.services.event_context import (
+    build_hook_environ,
     extract_event_context,
     matches_agent_filter,
     matches_event_filter,
     normalize_actor_id,
+    resolve_hook_session_actor,
 )
 from rich.console import Console
 from rich.panel import Panel
@@ -62,19 +63,11 @@ async def execute_subscriber_command(
     context: dict[str, str],
     raw_event: dict[str, Any],
     pass_stdin: bool = True,
+    *,
+    session_actor_id: str | None = None,
 ) -> int:
     """Run the hook command literally; event fields are injected via env and optional stdin JSON."""
-    env = os.environ.copy()
-    env["AK5_EVENT"] = context["event"]
-    env["AK5_EVENT_TYPE"] = context["event_type"]
-    env["AK5_BOARD_ID"] = context["board_id"]
-    env["AK5_TICKET_ID"] = context["ticket_id"]
-    env["AK5_TITLE"] = context["title"]
-    env["AK5_ACTOR_ID"] = context["actor_id"]
-    env["AK5_STATUS"] = context["status"]
-    env["AK5_SUMMARY"] = context["summary"]
-    env["AK5_DATA_JSON"] = context["data_json"]
-
+    env = build_hook_environ(context, session_actor_id=session_actor_id)
     stdin_bytes = json.dumps(raw_event, ensure_ascii=False).encode("utf-8") if pass_stdin else None
 
     proc = await asyncio.create_subprocess_shell(
@@ -197,6 +190,7 @@ async def run_subscription_loop(
                             context,
                             {"event": event_type, "data": data},
                             pass_stdin=pass_stdin,
+                            session_actor_id=resolve_hook_session_actor(for_agent=for_agent),
                         )
                         if code == 0:
                             console.print("  [bold green]✓ Command completed successfully (code 0)[/bold green]")
@@ -233,7 +227,7 @@ def do_subscribe(
                 f"[bold]Events:[/bold] {events or 'ALL'}\n"
                 f"[bold]Hook Command (literal):[/bold] [yellow]{exec_command}[/yellow]\n"
                 f"[bold]Injected Env:[/bold] $AK5_EVENT $AK5_TICKET_ID $AK5_TITLE $AK5_SUMMARY "
-                f"$AK5_BOARD_ID $AK5_ACTOR_ID $AK5_STATUS $AK5_DATA_JSON\n"
+                f"$AK5_BOARD_ID $AK5_ACTOR_ID $AK5_EVENT_ACTOR_ID $AK5_STATUS $AK5_DATA_JSON\n"
                 f"[bold]stdin:[/bold] JSON event payload\n"
                 f"[dim]Dry-run mode: Subscription was not registered.[/dim]",
                 title="⚡ AK5 Subscribe Dry-Run",
@@ -387,7 +381,10 @@ def subscribe_group() -> None:
     \b
     [Event payload]
       Env:  $AK5_EVENT  $AK5_EVENT_TYPE  $AK5_BOARD_ID  $AK5_TICKET_ID
-            $AK5_TITLE  $AK5_ACTOR_ID  $AK5_STATUS  $AK5_SUMMARY  $AK5_DATA_JSON
+            $AK5_TITLE  $AK5_ACTOR_ID  $AK5_EVENT_ACTOR_ID  $AK5_STATUS
+            $AK5_SUMMARY  $AK5_DATA_JSON
+      $AK5_ACTOR_ID binds the woken session (--for-agent / subscription owner).
+      $AK5_EVENT_ACTOR_ID is who caused the event.
       stdin: JSON {"event": "...", "data": {...}}  (e.g. curl -d @-)
 
     \b

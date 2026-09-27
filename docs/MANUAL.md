@@ -394,7 +394,8 @@ uv run ak5 events watch proj-core-engine --exec 'notify-send "$AK5_TITLE"'
 | `AK5_BOARD_ID` | 대상 보드 ID |
 | `AK5_TICKET_ID` | 대상 티켓 ID (예: `TK-001`) |
 | `AK5_TITLE` | 티켓 제목 |
-| `AK5_ACTOR_ID` | 이벤트를 발생시킨 액터 ID |
+| `AK5_ACTOR_ID` | 깨운 훅의 세션 바인딩 ID (`--for-agent` 또는 구독 등록자). `.ak5/sessions/<id>.json` 선택에 사용 |
+| `AK5_EVENT_ACTOR_ID` | 이벤트를 발생시킨 액터 ID |
 | `AK5_STATUS` | 현재 티켓 상태 |
 | `AK5_SUMMARY` | 사람이 읽기 쉬운 이벤트 요약 |
 | `AK5_DATA_JSON` | 이벤트 원본 JSON 문자열 |

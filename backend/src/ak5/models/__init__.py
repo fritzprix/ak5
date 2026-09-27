@@ -2,7 +2,9 @@ from ak5.models.actor import Actor
 from ak5.models.audit import AuditLog
 from ak5.models.base import Base
 from ak5.models.board import Board
+from ak5.models.board_member import BoardMember
 from ak5.models.column import Column
+from ak5.models.device_code import DeviceCode
 from ak5.models.subscription import Subscription
 from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
 
@@ -11,7 +13,9 @@ __all__ = [
     "AuditLog",
     "Base",
     "Board",
+    "BoardMember",
     "Column",
+    "DeviceCode",
     "Subscription",
     "Ticket",
     "TicketAttachment",

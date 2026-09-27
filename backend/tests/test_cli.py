@@ -142,3 +142,12 @@ def test_cli_delegate_help():
     assert "--title" in result.output
 
 
+def test_cli_login_help():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["login", "--help"])
+    assert result.exit_code == 0
+    assert "--device" in result.output
+    assert "--board" in result.output
+    assert "--id" in result.output
+
+

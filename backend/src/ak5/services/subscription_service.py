@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -14,10 +13,12 @@ from ak5.models.subscription import Subscription
 from ak5.models.ticket import Ticket
 from ak5.services.event_bus import BoardEvent, event_bus
 from ak5.services.event_context import (
+    build_hook_environ,
     extract_event_context,
     matches_agent_filter,
     matches_event_filter,
     normalize_actor_id,
+    resolve_hook_session_actor,
 )
 
 logger = logging.getLogger("ak5.subscription_service")
@@ -127,11 +128,16 @@ class SubscriptionService:
             self._last_exec[debounce_key] = now
 
             # 6. Run the registered hook command literally (payload via env + stdin)
+            session_actor_id = resolve_hook_session_actor(
+                for_agent=sub.for_agent,
+                created_by=sub.created_by,
+            )
             task = asyncio.create_task(
                 self._execute_subprocess(
                     sub_id=sub.subscription_id,
                     command_str=sub.exec_command,
                     context=context,
+                    session_actor_id=session_actor_id,
                     raw_event={"event": event_type, "data": data},
                 )
             )
@@ -143,22 +149,13 @@ class SubscriptionService:
         sub_id: str,
         command_str: str,
         context: dict[str, str],
+        session_actor_id: str,
         raw_event: dict[str, Any],
     ) -> int:
         """Execute the registered hook literally; event payload is env vars + stdin JSON."""
         async with self._semaphore:
             logger.info(f"[Subscription {sub_id}] Executing: {command_str}")
-            env = os.environ.copy()
-            env["AK5_EVENT"] = context["event"]
-            env["AK5_EVENT_TYPE"] = context["event_type"]
-            env["AK5_BOARD_ID"] = context["board_id"]
-            env["AK5_TICKET_ID"] = context["ticket_id"]
-            env["AK5_TITLE"] = context["title"]
-            env["AK5_ACTOR_ID"] = context["actor_id"]
-            env["AK5_STATUS"] = context["status"]
-            env["AK5_SUMMARY"] = context["summary"]
-            env["AK5_DATA_JSON"] = context["data_json"]
-
+            env = build_hook_environ(context, session_actor_id=session_actor_id)
             stdin_bytes = json.dumps(raw_event, ensure_ascii=False).encode("utf-8")
             timeout_seconds = 30.0
 

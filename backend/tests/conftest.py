@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
+import ak5.models  # noqa: F401
 from ak5.database import get_db
 from ak5.main import app
 from ak5.models.base import Base
@@ -69,6 +70,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
 
         from ak5.models.actor import Actor
         from ak5.models.board import Board
+        from ak5.models.board_member import BoardMember
         from ak5.models.column import Column
 
         pm = Actor(
@@ -98,6 +100,12 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             created_by="user_pm",
         )
         session.add(board)
+
+        members = [
+            BoardMember(board_id="proj-core-engine", actor_id="user_pm", role="admin"),
+            BoardMember(board_id="proj-core-engine", actor_id="agent_image_worker", role="agent"),
+        ]
+        session.add_all(members)
 
         cols = [
             Column(column_id="col_todo", board_id="proj-core-engine", name="To Do", stage="open", position=1, wip_limit=0),

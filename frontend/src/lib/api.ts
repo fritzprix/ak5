@@ -306,3 +306,92 @@ export function subscribeToBoardEvents(
     eventSource.close();
   };
 }
+
+export async function fetchBoardMembers(boardId: string): Promise<Actor[]> {
+  const res = await fetch(`${API_BASE}/boards/${boardId}/members`, { cache: "no-store" });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function addBoardMember(
+  boardId: string,
+  actorId: string,
+  role: string = "member"
+): Promise<any> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/boards/${boardId}/members`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ actor_id: actorId, role }),
+  });
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function removeBoardMember(
+  boardId: string,
+  actorId: string
+): Promise<any> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/boards/${boardId}/members/${actorId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export interface DeviceRequestView {
+  user_code: string;
+  actor_id: string;
+  actor_type: string;
+  name: string;
+  role: string;
+  capabilities: string[];
+  status: string;
+  target_board_ids: string[];
+  expires_at: string;
+}
+
+export async function fetchDeviceRequest(code: string): Promise<DeviceRequestView> {
+  const res = await fetch(`${API_BASE}/auth/device/request?code=${encodeURIComponent(code)}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function approveDeviceRequest(
+  userCode: string,
+  approved: boolean,
+  boardIds: string[] = []
+): Promise<any> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/auth/device/approve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ user_code: userCode, approved, board_ids: boardIds }),
+  });
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw new Error(detail);
+  }
+  return res.json();
+}

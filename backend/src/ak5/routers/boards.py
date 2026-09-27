@@ -9,9 +9,12 @@ from sqlalchemy.orm import selectinload
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.models.board import Board
+from ak5.models.board_member import BoardMember
 from ak5.models.column import Column
 from ak5.models.ticket import Ticket
+from ak5.routers.actors import _to_actor_out
 from ak5.routers.auth import get_current_actor
+from ak5.schemas.actor import ActorOut
 from ak5.schemas.board import (
     BoardCreate,
     BoardDetailOut,
@@ -19,6 +22,7 @@ from ak5.schemas.board import (
     ColumnWithTicketsOut,
 )
 from ak5.schemas.column import ColumnCreate, ColumnOut
+from ak5.schemas.device_auth import BoardMemberCreate, BoardMemberOut
 from ak5.schemas.ticket import TicketOut
 
 router = APIRouter(prefix="/boards", tags=["boards"])
@@ -189,6 +193,14 @@ async def create_board(
         )
         db.add(col)
 
+    # Add creator as initial board member (admin)
+    initial_member = BoardMember(
+        board_id=board_id,
+        actor_id=current_actor.actor_id,
+        role="admin",
+    )
+    db.add(initial_member)
+
     await db.commit()
     await db.refresh(board)
     return _to_board_out(board)
@@ -230,3 +242,146 @@ async def add_column(
         wip_limit=col.wip_limit,
         created_at=col.created_at,
     )
+
+
+@router.get("/{board_id}/members", response_model=list[ActorOut])
+async def list_board_members(
+    board_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[ActorOut]:
+    """List all actors enrolled as members of the specified board."""
+    board = await db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+
+    stmt = (
+        select(Actor)
+        .join(BoardMember, BoardMember.actor_id == Actor.actor_id)
+        .where(BoardMember.board_id == board_id)
+        .order_by(Actor.actor_type, Actor.name)
+    )
+    result = await db.execute(stmt)
+    members = result.scalars().all()
+
+    # Fallback for unmigrated/legacy boards without explicit members:
+    # auto-enroll board creator if present
+    if not members and board.created_by:
+        creator = await db.get(Actor, board.created_by)
+        if creator:
+            try:
+                auto_mem = BoardMember(board_id=board_id, actor_id=creator.actor_id, role="admin")
+                db.add(auto_mem)
+                await db.commit()
+                members = [creator]
+            except Exception:
+                await db.rollback()
+                res = await db.execute(stmt)
+                members = res.scalars().all()
+
+    return [_to_actor_out(a) for a in members]
+
+
+async def _assert_board_admin(board: Board, actor: Actor, db: AsyncSession) -> None:
+    """Verify that actor is system admin, board creator, or has admin role on board."""
+    from ak5.authz import is_admin
+    if is_admin(actor) or board.created_by == actor.actor_id:
+        return
+    stmt = select(BoardMember).where(
+        BoardMember.board_id == board.board_id,
+        BoardMember.actor_id == actor.actor_id,
+        BoardMember.role == "admin",
+    )
+    res = await db.execute(stmt)
+    if not res.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Board administrator privileges required",
+        )
+
+
+@router.post("/{board_id}/members", response_model=BoardMemberOut)
+async def add_board_member(
+    board_id: str,
+    req: BoardMemberCreate,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BoardMemberOut:
+    """Add an actor to a board (board administrator required)."""
+    board = await db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+
+    await _assert_board_admin(board, current_actor, db)
+
+    target_actor = await db.get(Actor, req.actor_id)
+    if not target_actor:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Actor '{req.actor_id}' not found")
+
+    stmt = select(BoardMember).where(
+        BoardMember.board_id == board_id,
+        BoardMember.actor_id == req.actor_id,
+    )
+    res = await db.execute(stmt)
+    existing = res.scalar_one_or_none()
+    if existing:
+        return BoardMemberOut(
+            id=existing.id,
+            board_id=existing.board_id,
+            actor_id=existing.actor_id,
+            role=existing.role,
+            created_at=existing.created_at,
+            actor=_to_actor_out(target_actor),
+        )
+
+    new_member = BoardMember(
+        board_id=board_id,
+        actor_id=req.actor_id,
+        role=req.role or "member",
+    )
+    db.add(new_member)
+    await db.commit()
+    await db.refresh(new_member)
+    return BoardMemberOut(
+        id=new_member.id,
+        board_id=new_member.board_id,
+        actor_id=new_member.actor_id,
+        role=new_member.role,
+        created_at=new_member.created_at,
+        actor=_to_actor_out(target_actor),
+    )
+
+
+@router.delete("/{board_id}/members/{actor_id}")
+async def remove_board_member(
+    board_id: str,
+    actor_id: str,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Remove an actor from a board (board administrator or self-removal required)."""
+    board = await db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+
+    if actor_id == board.created_by:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove the creator of the board",
+        )
+
+    # Require board admin unless the actor is removing themselves
+    if current_actor.actor_id != actor_id:
+        await _assert_board_admin(board, current_actor, db)
+
+    stmt = select(BoardMember).where(
+        BoardMember.board_id == board_id,
+        BoardMember.actor_id == actor_id,
+    )
+    res = await db.execute(stmt)
+    member = res.scalar_one_or_none()
+    if not member:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found on this board")
+
+    await db.delete(member)
+    await db.commit()
+    return {"success": True, "board_id": board_id, "actor_id": actor_id}

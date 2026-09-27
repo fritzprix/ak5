@@ -1,4 +1,6 @@
 import json
+import os
+from collections.abc import Mapping
 from typing import Any
 
 DEFAULT_AGENT_EVENTS = frozenset({
@@ -163,3 +165,52 @@ def extract_event_context(event_type: str, data: dict[str, Any]) -> dict[str, st
         "summary": summary,
         "data_json": data_json,
     }
+
+
+def resolve_hook_session_actor(
+    *,
+    for_agent: str | None = None,
+    created_by: str | None = None,
+) -> str:
+    """Pick the actor id used to bind CLI session JWT for a woken hook process.
+
+    Preference: subscription --for-agent, then subscription created_by.
+    Never use the event performer here — that belongs in AK5_EVENT_ACTOR_ID.
+    """
+    for candidate in (for_agent, created_by):
+        cleaned = (candidate or "").strip()
+        if cleaned and cleaned.lower() != "system":
+            return cleaned
+    return ""
+
+
+def build_hook_environ(
+    context: Mapping[str, str],
+    *,
+    session_actor_id: str | None = None,
+    base: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build subprocess env for a subscription hook.
+
+    - AK5_ACTOR_ID: session-binding identity (for_agent / created_by / preserved parent).
+      Never overwritten with the event performer.
+    - AK5_EVENT_ACTOR_ID: actor that caused the event.
+    """
+    env = dict(os.environ if base is None else base)
+    event_actor = str(context.get("actor_id") or "")
+    bind = (session_actor_id or "").strip()
+    if not bind:
+        bind = (env.get("AK5_ACTOR_ID") or "").strip()
+
+    env["AK5_EVENT"] = str(context.get("event") or "")
+    env["AK5_EVENT_TYPE"] = str(context.get("event_type") or "")
+    env["AK5_BOARD_ID"] = str(context.get("board_id") or "")
+    env["AK5_TICKET_ID"] = str(context.get("ticket_id") or "")
+    env["AK5_TITLE"] = str(context.get("title") or "")
+    env["AK5_STATUS"] = str(context.get("status") or "")
+    env["AK5_SUMMARY"] = str(context.get("summary") or "")
+    env["AK5_DATA_JSON"] = str(context.get("data_json") or "")
+    env["AK5_EVENT_ACTOR_ID"] = event_actor
+    if bind:
+        env["AK5_ACTOR_ID"] = bind
+    return env

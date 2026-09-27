@@ -12,6 +12,7 @@ from ak5.models.base import Base
 from ak5.routers.actors import router as actors_router
 from ak5.routers.auth import router as auth_router
 from ak5.routers.boards import router as boards_router
+from ak5.routers.device_auth import router as device_auth_router
 from ak5.routers.events import router as events_router
 from ak5.routers.subscriptions import router as subscriptions_router
 from ak5.routers.tickets import router as tickets_router
@@ -60,6 +61,8 @@ app.add_middleware(
 
 # Mount API Routers
 app.include_router(auth_router, prefix=settings.API_V1_STR)
+app.include_router(device_auth_router, prefix=settings.API_V1_STR)
+app.include_router(device_auth_router)  # Direct access without /api/v1 prefix
 app.include_router(actors_router, prefix=settings.API_V1_STR)
 app.include_router(boards_router, prefix=settings.API_V1_STR)
 app.include_router(tickets_router, prefix=settings.API_V1_STR)

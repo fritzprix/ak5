@@ -8,6 +8,7 @@ from ak5.models.base import Base
 
 if TYPE_CHECKING:
     from ak5.models.actor import Actor
+    from ak5.models.board_member import BoardMember
     from ak5.models.column import Column
     from ak5.models.ticket import Ticket
 
@@ -35,6 +36,11 @@ class Board(Base):
     )
     tickets: Mapped[list["Ticket"]] = relationship(
         "Ticket",
+        back_populates="board",
+        cascade="all, delete-orphan",
+    )
+    members: Mapped[list["BoardMember"]] = relationship(
+        "BoardMember",
         back_populates="board",
         cascade="all, delete-orphan",
     )

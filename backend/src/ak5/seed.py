@@ -3,7 +3,7 @@ import shutil
 from contextlib import suppress
 from typing import Any
 
-from sqlalchemy import delete, text, update
+from sqlalchemy import delete, select, text, update
 
 from ak5.cli.config import clear_session, find_project_root
 from ak5.config import settings
@@ -11,7 +11,9 @@ from ak5.database import AsyncSessionLocal
 from ak5.models.actor import Actor
 from ak5.models.audit import AuditLog
 from ak5.models.board import Board
+from ak5.models.board_member import BoardMember
 from ak5.models.column import Column
+from ak5.models.device_code import DeviceCode
 from ak5.models.subscription import Subscription
 from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.paths import get_app_data_dir
@@ -93,6 +95,22 @@ async def seed_initial_data() -> None:
                 )
                 db.add(col)
 
+        # Seed default board members
+        for actor_id in DEFAULT_SYSTEM_ACTORS:
+            stmt = select(BoardMember).where(
+                BoardMember.board_id == settings.DEFAULT_BOARD_ID,
+                BoardMember.actor_id == actor_id,
+            )
+            res = await db.execute(stmt)
+            if not res.scalar_one_or_none():
+                db.add(
+                    BoardMember(
+                        board_id=settings.DEFAULT_BOARD_ID,
+                        actor_id=actor_id,
+                        role="admin" if actor_id == "user_pm" else "agent",
+                    )
+                )
+
         await db.commit()
 
 
@@ -106,6 +124,12 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
         "custom_actors": 0,
         "boards": 0,
     }
+
+    from ak5.database import engine
+    from ak5.models.base import Base
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as db:
         # Temporarily disable foreign keys during bulk purge
@@ -130,12 +154,18 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
         # 5. Delete audit logs
         await db.execute(delete(AuditLog))
 
-        # 6. Delete boards and columns if not keep_boards
+        # 6. Delete boards, board_members, device_codes, and columns
+        await db.execute(delete(DeviceCode))
         if not keep_boards:
+            await db.execute(delete(BoardMember))
             await db.execute(delete(Column))
             res_bd = await db.execute(delete(Board))
             counts["boards"] = res_bd.rowcount or 0
         else:
+            # Delete members of custom actors
+            await db.execute(
+                delete(BoardMember).where(BoardMember.actor_id.not_in(DEFAULT_SYSTEM_ACTORS))
+            )
             # Reassign any boards created by custom actors to default user_pm
             await db.execute(
                 update(Board)

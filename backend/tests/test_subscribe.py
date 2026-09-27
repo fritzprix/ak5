@@ -1,7 +1,11 @@
 import pytest
 from ak5.cli.commands.subscribe import execute_subscriber_command
 from ak5.cli.main import cli
-from ak5.services.event_context import extract_event_context
+from ak5.services.event_context import (
+    build_hook_environ,
+    extract_event_context,
+    resolve_hook_session_actor,
+)
 from click.testing import CliRunner
 
 
@@ -25,6 +29,52 @@ def test_extract_event_context_ticket_created():
     assert ctx["actor_id"] == "user_pm"
     assert "created by @user_pm" in ctx["summary"]
     assert "TK-101" in ctx["data_json"]
+
+
+def test_resolve_hook_session_actor_prefers_for_agent():
+    assert resolve_hook_session_actor(for_agent="agent-qa", created_by="user_pm") == "agent-qa"
+    assert resolve_hook_session_actor(for_agent=None, created_by="user_pm") == "user_pm"
+    assert resolve_hook_session_actor(for_agent=None, created_by="system") == ""
+    assert resolve_hook_session_actor(for_agent="  ", created_by=None) == ""
+
+
+def test_build_hook_environ_binds_session_not_event_actor():
+    ctx = {
+        "event": "TICKET_CREATED",
+        "event_type": "TICKET_CREATED",
+        "board_id": "board-1",
+        "ticket_id": "TK-1",
+        "title": "t",
+        "actor_id": "user_pm",
+        "status": "open",
+        "summary": "s",
+        "data_json": "{}",
+    }
+    env = build_hook_environ(ctx, session_actor_id="agent-qa", base={})
+    assert env["AK5_ACTOR_ID"] == "agent-qa"
+    assert env["AK5_EVENT_ACTOR_ID"] == "user_pm"
+    assert env["AK5_TICKET_ID"] == "TK-1"
+
+
+def test_build_hook_environ_preserves_parent_actor_when_unbound():
+    ctx = {
+        "event": "TICKET_CREATED",
+        "event_type": "TICKET_CREATED",
+        "board_id": "board-1",
+        "ticket_id": "TK-1",
+        "title": "t",
+        "actor_id": "user_pm",
+        "status": "open",
+        "summary": "s",
+        "data_json": "{}",
+    }
+    env = build_hook_environ(ctx, session_actor_id="", base={"AK5_ACTOR_ID": "parent-agent"})
+    assert env["AK5_ACTOR_ID"] == "parent-agent"
+    assert env["AK5_EVENT_ACTOR_ID"] == "user_pm"
+
+    env_empty = build_hook_environ(ctx, session_actor_id="", base={})
+    assert "AK5_ACTOR_ID" not in env_empty
+    assert env_empty["AK5_EVENT_ACTOR_ID"] == "user_pm"
 
 
 def test_extract_event_context_ticket_moved():
@@ -61,7 +111,9 @@ def test_extract_event_context_malformed_nested_data():
 @pytest.mark.asyncio
 async def test_execute_subscriber_command_uses_env(tmp_path):
     output_file = tmp_path / "out.txt"
-    cmd = f'echo "$AK5_EVENT $AK5_TICKET_ID" > "{output_file}"'
+    cmd = (
+        f'echo "$AK5_EVENT $AK5_TICKET_ID $AK5_ACTOR_ID $AK5_EVENT_ACTOR_ID" > "{output_file}"'
+    )
     ctx = {
         "event": "TICKET_CREATED",
         "event_type": "TICKET_CREATED",
@@ -73,9 +125,15 @@ async def test_execute_subscriber_command_uses_env(tmp_path):
         "summary": "Sample summary",
         "data_json": '{"foo": "bar"}',
     }
-    code = await execute_subscriber_command(cmd, ctx, {"raw": True}, pass_stdin=False)
+    code = await execute_subscriber_command(
+        cmd,
+        ctx,
+        {"raw": True},
+        pass_stdin=False,
+        session_actor_id="agent-worker",
+    )
     assert code == 0
-    assert output_file.read_text().strip() == "TICKET_CREATED TK-999"
+    assert output_file.read_text().strip() == "TICKET_CREATED TK-999 agent-worker admin"
 
 
 @pytest.mark.asyncio
