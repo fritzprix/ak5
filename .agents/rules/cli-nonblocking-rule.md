@@ -15,8 +15,10 @@
    - 외부 웹훅 연동이 필요한 경우 `curl` 명령어 텍스트를 등록한다.
 
 4. **터미널 관측(Observation)과의 분리**:
-   - 개발자가 터미널에서 화면을 띄워두고 실시간으로 이벤트를 지켜보는 도구(스트리밍 뷰어)는 `ak5 watch` 또는 `ak5 tail`과 같이 명시적으로 분리한다.
-   - `ak5 subscribe`는 **자동화 액션(Action Trigger)** 등록 용도로만 사용한다.
+   - 개발자가 터미널에서 화면을 띄워두고 실시간으로 이벤트를 지켜보는 도구는 `ak5 events watch`(또는 `ak5 watch`)이다.
+   - `ak5 subscribe`는 **자동화 액션(Action Trigger)** 등록 용도로만 사용한다 (`create` / `list` / `remove`).
+   - 에이전트/하네스(비-TTY, `AK5_AGENT=1` 등)에서 blocking watch를 실행하면 **exit 2**로 거부한다.
+   - 구독 성공 정의: `ak5 subscribe ls`에 hook 행이 존재함 (로컬 배경 PID/stdout 배너가 아님).
 
 ## 2. 회귀 방지 체크리스트 (Regression Prevention)
 - [ ] `ak5 subscribe` 실행 시 터미널/쉘 프로세스가 종료되지 않고 대기하는가? ➔ **절대 금지 (Defect)**

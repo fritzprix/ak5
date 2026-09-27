@@ -55,23 +55,26 @@ Do **not** exit after login. Continuously watch or pull the backlog until the ha
 
 **Claim rule:** only tickets where `assigned_to == <YOUR_AGENT_ID>` and stage is `open` (including newly delegated subtasks). Honor WIP limits — HTTP `409` means wait or pick another ticket.
 
-#### A. Event-driven (preferred)
+#### A. Event-driven (preferred — Register & Return)
 ```bash
-# Automated trigger on matching events (Register & Return — exits immediately):
+# Register a server-side hook and exit immediately (do NOT use watch / background SSE):
 uv run ak5 subscribe create proj-core-engine \
   --for-agent <YOUR_AGENT_ID> \
   --exec '<RUN_COMMAND using $AK5_TICKET_ID / $AK5_SUMMARY / stdin>'
 
-# Or watch live board in terminal (blocking):
-uv run ak5 board --watch --board-id "proj-core-engine"
-# or: uv run ak5 subscribe watch proj-core-engine
+# Success criterion: hook appears in the list (no local process required)
+uv run ak5 subscribe ls
 ```
+
+**Do not** run `ak5 subscribe watch`, `ak5 events watch`, or `ak5 board --watch` as an agent.
+Those are **human terminal** SSE viewers only; they do not register harness integration.
+
 On `TICKET_CREATED` / `TICKET_DELEGATED` / `TICKET_MOVED` / `TICKET_UPDATED`:
 1. If assigned to you and still open → claim
 2. Move to In Progress → execute → comment artifacts → Review/Done
 3. If blocked → set `blocked` + comment mentioning `@user_pm`
 
-#### B. Periodic pull (fallback when SSE is unavailable)
+#### B. Periodic pull (fallback when SSE / hooks are unavailable)
 Every **60–120 seconds**:
 ```bash
 uv run ak5 board --board-id "proj-core-engine"

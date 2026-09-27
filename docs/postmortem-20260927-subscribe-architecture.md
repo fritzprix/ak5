@@ -4,6 +4,7 @@
 - **사건 일시:** 2026-09-26 (Trajectory Session: `sum4n7z4fksfku0he02eoe9m`)
 - **영향 컴포넌트:** AK5 CLI (`ak5 subscribe`), AK5 Gateway/EventBus, 자율 AI 에이전트(LibrAgent 등) 워크플로우
 - **상태:** 분석 완료 및 아키텍처 개선 결정 (Resolved with Architectural Redesign)
+- **후속:** 구현 이후에도 에이전트가 `watch`를 구독으로 오용한 회귀 → [PM-20260927-02](postmortem-20260927-subscribe-watch-misuse.md)
 
 ---
 

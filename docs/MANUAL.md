@@ -373,9 +373,13 @@ uv run ak5 subscribe list
 uv run ak5 subscribe remove <SUBSCRIPTION_ID>
 # (단축 별칭: ak5 subscribe rm <SUBSCRIPTION_ID>)
 
-# 4. 개발자 터미널 실시간 스트리밍 모니터링 (Foreground Watch)
-uv run ak5 subscribe watch proj-core-engine
+# 4. 개발자 터미널 실시간 스트리밍 모니터링 (Human only — blocking)
+#    에이전트는 사용 금지. 구독 자동화는 위의 create 만 사용.
+uv run ak5 events watch proj-core-engine --exec 'notify-send "$AK5_TITLE"'
+# 데모: uv run ak5 events watch proj-core-engine --demo-echo --once
 ```
+
+> **구독 성공 정의:** `ak5 subscribe ls`에 훅이 보여야 합니다. 로컬 `watch` 프로세스 PID나 stdout echo는 구독이 아닙니다.
 
 #### 훅 데이터 전달 (env + stdin — placeholder 없음)
 이벤트 발생 시 등록한 `--exec` 명령을 **그대로** 실행합니다. 내용은 환경 변수와 stdin JSON으로만 전달됩니다.

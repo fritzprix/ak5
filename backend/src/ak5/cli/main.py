@@ -6,15 +6,13 @@ from ak5.cli.commands.board import board_command
 from ak5.cli.commands.boards import boards_command, create_board_command
 from ak5.cli.commands.delegate import delegate_command
 from ak5.cli.commands.demo import demo_command
+from ak5.cli.commands.events import events_command, watch_command
 from ak5.cli.commands.login import login_command
 from ak5.cli.commands.logout import logout_command
 from ak5.cli.commands.mcp import mcp_command
 from ak5.cli.commands.migrate_legacy import migrate_legacy_command
 from ak5.cli.commands.serve import serve_command
-from ak5.cli.commands.subscribe import (
-    subscribe_command,
-    watch_command,
-)
+from ak5.cli.commands.subscribe import subscribe_command
 from ak5.cli.commands.ticket import (
     comment_shortcut,
     move_shortcut,
@@ -49,7 +47,8 @@ cli.add_command(whoami_command)
 cli.add_command(web_command)
 cli.add_command(migrate_legacy_command)
 cli.add_command(subscribe_command)
-cli.add_command(watch_command)
+cli.add_command(events_command)
+cli.add_command(watch_command)  # alias → events watch (human terminal only)
 
 
 if __name__ == "__main__":

@@ -262,7 +262,8 @@ def do_subscribe(
                     f"[bold]Board:[/bold] {board_id or '*'}\n"
                     f"[bold]Events:[/bold] {events or 'ALL'}\n"
                     f"[bold]Command:[/bold] [yellow]{exec_command}[/yellow]\n"
-                    f"[dim]The AK5 Gateway will execute this command in background upon matching events.[/dim]",
+                    f"[dim]Hook runs on the AK5 Gateway — no local watcher process.[/dim]\n"
+                    f"[bold]Verify:[/bold] [cyan]ak5 subscribe ls[/cyan]",
                     title="⚡ AK5 Subscription Active",
                     expand=False,
                 )
@@ -342,6 +343,11 @@ def subscribe_group() -> None:
     """Manage server-side board event hooks (Register & Return).
 
     \b
+    [Agents]
+      Use create/list/remove only. Do NOT use watch or spawn a local SSE process.
+      Success = `ak5 subscribe ls` shows your hook (no background PID required).
+
+    \b
     [How hooks work]
       - create registers a literal --exec command and exits immediately (exit 0).
       - On matching board events, the AK5 Gateway runs that command as-is.
@@ -357,12 +363,16 @@ def subscribe_group() -> None:
 
     \b
     [Examples]
-      ak5 subscribe create proj-core-engine --exec 'agent -p \"$AK5_SUMMARY\"'
+      ak5 subscribe create proj-core-engine --for-agent \"$AK5_ACTOR_ID\" \\
+        --exec 'agent -p \"$AK5_SUMMARY\"'
       ak5 subscribe create proj-core-engine --events TICKET_CREATED \\
         --exec 'curl -X POST https://example.com/hook -H \"Content-Type: application/json\" -d @-'
       ak5 subscribe list
       ak5 subscribe remove <ID>
-      ak5 subscribe watch proj-core-engine
+
+    \b
+    [Human terminal SSE]
+      ak5 events watch <BOARD_ID> --exec '…'   (not for agents)
     """
     pass
 
@@ -405,8 +415,9 @@ def subscribe_add(
 
     \b
     Examples:
-      ak5 subscribe create proj-core-engine --exec 'echo \"[$AK5_EVENT] $AK5_TICKET_ID\"'
-      ak5 subscribe create proj-core-engine --exec 'agent -p \"$AK5_SUMMARY\"'
+      ak5 subscribe create proj-core-engine --for-agent \"$AK5_ACTOR_ID\" \\
+        --exec 'agent -p \"$AK5_SUMMARY\"'
+      ak5 subscribe create proj-core-engine --exec './scripts/on_board_event.sh'
       ak5 subscribe create --exec 'curl -X POST https://hooks.example/ak5 -d @-' --dry-run
     """
     do_subscribe(
@@ -442,58 +453,46 @@ def subscribe_remove(subscription_id: str) -> None:
     "-x",
     "exec_command",
     required=False,
-    default='echo "[$AK5_EVENT] $AK5_TICKET_ID: $AK5_TITLE"',
-    help=(
-        "Literal shell command for each matching event. "
-        "Default prints $AK5_EVENT / $AK5_TICKET_ID / $AK5_TITLE. "
-        "Uses env + stdin JSON; no {placeholder} expansion."
-    ),
-)
-@click.option(
-    "--events",
-    "-e",
     default=None,
-    help="Comma-separated event types to observe. Default: all.",
+    help="Deprecated path. Prefer: ak5 events watch --exec '…'",
 )
+@click.option("--demo-echo", is_flag=True, help="Deprecated path. Prefer: ak5 events watch --demo-echo")
+@click.option("--events", "-e", default=None, help="Comma-separated event types. Default: all.")
 @click.option("--for-agent", "-a", default=None, help="Only tickets assigned to this actor ID.")
 @click.option("--debounce", default=0.0, type=float, help="Per-ticket cooldown seconds between runs.")
 @click.option("--once", is_flag=True, help="Exit after the first matching event.")
+@click.pass_context
 def subscribe_watch(
+    ctx: click.Context,
     board_id: str | None,
-    exec_command: str,
+    exec_command: str | None,
+    demo_echo: bool,
     events: str | None,
     for_agent: str | None,
     debounce: float,
     once: bool,
 ) -> None:
-    """Foreground SSE watcher (blocking). Prefer 'subscribe create' for agents.
+    """DEPRECATED. Agents: subscribe create. Humans: ak5 events watch."""
+    from ak5.cli.agent_env import refuse_blocking_watch_for_agents
+    from ak5.cli.commands.events import events_watch
 
-    \b
-    Examples:
-      ak5 subscribe watch proj-core-engine
-      ak5 subscribe watch proj-core-engine --once --exec 'echo $AK5_SUMMARY'
-    """
-    api_url = get_api_url()
-    event_filter = None
-    if events:
-        event_filter = {ev.strip().upper() for ev in events.split(",") if ev.strip()}
-
-    try:
-        asyncio.run(
-            run_subscription_loop(
-                api_url=api_url,
-                target_board_id=board_id,
-                exec_command=exec_command,
-                event_filter=event_filter,
-                for_agent=for_agent,
-                debounce_seconds=debounce,
-                run_once=once,
-            )
-        )
-    except KeyboardInterrupt:
-        console.print("\n[dim]Watch stopped by user.[/dim]")
-    except httpx.ConnectError:
-        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+    console.print(
+        "[bold yellow]DEPRECATED:[/bold yellow] "
+        "[cyan]ak5 subscribe watch[/cyan] is not agent subscription.\n"
+        "  Agents: [cyan]ak5 subscribe create <BOARD> --exec '…'[/cyan] then [cyan]ak5 subscribe ls[/cyan]\n"
+        "  Humans: [cyan]ak5 events watch <BOARD> --exec '…'[/cyan]"
+    )
+    refuse_blocking_watch_for_agents()
+    ctx.invoke(
+        events_watch,
+        board_id=board_id,
+        exec_command=exec_command,
+        demo_echo=demo_echo,
+        events=events,
+        for_agent=for_agent,
+        debounce=debounce,
+        once=once,
+    )
 
 
 # Subcommand aliases
@@ -505,5 +504,4 @@ subscribe_group.add_command(subscribe_remove, name="rm")
 subscribe_command = subscribe_group
 subscriptions_command = subscribe_list
 unsubscribe_command = subscribe_remove
-watch_command = subscribe_watch
 

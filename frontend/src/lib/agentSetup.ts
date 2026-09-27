@@ -88,13 +88,15 @@ Do **not** stop after login. Keep pulling or watching the backlog until stopped.
 
 Claim rule: only tickets where \`assigned_to == <YOUR_AGENT_ID>\` and column stage is \`open\` (or newly delegated to you). Respect column WIP limits (HTTP 409 = wait / pick another).
 
-### A. Event-driven (preferred)
+### A. Event-driven (preferred — Register & Return)
 \`\`\`bash
-# Live terminal board + SSE
-uv run ak5 board --watch --board-id ${boardId}
+# Register server-side hook (exits immediately). Do NOT use watch / curl -N SSE as an agent.
+uv run ak5 subscribe create ${boardId} \\
+  --for-agent <YOUR_AGENT_ID> \\
+  --exec '<HOOK using $AK5_TICKET_ID / $AK5_SUMMARY / stdin>'
 
-# Or subscribe directly
-curl -N ${eventsUrl}
+# Success = row present (no local watcher process):
+uv run ak5 subscribe ls
 \`\`\`
 On \`TICKET_CREATED\` / \`TICKET_DELEGATED\` / \`TICKET_MOVED\` / \`TICKET_UPDATED\`:
 1. If ticket is assigned to you and still open → claim it
@@ -103,7 +105,7 @@ On \`TICKET_CREATED\` / \`TICKET_DELEGATED\` / \`TICKET_MOVED\` / \`TICKET_UPDAT
 4. Move to review (\`${reviewColId}\`) or done (\`${doneColId}\`) when finished
 5. If blocked: set status blocked + comment @user_pm
 
-### B. Periodic pull (fallback when SSE is unavailable)
+### B. Periodic pull (fallback when hooks are unavailable)
 Every **60–120 seconds**:
 \`\`\`bash
 uv run ak5 board --board-id ${boardId}
