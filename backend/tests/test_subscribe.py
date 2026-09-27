@@ -125,6 +125,15 @@ async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch)
     output_file = tmp_path / "handled.txt"
     exec_cmd = f'echo "[$AK5_EVENT] $AK5_TICKET_ID:$AK5_TITLE" > "{output_file}"'
 
+    # Isolate from developer/CI workspace .ak5 sessions
+    monkeypatch.setenv("AK5_PROJECT_ROOT", str(tmp_path))
+    for key in ("AK5_ACTOR_ID", "AK5_ACTOR_TOKEN", "AK5_SESSION_FILE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "ak5.cli.commands.subscribe.get_auth_headers",
+        lambda api_url=None: {"Authorization": "Bearer test-jwt-token"},
+    )
+
     sse_lines = [
         "event: TICKET_CREATED",
         'data: {"board_id": "proj-core-engine", "ticket": {"ticket_id": "TK-777", "title": "Auto Trigger"}}',
@@ -174,6 +183,14 @@ async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch)
 async def test_subscription_loop_skips_unmatched_or_missing_board(tmp_path, monkeypatch):
     output_file = tmp_path / "handled_unmatched.txt"
     exec_cmd = f'echo "$AK5_EVENT:$AK5_TICKET_ID" > "{output_file}"'
+
+    monkeypatch.setenv("AK5_PROJECT_ROOT", str(tmp_path))
+    for key in ("AK5_ACTOR_ID", "AK5_ACTOR_TOKEN", "AK5_SESSION_FILE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "ak5.cli.commands.subscribe.get_auth_headers",
+        lambda api_url=None: {"Authorization": "Bearer test-jwt-token"},
+    )
 
     sse_lines = [
         "event: TICKET_CREATED",
