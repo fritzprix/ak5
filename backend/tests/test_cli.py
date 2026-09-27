@@ -18,6 +18,7 @@ def test_cli_help():
     assert "comment" in result.output
     assert "create-board" in result.output
     assert "whoami" in result.output
+    assert "logout" in result.output
     assert "web" in result.output
     assert "board" in result.output
     assert "demo" in result.output

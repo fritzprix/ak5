@@ -66,10 +66,10 @@ def boards_command(query: str | None) -> None:
 @click.option("--desc", "-d", "description", default=None, help="Board description")
 def create_board_command(board_id: str, name: str, description: str | None) -> None:
     """Create a new Kanban project board with standard default columns."""
-    from ak5.cli.config import get_auth_headers
+    from ak5.cli.config import require_auth_headers
 
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     payload = {
         "board_id": board_id,

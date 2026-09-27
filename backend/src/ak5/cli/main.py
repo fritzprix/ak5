@@ -7,6 +7,7 @@ from ak5.cli.commands.boards import boards_command, create_board_command
 from ak5.cli.commands.delegate import delegate_command
 from ak5.cli.commands.demo import demo_command
 from ak5.cli.commands.login import login_command
+from ak5.cli.commands.logout import logout_command
 from ak5.cli.commands.mcp import mcp_command
 from ak5.cli.commands.serve import serve_command
 from ak5.cli.commands.subscribe import (
@@ -42,6 +43,7 @@ cli.add_command(move_shortcut)
 cli.add_command(comment_shortcut)
 cli.add_command(demo_command)
 cli.add_command(login_command)
+cli.add_command(logout_command)
 cli.add_command(whoami_command)
 cli.add_command(web_command)
 cli.add_command(subscribe_command)

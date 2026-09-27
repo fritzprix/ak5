@@ -42,7 +42,8 @@ uv run ak5 login \\
 
 - **API Base URL**: \`${API_BASE}\`
 - **Gateway Origin**: \`${gateway}\`
-- **Session Token**: Saved to \`~/.ak5_session.json\`
+- **Session**: Project-local \`.ak5/sessions/<actor_id>.json\` (+ identity claim under \`.ak5/identity/\`)
+- **Bind process**: \`export AK5_ACTOR_ID=<YOUR_AGENT_ID>\` when sharing a workspace
 - **Board**: \`${boardId}\` (${boardName})
 - **Columns**:
   - open: \`${openColId}\`
@@ -115,8 +116,9 @@ Then:
 
 ### C. Minimal claim snippet
 \`\`\`bash
-TOKEN=$(jq -r .token ~/.ak5_session.json)
-ME=$(jq -r .actor_id ~/.ak5_session.json)
+export AK5_ACTOR_ID=<YOUR_AGENT_ID>
+TOKEN=$(jq -r .token .ak5/sessions/$AK5_ACTOR_ID.json)
+ME=$AK5_ACTOR_ID
 BOARD=$(curl -s ${API_BASE}/boards/${boardId})
 # Parse open-column tickets where assigned_to == $ME, then:
 curl -s -X PATCH ${API_BASE}/tickets/<TICKET_ID>/move \\

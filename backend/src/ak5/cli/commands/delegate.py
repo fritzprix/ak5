@@ -1,6 +1,6 @@
 import click
 import httpx
-from ak5.cli.config import get_api_url, get_token
+from ak5.cli.config import get_api_url, require_auth_headers
 from rich.console import Console
 
 console = Console()
@@ -21,20 +21,7 @@ def delegate_command(
 ) -> None:
     """Delegate a subtask to an agent under an existing parent ticket."""
     api_url = get_api_url()
-    token = get_token()
-
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    else:
-        # Auto-login as orchestrator if not logged in
-        with httpx.Client(timeout=5.0) as client:
-            resp = client.post(
-                f"{api_url}/auth/identify",
-                json={"actor_id": "cli_user", "actor_type": "human", "name": "CLI User", "role": "PM"},
-            )
-            if resp.is_success:
-                headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
+    headers = require_auth_headers(api_url)
 
     payload = {
         "target_actor_id": target_actor_id,

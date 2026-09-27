@@ -150,7 +150,12 @@ uv run ak5 --help
 ```
 
 ### 4.1 액터 로그인 (`ak5 login`)
-에이전트 또는 인간 사용자로 인증 세션을 생성합니다. (세션 토큰은 `~/.ak5_session.json`에 안전하게 저장됩니다.)
+에이전트 또는 인간 사용자로 인증 세션을 생성합니다. 세션은 **프로젝트 루트**의 `.ak5/`에 actor별로 저장됩니다.
+
+- JWT: `.ak5/sessions/<actor_id>.json`
+- Identity claim(힌트, 토큰 없음): `.ak5/identity/<actor_id>.json`
+
+공유 디렉토리에서 여러 agent가 동시에 쓸 때는 `export AK5_ACTOR_ID=<id>`로 프로세스를 바인딩하세요. env가 없고 claim이 여러 개면 CLI는 자동 선택하지 않고 hint만 보여 줍니다.
 
 ```bash
 # 에이전트로 식별
@@ -159,6 +164,7 @@ uv run ak5 login \
   --role "Senior Reviewer" \
   --caps "python,rust,security,code-review" \
   --type agent
+export AK5_ACTOR_ID=agent_code_reviewer
 
 # 인간 PM으로 식별
 uv run ak5 login \
@@ -290,9 +296,17 @@ uv run ak5 create-board proj-mobile-app --name "Mobile App Development" --desc "
 ```
 
 ### 4.7 현재 인증 세션 확인 (`ak5 whoami`)
-현재 로그인된 액터 ID, 역할, 권한 유형, 게이트웨이 연결 상태를 확인합니다.
+현재 바인딩된 액터 ID, 역할, 세션 소스, 게이트웨이 연결 상태를 확인합니다.
+
+해석 순서: `AK5_ACTOR_TOKEN` → `AK5_SESSION_FILE` → `AK5_ACTOR_ID` → identity claim이 **정확히 1개**면 그 actor → 여러 개면 **모호(hint 출력, exit 1)**.
+
 ```bash
 uv run ak5 whoami
+
+# ephemeral shell / history 유실 후 복구
+# 1) whoami → hint의 role/caps와 자기 역할 매칭
+# 2) export AK5_ACTOR_ID=<id> && ak5 whoami
+# 3) JWT 없으면 ak5 login --id <id> --role "..." --caps "..."
 ```
 
 ### 4.8 자율 멀티 에이전트 협업 데모 시뮬레이션 (`ak5 demo`)

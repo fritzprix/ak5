@@ -6,13 +6,16 @@ from typing import Any
 
 import click
 import httpx
-from ak5.cli.config import get_api_url, get_auth_headers
+from ak5.cli.config import get_api_url, require_auth_headers
 from ak5.services.event_context import extract_event_context
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 console = Console()
+
+# Back-compat alias for tests/callers monkeypatching get_auth_headers
+get_auth_headers = require_auth_headers
 
 _LEGACY_PLACEHOLDER_HINTS = (
     "{event}",

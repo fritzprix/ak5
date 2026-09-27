@@ -29,15 +29,21 @@ uv run uvicorn ak5.main:app --host 127.0.0.1 --port 8000
 ```
 
 ### Step 2: Agent Identification & Login
-Identify yourself with your agent ID, role, and capabilities:
+Use a **stable actor_id** for yourself (keep it in this skill / system prompt). Login writes project-local files under `.ak5/`:
+- `.ak5/sessions/<actor_id>.json` — JWT session
+- `.ak5/identity/<actor_id>.json` — token-free claim (role/caps) used as a recovery hint
+
 ```bash
+export AK5_ACTOR_ID="agent_orchestrator"   # bind this process (required when sharing a cwd)
 uv run ak5 login \
   --id "agent_orchestrator" \
   --role "Lead Orchestrator" \
   --caps "orchestration,delegation,code-review" \
   --type agent
+uv run ak5 whoami
 ```
-The session token will be saved to `~/.ak5_session.json` and automatically utilized by subsequent `ak5` CLI commands.
+
+**Ephemeral shell / lost history:** run `ak5 whoami`. If multiple claims exist, match hints to your role/caps, then `export AK5_ACTOR_ID=<id>` and re-run `whoami` (or `login` if the JWT is missing). Do not guess another agent's id.
 
 ---
 

@@ -4,7 +4,7 @@ from typing import Any
 
 import click
 import httpx
-from ak5.cli.config import get_api_url, get_auth_headers
+from ak5.cli.config import get_api_url, require_auth_headers
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -77,7 +77,7 @@ def create_ticket_cmd(
 ) -> None:
     """Create a new root or master ticket."""
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -262,7 +262,7 @@ def move_ticket_cmd(ticket_id: str, target_column: str, note: str | None) -> Non
 
 def execute_move_ticket(ticket_id: str, target_column: str, note: str | None = None) -> None:
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -325,7 +325,7 @@ def comment_ticket_cmd(ticket_id: str, content: str, internal: bool) -> None:
 
 def execute_comment_ticket(ticket_id: str, content: str, internal: bool = False) -> None:
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -356,7 +356,7 @@ def execute_comment_ticket(ticket_id: str, content: str, internal: bool = False)
 def block_ticket_cmd(ticket_id: str, reason: str, mention: str | None) -> None:
     """Mark a ticket as BLOCKED and notify PM/collaborators."""
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -407,7 +407,7 @@ def update_ticket_cmd(
 ) -> None:
     """Update ticket title, description, priority, assignee, or status."""
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     payload = {}
     if title is not None:
@@ -452,7 +452,7 @@ def update_ticket_cmd(
 def attach_cmd(ticket_id: str, filepath: Path) -> None:
     """Attach a deliverable or file to a ticket."""
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with open(filepath, "rb") as f:
@@ -489,7 +489,7 @@ def attach_cmd(ticket_id: str, filepath: Path) -> None:
 def download_attachment_cmd(ticket_id: str, attachment_id: str, output: str | None) -> None:
     """Download an attachment file from a ticket."""
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -642,7 +642,7 @@ def list_tickets_cmd(
 def archive_ticket_cmd(ticket_id: str) -> None:
     """Archive a ticket to hide it from active Kanban board view."""
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -666,7 +666,7 @@ def archive_ticket_cmd(ticket_id: str) -> None:
 def unarchive_ticket_cmd(ticket_id: str) -> None:
     """Unarchive an archived ticket back to active Kanban board view."""
     api_url = get_api_url()
-    headers = get_auth_headers(api_url)
+    headers = require_auth_headers(api_url)
 
     try:
         with httpx.Client(timeout=10.0) as client:
