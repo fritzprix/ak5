@@ -1,8 +1,8 @@
 from collections.abc import AsyncGenerator
 
+import ak5.models  # noqa: F401
 import pytest
 import pytest_asyncio
-import ak5.models  # noqa: F401
 from ak5.database import get_db
 from ak5.main import app
 from ak5.models.base import Base

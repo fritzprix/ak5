@@ -1,6 +1,7 @@
 import json
 import secrets
 import string
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -8,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ak5.authz import RESERVED_ADMIN_IDS, RESERVED_ADMIN_ROLES, is_admin
+from ak5.authz import RESERVED_ADMIN_IDS, RESERVED_ADMIN_ROLES
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.models.board import Board
@@ -138,17 +139,13 @@ async def get_device_request(
 
     caps = []
     if record.capabilities:
-        try:
+        with suppress(Exception):
             caps = json.loads(record.capabilities)
-        except Exception:
-            pass
 
     target_boards = []
     if record.target_board_ids:
-        try:
+        with suppress(Exception):
             target_boards = json.loads(record.target_board_ids)
-        except Exception:
-            pass
 
     return DeviceVerificationView(
         user_code=record.user_code,

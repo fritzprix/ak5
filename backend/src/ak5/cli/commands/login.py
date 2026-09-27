@@ -1,12 +1,8 @@
-import os
 import time
+from contextlib import suppress
 
 import click
 import httpx
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
 from ak5.cli.config import (
     find_project_root,
     get_api_url,
@@ -14,6 +10,9 @@ from ak5.cli.config import (
     list_identity_hints,
     save_session,
 )
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 console = Console()
 
@@ -82,7 +81,7 @@ def _perform_device_flow(
 
         # Poll for approval
         start_time = time.time()
-        with console.status("[bold green]Waiting for authorization in browser...[/bold green]", spinner="dots") as status:
+        with console.status("[bold green]Waiting for authorization in browser...[/bold green]", spinner="dots"):
             while True:
                 if time.time() - start_time > expires_in:
                     console.print("[bold red]✗ Authorization timed out.[/bold red]")
@@ -104,10 +103,8 @@ def _perform_device_flow(
                     raise click.Abort()
 
                 error_detail = ""
-                try:
+                with suppress(Exception):
                     error_detail = poll_resp.json().get("detail", "")
-                except Exception:
-                    pass
 
                 if "authorization_pending" in error_detail:
                     continue
