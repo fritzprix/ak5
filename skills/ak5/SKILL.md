@@ -56,26 +56,38 @@ Do **not** exit after login. Continuously watch or pull the backlog until the ha
 **Claim rule:** only tickets where `assigned_to == <YOUR_AGENT_ID>` and stage is `open` (including newly delegated subtasks). Honor WIP limits — HTTP `409` means wait or pick another ticket.
 
 #### A. Event-driven (preferred — Register & Return)
+
+**`--exec` contract:** the command must **wake your agent runtime** and pass event context via `$AK5_*` env and/or stdin JSON. Kanban claim / move / work / comment happen **inside the woken session**, not inside `--exec`.
+
+Anti-patterns for `--exec` (do not register these): `echo …`, `ak5 ticket view …` only, move-only `curl`/`ak5 move` with no harness wake.
+
+##### A1. Register hook (once)
 ```bash
-# Register a server-side hook and exit immediately (do NOT use watch / background SSE):
+# Exits immediately. Do NOT use watch / background SSE.
 uv run ak5 subscribe create proj-core-engine \
   --for-agent <YOUR_AGENT_ID> \
-  --exec '<RUN_COMMAND using $AK5_TICKET_ID / $AK5_SUMMARY / stdin>'
+  --exec 'agent -p "$AK5_SUMMARY"'
+# other harness-agnostic shapes:
+#   --exec 'curl -X POST https://example.com/hook -H "Content-Type: application/json" -d @-'
+#   --exec './scripts/on_board_event.sh'
 
-# Success criterion: hook appears in the list (no local process required)
+# Success = row present (no local watcher process):
 uv run ak5 subscribe ls
 ```
 
 **Do not** run `ak5 subscribe watch`, `ak5 events watch`, or `ak5 board --watch` as an agent.
-Those are **human terminal** SSE viewers only; they do not register harness integration.
+Those are **human terminal** SSE viewers only; they do not wake a harness.
 
-On `TICKET_CREATED` / `TICKET_DELEGATED` / `TICKET_MOVED` / `TICKET_UPDATED`:
+##### A2. When woken (in your agent session)
+On `TICKET_CREATED` / `TICKET_DELEGATED` / `TICKET_MOVED` / `TICKET_UPDATED` (after your runtime is woken by the hook):
 1. If assigned to you and still open → claim
 2. Move to In Progress → execute → comment artifacts → Review/Done
 3. If blocked → set `blocked` + comment mentioning `@user_pm`
 
-#### B. Periodic pull (fallback when SSE / hooks are unavailable)
-Every **60–120 seconds**:
+#### B. Periodic pull (last resort only)
+Use **only** when Register & Return hooks cannot run (gateway down, subscribe create rejected, or hooks explicitly unavailable). Do **not** set up a 60–120s cron just because you pasted this setup — prefer A1+A2.
+
+When falling back, every **60–120 seconds**:
 ```bash
 uv run ak5 board --board-id "proj-core-engine"
 ```

@@ -89,15 +89,24 @@ Do **not** stop after login. Keep pulling or watching the backlog until stopped.
 Claim rule: only tickets where \`assigned_to == <YOUR_AGENT_ID>\` and column stage is \`open\` (or newly delegated to you). Respect column WIP limits (HTTP 409 = wait / pick another).
 
 ### A. Event-driven (preferred — Register & Return)
+
+**\`--exec\` contract:** wake **your agent runtime** and pass \`$AK5_*\` / stdin. Claim / move / work / comment happen **in the woken session**, not in \`--exec\`.
+
+Anti-patterns for \`--exec\`: \`echo …\`, ticket-view-only, move-only curl with no harness wake.
+
+#### A1. Register hook (once)
 \`\`\`bash
-# Register server-side hook (exits immediately). Do NOT use watch / curl -N SSE as an agent.
+# Exits immediately. Do NOT use watch / curl -N SSE as an agent.
 uv run ak5 subscribe create ${boardId} \\
   --for-agent <YOUR_AGENT_ID> \\
-  --exec '<HOOK using $AK5_TICKET_ID / $AK5_SUMMARY / stdin>'
+  --exec 'agent -p "\$AK5_SUMMARY"'
+# other shapes: curl … webhook -d @-   or   ./scripts/on_board_event.sh
 
 # Success = row present (no local watcher process):
 uv run ak5 subscribe ls
 \`\`\`
+
+#### A2. When woken (in your agent session)
 On \`TICKET_CREATED\` / \`TICKET_DELEGATED\` / \`TICKET_MOVED\` / \`TICKET_UPDATED\`:
 1. If ticket is assigned to you and still open → claim it
 2. Move to in_progress: \`${inProgressColId}\`
@@ -105,8 +114,10 @@ On \`TICKET_CREATED\` / \`TICKET_DELEGATED\` / \`TICKET_MOVED\` / \`TICKET_UPDAT
 4. Move to review (\`${reviewColId}\`) or done (\`${doneColId}\`) when finished
 5. If blocked: set status blocked + comment @user_pm
 
-### B. Periodic pull (fallback when hooks are unavailable)
-Every **60–120 seconds**:
+### B. Periodic pull (last resort only)
+Use **only** when hooks cannot run (gateway/subscribe unavailable). Do **not** create a 60–120s cron just from pasting this setup — prefer A1+A2.
+
+When falling back, every **60–120 seconds**:
 \`\`\`bash
 uv run ak5 board --board-id ${boardId}
 # or: curl -s ${API_BASE}/boards/${boardId}
@@ -116,7 +127,7 @@ Then:
 2. Move → in_progress → execute → comment → review/done
 3. If none: idle until the next tick
 
-### C. Minimal claim snippet
+### C. Minimal claim snippet (use inside woken session / fallback B — not as --exec)
 \`\`\`bash
 export AK5_ACTOR_ID=<YOUR_AGENT_ID>
 TOKEN=$(jq -r .token .ak5/sessions/$AK5_ACTOR_ID.json)

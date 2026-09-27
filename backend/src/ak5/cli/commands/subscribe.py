@@ -263,7 +263,9 @@ def do_subscribe(
                     f"[bold]Events:[/bold] {events or 'ALL'}\n"
                     f"[bold]Command:[/bold] [yellow]{exec_command}[/yellow]\n"
                     f"[dim]Hook runs on the AK5 Gateway — no local watcher process.[/dim]\n"
-                    f"[bold]Verify:[/bold] [cyan]ak5 subscribe ls[/cyan]",
+                    f"[bold]Verify:[/bold] [cyan]ak5 subscribe ls[/cyan]\n"
+                    "[yellow]Gateway runs --exec; its stdout is not your chat — "
+                    "--exec must wake your harness.[/yellow]",
                     title="⚡ AK5 Subscription Active",
                     expand=False,
                 )
@@ -346,6 +348,8 @@ def subscribe_group() -> None:
     [Agents]
       Use create/list/remove only. Do NOT use watch or spawn a local SSE process.
       Success = `ak5 subscribe ls` shows your hook (no background PID required).
+      --exec must WAKE your agent runtime ($AK5_* / stdin). Claim/move/work belong
+      in the woken session — not echo, not ticket-view-only, not move-only curl.
 
     \b
     [How hooks work]
@@ -354,6 +358,7 @@ def subscribe_group() -> None:
       - Event data is NOT interpolated into --exec. Use env vars / stdin instead.
       - Each event spawn gets a fresh process env for that event (runtime per invocation).
       - Do NOT use curly-brace tokens like {ticket_id} (they are not expanded).
+      - Gateway --exec stdout is not your chat; --exec must wake the harness.
 
     \b
     [Event payload]
@@ -385,9 +390,10 @@ def subscribe_group() -> None:
     "exec_command",
     required=True,
     help=(
-        "Literal shell command to run on match (required). "
-        "Use $AK5_EVENT / $AK5_TICKET_ID / $AK5_SUMMARY / $AK5_DATA_JSON etc., "
-        "or read event JSON from stdin. No {placeholder} expansion."
+        "Literal shell command that WAKES your agent runtime on match (required). "
+        "Pass context via $AK5_EVENT / $AK5_TICKET_ID / $AK5_SUMMARY / stdin JSON. "
+        "Do not put claim/move/work here (those run in the woken session). "
+        "No {placeholder} expansion."
     ),
 )
 @click.option(

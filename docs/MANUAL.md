@@ -343,27 +343,30 @@ uv run ak5 demo
 > [!IMPORTANT]
 > **에이전트 연동 아키텍처 원칙 (Register & Return)**:
 > 상시 구동 중인 AK5 Gateway 서버 환경에서 자율 에이전트가 호출하는 구독 명령은 포그라운드에서 무한 대기하지 않고 서버에 규칙을 등록한 뒤 즉시 종료(`exit 0`)되어야 합니다. 상세 내용은 [`docs/postmortem-20260927-subscribe-architecture.md`](postmortem-20260927-subscribe-architecture.md) 및 [`.agents/rules/cli-nonblocking-rule.md`](../.agents/rules/cli-nonblocking-rule.md)를 참고하세요.
-
+>
+> **`--exec` 계약:** 명령은 **에이전트 런타임(하네스)을 깨워야** 합니다 (`$AK5_*` / stdin으로 이벤트 전달). 칸반 claim / move / 작업 / 코멘트는 **깨운 세션 안**에서 수행합니다.  
+> Anti-pattern: `echo …`, `ak5 ticket view`만, harness wake 없는 move-only curl. Gateway가 돌리는 `--exec`의 stdout은 에이전트 채팅이 아닙니다.
 
 ```bash
 # 1. 구독 훅 등록 (Non-blocking: 서버에 훅 등록 후 즉시 exit 0)
-uv run ak5 subscribe create <BOARD_ID> --exec "<SHELL_COMMAND>" [OPTIONS]
+#    --exec = WAKE_COMMAND (하네스 깨우기). claim/move/work 는 깨운 뒤 세션에서.
+uv run ak5 subscribe create <BOARD_ID> --exec "<WAKE_COMMAND>" [OPTIONS]
 # (단축 별칭: ak5 subscribe add ...)
 
-# 예시 1: curl 웹훅으로 이벤트 페이로드 전달 (stdin JSON → -d @-)
-uv run ak5 subscribe create proj-core-engine \
-  --exec 'curl -X POST https://example.com/webhook -H "Content-Type: application/json" -d @-'
-
-# 예시 2: env로 이벤트 요약을 외부 AI 에이전트 CLI에 전달
+# 예시 1: env로 이벤트 요약을 외부 AI 에이전트 CLI에 전달 (wake)
 uv run ak5 subscribe create proj-core-engine \
   --events TICKET_MOVED,TICKET_DELEGATED \
   --exec 'agent -p "$AK5_SUMMARY"'
+
+# 예시 2: curl 웹훅으로 이벤트 페이로드 전달 (stdin JSON → -d @-)
+uv run ak5 subscribe create proj-core-engine \
+  --exec 'curl -X POST https://example.com/webhook -H "Content-Type: application/json" -d @-'
 
 # 예시 3: 특정 에이전트 할당 이벤트만 필터링 + debounce + 로컬 스크립트
 uv run ak5 subscribe create proj-core-engine \
   --for-agent cursor-agent \
   --debounce 2.0 \
-  --exec './scripts/on_assigned.sh'
+  --exec './scripts/on_board_event.sh'
 
 # 2. 등록된 구독 훅 목록 조회
 uv run ak5 subscribe list
@@ -379,7 +382,8 @@ uv run ak5 events watch proj-core-engine --exec 'notify-send "$AK5_TITLE"'
 # 데모: uv run ak5 events watch proj-core-engine --demo-echo --once
 ```
 
-> **구독 성공 정의:** `ak5 subscribe ls`에 훅이 보여야 합니다. 로컬 `watch` 프로세스 PID나 stdout echo는 구독이 아닙니다.
+> **구독 성공 정의:** (1) `ak5 subscribe ls`에 훅이 보이고, (2) `--exec`가 하네스를 깨우도록 설계됨. 로컬 `watch` PID / stdout echo / ticket-view-only는 구독 연동이 아닙니다.  
+> 등록 후 claim·작업은 **깨운 세션**에서 수행합니다 (`--exec` 본문에 넣지 않음).
 
 #### 훅 데이터 전달 (env + stdin — placeholder 없음)
 이벤트 발생 시 등록한 `--exec` 명령을 **그대로** 실행합니다. 내용은 환경 변수와 stdin JSON으로만 전달됩니다.
