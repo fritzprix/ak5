@@ -21,85 +21,9 @@ from ak5.routers.subscriptions import router as subscriptions_router
 from ak5.routers.tickets import router as tickets_router
 from ak5.routers.web_auth import router as web_auth_router
 from ak5.services.subscription_service import subscription_service
+from ak5.seed import seed_initial_data
 from ak5.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 from ak5.web_ui_static import mount_web_ui, web_ui_available
-
-
-async def seed_initial_data() -> None:
-    """Seed initial actors and default board if not present."""
-    async with AsyncSessionLocal() as db:
-        # Check if default PM actor exists
-        pm_actor = await db.get(Actor, "user_pm")
-        if not pm_actor:
-            pm_actor = Actor(
-                actor_id="user_pm",
-                actor_type="human",
-                name="Project Manager (David)",
-                role="PM",
-                description="Lead Project Manager and System Orchestrator",
-                capabilities=json.dumps(["project-management", "planning", "review"]),
-                status="idle",
-            )
-            db.add(pm_actor)
-
-        # Check if sample image worker agent exists
-        img_agent = await db.get(Actor, "agent_image_worker")
-        if not img_agent:
-            img_agent = Actor(
-                actor_id="agent_image_worker",
-                actor_type="agent",
-                name="Image Worker Agent",
-                role="Media Specialist",
-                description="Specialized in image processing, resizing, format conversion (WebP, PNG), and OCR extraction",
-                capabilities=json.dumps(["image-resize", "webp", "ocr", "thumbnail"]),
-                status="idle",
-            )
-            db.add(img_agent)
-
-        # Check if sample code reviewer agent exists
-        reviewer_agent = await db.get(Actor, "agent_code_reviewer")
-        if not reviewer_agent:
-            reviewer_agent = Actor(
-                actor_id="agent_code_reviewer",
-                actor_type="agent",
-                name="Code Review Agent",
-                role="Senior Reviewer",
-                description="Automated code review, security audits, test verification, and lint enforcement",
-                capabilities=json.dumps(["code-review", "python", "rust", "security", "testing"]),
-                status="idle",
-            )
-            db.add(reviewer_agent)
-
-        # Check if default board exists
-        board = await db.get(Board, settings.DEFAULT_BOARD_ID)
-        if not board:
-            board = Board(
-                board_id=settings.DEFAULT_BOARD_ID,
-                name=settings.DEFAULT_BOARD_NAME,
-                description="Default Kanban board for autonomous agent orchestration",
-                created_by="user_pm",
-            )
-            db.add(board)
-
-            # Default columns
-            default_cols = [
-                {"id": f"{settings.DEFAULT_BOARD_ID}_todo", "name": "To Do", "stage": "open", "pos": 1, "wip": 0},
-                {"id": f"{settings.DEFAULT_BOARD_ID}_in_progress", "name": "In Progress", "stage": "in_progress", "pos": 2, "wip": 3},
-                {"id": f"{settings.DEFAULT_BOARD_ID}_review", "name": "Review", "stage": "review", "pos": 3, "wip": 3},
-                {"id": f"{settings.DEFAULT_BOARD_ID}_done", "name": "Done", "stage": "done", "pos": 4, "wip": 0},
-            ]
-            for c in default_cols:
-                col = Column(
-                    column_id=c["id"],
-                    board_id=settings.DEFAULT_BOARD_ID,
-                    name=c["name"],
-                    stage=c["stage"],
-                    position=c["pos"],
-                    wip_limit=c["wip"],
-                )
-                db.add(col)
-
-        await db.commit()
 
 
 @asynccontextmanager

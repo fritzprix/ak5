@@ -11,6 +11,7 @@ from ak5.models.actor import Actor
 from ak5.models.subscription import Subscription
 from ak5.routers.auth import get_current_actor
 from ak5.schemas.subscription import SubscriptionCreate, SubscriptionOut
+from ak5.services.event_context import normalize_actor_id
 
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
@@ -45,8 +46,8 @@ async def create_subscription(
         board_id=sub_in.board_id,
         exec_command=sub_in.exec_command,
         events=events_str,
-        for_agent=sub_in.for_agent,
-        ignore_actor=sub_in.ignore_actor,
+        for_agent=normalize_actor_id(sub_in.for_agent) if sub_in.for_agent else None,
+        ignore_actor=normalize_actor_id(sub_in.ignore_actor) if sub_in.ignore_actor else None,
         debounce_seconds=sub_in.debounce_seconds,
         created_by=current_actor.actor_id,
     )

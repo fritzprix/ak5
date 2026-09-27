@@ -7,7 +7,12 @@ from typing import Any
 import click
 import httpx
 from ak5.cli.config import get_api_url, require_auth_headers
-from ak5.services.event_context import extract_event_context
+from ak5.services.event_context import (
+    extract_event_context,
+    matches_agent_filter,
+    matches_event_filter,
+    normalize_actor_id,
+)
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -152,16 +157,17 @@ async def run_subscription_loop(
                     if not event_board or event_board != target_board_id:
                         continue
 
-                if event_filter and event_type.upper() not in event_filter:
+                if event_filter and not matches_event_filter(event_filter, event_type):
                     continue
 
-                if ignore_actor and context["actor_id"] == ignore_actor:
-                    continue
+                if ignore_actor:
+                    actor_id = context.get("actor_id") or ""
+                    if normalize_actor_id(actor_id) == normalize_actor_id(ignore_actor):
+                        continue
 
                 if for_agent:
-                    ticket_data = data.get("ticket") or data.get("subtask") or {}
-                    assigned = ticket_data.get("assigned_to")
-                    if assigned != for_agent:
+                    ticket_data = data.get("ticket") or data.get("subtask")
+                    if not matches_agent_filter(for_agent, ticket_data, data):
                         continue
 
                 debounce_key = f"{context['ticket_id']}:{event_type}"
@@ -345,11 +351,29 @@ def subscribe_group() -> None:
     """Manage server-side board event hooks (Register & Return).
 
     \b
-    [Agents]
-      Use create/list/remove only. Do NOT use watch or spawn a local SSE process.
-      Success = `ak5 subscribe ls` shows your hook (no background PID required).
-      --exec must WAKE your agent runtime ($AK5_* / stdin). Claim/move/work belong
-      in the woken session — not echo, not ticket-view-only, not move-only curl.
+    [Agent Best Practices & Event Subscription Guide]
+      1. DO NOT specify --events unless strictly necessary!
+         - Omit --events (default: ALL / core lifecycle):
+           Automatically receives all core events:
+           • TICKET_CREATED   (new ticket assigned to agent)
+           • TICKET_DELEGATED (subtask delegated to agent)
+           • TICKET_UPDATED   (assignee changed, priority changed, etc.)
+           • TICKET_MOVED     (ticket moved between columns)
+           • COMMENT_ADDED    (new comment or discussion mention)
+         - Explicitly listing --events is an overhead and common cause of dropped tasks
+           (e.g. omitting DELEGATED drops subtasks, omitting UPDATED drops re-assignments).
+         - If specified, supports 'DEFAULT', 'TICKET' (all ticket events), and aliases (e.g. TICKET_COMMENTED).
+
+    \b
+      2. --for-agent <AGENT_ID>
+         - Safely accepts actor ID with or without '@' (e.g. "my-agent" or "@my-agent").
+         - Filters events to tickets/subtasks assigned to your agent.
+
+    \b
+      3. Register & Return pattern:
+         - `ak5 subscribe create` registers a persistent server-side hook and exits immediately (exit 0).
+         - Verify registration with: `ak5 subscribe ls`.
+         - Do NOT run background polling loops or local SSE processes.
 
     \b
     [How hooks work]
@@ -368,10 +392,17 @@ def subscribe_group() -> None:
 
     \b
     [Examples]
-      ak5 subscribe create proj-core-engine --for-agent \"$AK5_ACTOR_ID\" \\
-        --exec 'agent -p \"$AK5_SUMMARY\"'
-      ak5 subscribe create proj-core-engine --events TICKET_CREATED \\
-        --exec 'curl -X POST https://example.com/hook -H \"Content-Type: application/json\" -d @-'
+      # Recommended for Agents (no --events needed; auto-subscribes all core lifecycle):
+      ak5 subscribe create proj-core-engine --for-agent "$AK5_ACTOR_ID" \
+        --exec 'agent -p "$AK5_SUMMARY"'
+
+    \b
+      # Webhook forwarding (all events):
+      ak5 subscribe create proj-core-engine \
+        --exec 'curl -X POST https://example.com/hook -H "Content-Type: application/json" -d @-'
+
+    \b
+      # Inspect & remove:
       ak5 subscribe list
       ak5 subscribe remove <ID>
 
@@ -400,10 +431,24 @@ def subscribe_group() -> None:
     "--events",
     "-e",
     default=None,
-    help="Comma-separated event types (e.g. TICKET_CREATED,TICKET_MOVED). Default: all.",
+    help=(
+        "Optional event filter (comma-separated, e.g. TICKET, or TICKET_CREATED,TICKET_MOVED). "
+        "RECOMMENDED FOR AGENTS: Omit this option to automatically subscribe to all core lifecycle "
+        "events (TICKET_CREATED, TICKET_DELEGATED, TICKET_UPDATED, TICKET_MOVED, COMMENT_ADDED). "
+        "Supports 'DEFAULT', 'TICKET' (all ticket events), and aliases."
+    ),
 )
-@click.option("--for-agent", "-a", default=None, help="Only tickets assigned to this actor ID.")
-@click.option("--ignore-actor", default=None, help="Skip events whose actor_id matches this ID.")
+@click.option(
+    "--for-agent",
+    "-a",
+    default=None,
+    help="Only tickets assigned to this actor ID (with or without leading '@').",
+)
+@click.option(
+    "--ignore-actor",
+    default=None,
+    help="Skip events whose actor_id matches this ID (with or without leading '@').",
+)
 @click.option("--debounce", default=0.0, type=float, help="Per-ticket cooldown seconds between runs.")
 @click.option("--id", "custom_id", default=None, help="Custom subscription ID (default: auto-generated).")
 @click.option("--dry-run", is_flag=True, help="Print hook contract and exit without registering.")
@@ -421,8 +466,9 @@ def subscribe_add(
 
     \b
     Examples:
-      ak5 subscribe create proj-core-engine --for-agent \"$AK5_ACTOR_ID\" \\
-        --exec 'agent -p \"$AK5_SUMMARY\"'
+      # Recommended: omit --events so all core events (created, delegated, updated, moved, comments) are captured
+      ak5 subscribe create proj-core-engine --for-agent "$AK5_ACTOR_ID" \
+        --exec 'agent -p "$AK5_SUMMARY"'
       ak5 subscribe create proj-core-engine --exec './scripts/on_board_event.sh'
       ak5 subscribe create --exec 'curl -X POST https://hooks.example/ak5 -d @-' --dry-run
     """

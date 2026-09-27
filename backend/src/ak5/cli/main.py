@@ -11,6 +11,7 @@ from ak5.cli.commands.login import login_command
 from ak5.cli.commands.logout import logout_command
 from ak5.cli.commands.mcp import mcp_command
 from ak5.cli.commands.migrate_legacy import migrate_legacy_command
+from ak5.cli.commands.reset import reset_command
 from ak5.cli.commands.serve import serve_command
 from ak5.cli.commands.subscribe import subscribe_command
 from ak5.cli.commands.ticket import (
@@ -49,6 +50,7 @@ cli.add_command(migrate_legacy_command)
 cli.add_command(subscribe_command)
 cli.add_command(events_command)
 cli.add_command(watch_command)  # alias → events watch (human terminal only)
+cli.add_command(reset_command)
 
 
 if __name__ == "__main__":

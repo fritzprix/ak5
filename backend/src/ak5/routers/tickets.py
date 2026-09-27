@@ -622,8 +622,10 @@ async def delegate_subtask(
     await event_bus.publish(
         event_type="TICKET_DELEGATED",
         data={
+            "board_id": parent.board_id,
             "parent_ticket_id": parent.ticket_id,
             "subtask": subtask_out.model_dump(mode="json"),
+            "ticket": subtask_out.model_dump(mode="json"),
             "actor_id": current_actor.actor_id,
             "target_actor_id": target_actor.actor_id,
         },
@@ -667,12 +669,15 @@ async def add_comment(
         created_at=comment.created_at,
     )
 
+    ticket_out = _format_ticket_out(ticket)
     await event_bus.publish(
         event_type="COMMENT_ADDED",
         data={
             "board_id": ticket.board_id,
             "ticket_id": ticket_id,
+            "ticket": ticket_out.model_dump(mode="json"),
             "comment": comment_out.model_dump(mode="json"),
+            "actor_id": current_actor.actor_id,
         },
     )
 
@@ -753,12 +758,15 @@ async def upload_attachment(
     await db.refresh(attachment)
 
     attachment_out = TicketAttachmentOut.model_validate(attachment)
+    ticket_out = _format_ticket_out(ticket)
     await event_bus.publish(
         event_type="ATTACHMENT_ADDED",
         data={
             "board_id": ticket.board_id,
             "ticket_id": ticket_id,
+            "ticket": ticket_out.model_dump(mode="json"),
             "attachment": attachment_out.model_dump(mode="json"),
+            "actor_id": current_actor.actor_id,
         },
     )
     return attachment_out
@@ -850,9 +858,16 @@ async def delete_attachment(
     db.add(audit)
     await db.commit()
 
+    ticket_out = _format_ticket_out(ticket) if ticket else None
     await event_bus.publish(
         event_type="ATTACHMENT_DELETED",
-        data={"board_id": board_id, "ticket_id": ticket_id, "attachment_id": attachment_id},
+        data={
+            "board_id": board_id,
+            "ticket_id": ticket_id,
+            "ticket": ticket_out.model_dump(mode="json") if ticket_out else None,
+            "attachment_id": attachment_id,
+            "actor_id": current_actor.actor_id,
+        },
     )
 
     return {"deleted": True, "attachment_id": attachment_id}

@@ -11,8 +11,14 @@ from sqlalchemy import select
 
 from ak5.database import AsyncSessionLocal
 from ak5.models.subscription import Subscription
+from ak5.models.ticket import Ticket
 from ak5.services.event_bus import BoardEvent, event_bus
-from ak5.services.event_context import extract_event_context
+from ak5.services.event_context import (
+    extract_event_context,
+    matches_agent_filter,
+    matches_event_filter,
+    normalize_actor_id,
+)
 
 logger = logging.getLogger("ak5.subscription_service")
 
@@ -79,21 +85,34 @@ class SubscriptionService:
             if sub.board_id and sub.board_id not in ("*", "all") and context["board_id"] != sub.board_id:
                 continue
 
-            # 2. Event type filter
-            if sub.events:
-                allowed_events = {e.strip().upper() for e in sub.events.split(",") if e.strip()}
-                if event_type.upper() not in allowed_events:
-                    continue
-
-            # 3. Ignore actor filter
-            if sub.ignore_actor and context["actor_id"] == sub.ignore_actor:
+            # 2. Event type filter (supports ALL, DEFAULT, TICKET, aliases, and auto-matching DELEGATED for CREATED)
+            if sub.events and not matches_event_filter(sub.events, event_type):
                 continue
 
-            # 4. Target agent filter
+            # 3. Ignore actor filter (normalized without @)
+            if sub.ignore_actor:
+                actor_id = context.get("actor_id") or ""
+                if normalize_actor_id(actor_id) == normalize_actor_id(sub.ignore_actor):
+                    continue
+
+            # 4. Target agent filter (normalized without @, checks ticket, subtask, DB fallback, or comment mention)
             if sub.for_agent:
-                ticket_data = data.get("ticket") or data.get("subtask") or {}
-                assigned = ticket_data.get("assigned_to")
-                if assigned != sub.for_agent:
+                ticket_data = data.get("ticket") or data.get("subtask")
+                if not isinstance(ticket_data, dict):
+                    # DB fallback if event didn't carry ticket data directly (e.g. comment/attachment events)
+                    ticket_id = context.get("ticket_id")
+                    if ticket_id:
+                        async with self.session_factory() as db:
+                            t_obj = await db.get(Ticket, ticket_id)
+                            if t_obj:
+                                ticket_data = {
+                                    "ticket_id": t_obj.ticket_id,
+                                    "assigned_to": t_obj.assigned_to,
+                                    "board_id": t_obj.board_id,
+                                    "title": t_obj.title,
+                                    "status": t_obj.status,
+                                }
+                if not matches_agent_filter(sub.for_agent, ticket_data, data):
                     continue
 
             # 5. Debounce check

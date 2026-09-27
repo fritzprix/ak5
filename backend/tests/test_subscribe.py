@@ -256,3 +256,94 @@ def test_subscribe_architecture_requirement():
     assert result.exit_code == 0
     assert "Dry-run mode: Subscription was not registered." in result.output
     assert "Hook Command (literal)" in result.output
+
+
+def test_smart_event_and_agent_normalization():
+    from ak5.services.event_context import (
+        matches_agent_filter,
+        matches_event_filter,
+        normalize_actor_id,
+    )
+
+    # 1. normalize_actor_id
+    assert normalize_actor_id("@agent-coding-expert") == "agent-coding-expert"
+    assert normalize_actor_id("agent-coding-expert") == "agent-coding-expert"
+    assert normalize_actor_id("  @Agent-Worker  ") == "agent-worker"
+    assert normalize_actor_id("") == ""
+    assert normalize_actor_id(None) == ""
+
+    # 2. matches_agent_filter
+    ticket_data = {"assigned_to": "agent-coding-expert"}
+    assert matches_agent_filter("@agent-coding-expert", ticket_data) is True
+    assert matches_agent_filter("agent-coding-expert", ticket_data) is True
+    assert matches_agent_filter("@other-agent", ticket_data) is False
+    assert matches_agent_filter(None, ticket_data) is True
+
+    # 3. matches_event_filter with None (default: match all)
+    assert matches_event_filter(None, "TICKET_CREATED") is True
+    assert matches_event_filter(None, "TICKET_DELEGATED") is True
+    assert matches_event_filter(None, "ATTACHMENT_ADDED") is True
+
+    # 4. matches_event_filter with DEFAULT / LIFECYCLE
+    assert matches_event_filter("DEFAULT", "TICKET_CREATED") is True
+    assert matches_event_filter("DEFAULT", "TICKET_DELEGATED") is True
+    assert matches_event_filter("DEFAULT", "TICKET_UPDATED") is True
+    assert matches_event_filter("DEFAULT", "TICKET_MOVED") is True
+    assert matches_event_filter("DEFAULT", "COMMENT_ADDED") is True
+    assert matches_event_filter("DEFAULT", "ATTACHMENT_DELETED") is False
+
+    # 5. TICKET_CREATED automatically covers TICKET_DELEGATED
+    assert matches_event_filter("TICKET_CREATED", "TICKET_DELEGATED") is True
+    assert matches_event_filter("TICKET_CREATED", "TICKET_MOVED") is False
+
+    # 6. Aliases (e.g. TICKET_COMMENTED -> COMMENT_ADDED)
+    assert matches_event_filter("TICKET_COMMENTED", "COMMENT_ADDED") is True
+
+    # 7. Wildcards (TICKET / TICKET_*)
+    assert matches_event_filter("TICKET", "TICKET_MOVED") is True
+    assert matches_event_filter("TICKET", "TICKET_ARCHIVED") is True
+    assert matches_event_filter("TICKET", "COMMENT_ADDED") is True
+    assert matches_event_filter("TICKET", "CONNECTED") is False
+
+
+def test_subscribe_help_guidance():
+    """Verify that subscribe --help and create --help contain clear agent guidance."""
+    runner = CliRunner()
+    res = runner.invoke(cli, ["subscribe", "--help"])
+    assert res.exit_code == 0
+    assert "DO NOT specify --events unless strictly necessary" in res.output
+    assert "TICKET_DELEGATED" in res.output
+    assert "TICKET_UPDATED" in res.output
+    assert "--for-agent" in res.output
+
+    res_create = runner.invoke(cli, ["subscribe", "create", "--help"])
+    assert res_create.exit_code == 0
+    assert "RECOMMENDED FOR AGENTS" in res_create.output
+    assert "TICKET_DELEGATED" in res_create.output
+
+
+def test_matches_agent_filter_comment_event():
+    from ak5.services.event_context import matches_agent_filter
+
+    # 1. Comment event with nested ticket assigned to agent
+    comment_event_data = {
+        "board_id": "proj-1",
+        "ticket_id": "TK-001",
+        "ticket": {"ticket_id": "TK-001", "assigned_to": "agent_coder"},
+        "comment": {"content": "Great progress!"},
+    }
+    assert matches_agent_filter("agent_coder", comment_event_data.get("ticket"), comment_event_data) is True
+    assert matches_agent_filter("@agent_coder", comment_event_data.get("ticket"), comment_event_data) is True
+    assert matches_agent_filter("other_agent", comment_event_data.get("ticket"), comment_event_data) is False
+
+    # 2. Comment event where agent is mentioned in comment text even if unassigned
+    unassigned_comment_event = {
+        "board_id": "proj-1",
+        "ticket_id": "TK-002",
+        "ticket": {"ticket_id": "TK-002", "assigned_to": None},
+        "comment": {"content": "Pinging @agent_coder to review this."},
+    }
+    assert matches_agent_filter("agent_coder", unassigned_comment_event.get("ticket"), unassigned_comment_event) is True
+    assert matches_agent_filter("@agent_coder", unassigned_comment_event.get("ticket"), unassigned_comment_event) is True
+
+
