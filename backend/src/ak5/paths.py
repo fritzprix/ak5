@@ -206,11 +206,10 @@ def replace_sqlite_database(source: Path, destination: Path, *, backup_destinati
             )
 
     source_wal = Path(f"{source}-wal")
-    if not _checkpoint_sqlite(source, strict=source_wal.exists()):
-        if source_wal.exists():
-            raise SqliteReplaceError(
-                f"Refusing to copy {source}: checkpoint failed and WAL still present"
-            )
+    if not _checkpoint_sqlite(source, strict=source_wal.exists()) and source_wal.exists():
+        raise SqliteReplaceError(
+            f"Refusing to copy {source}: checkpoint failed and WAL still present"
+        )
     _remove_sqlite_sidecars(destination)
     shutil.copy2(source, destination)
     _remove_sqlite_sidecars(destination)

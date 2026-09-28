@@ -17,11 +17,10 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-from click.testing import CliRunner
-
 import ak5.paths as paths
+import pytest
 from ak5.cli.main import cli
+from click.testing import CliRunner
 
 
 def _reset_resolve_gate(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -5,9 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 import ak5.services.db_safety as db_safety
+import pytest
 
 
 def _write_kanban_sqlite(path: Path, *, boards: int, tickets: int) -> None:
