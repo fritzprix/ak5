@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -61,10 +62,11 @@ def test_save_session_writes_session_and_identity_claim(project: Path) -> None:
     )
     assert path == session_path_for("agent_reviewer", project)
     assert path.exists()
-    mode = path.stat().st_mode & 0o777
-    assert mode == 0o600 or mode == 0o700  # some FS ignore bits; at least not world-readable preferred
-    # Prefer owner-only when chmod succeeds
-    assert not (mode & stat.S_IROTH)
+    if sys.platform != "win32":
+        mode = path.stat().st_mode & 0o777
+        assert mode == 0o600 or mode == 0o700  # some FS ignore bits; at least not world-readable preferred
+        # Prefer owner-only when chmod succeeds
+        assert not (mode & stat.S_IROTH)
     claim = identity_path_for("agent_reviewer", project)
     assert claim.exists()
     claim_data = json.loads(claim.read_text(encoding="utf-8"))

@@ -172,7 +172,7 @@ def test_get_default_database_url(tmp_path, monkeypatch):
     url = get_default_database_url()
     assert url.startswith("sqlite+aiosqlite:///")
     parsed = make_url(url)
-    assert parsed.database == str((custom_dir / "ak5.db").resolve())
+    assert Path(parsed.database) == (custom_dir / "ak5.db").resolve()
 
 
 def test_jwt_secret_file_defaults_to_app_data_dir(tmp_path, monkeypatch):
