@@ -53,18 +53,31 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 uv venv "$TMP/venv" --python 3.13 --quiet
-if [[ -x "$TMP/venv/bin/python" ]]; then
+# Prefer -f over -x: Git Bash mounts often omit the execute bit on .exe files.
+if [[ -f "$TMP/venv/bin/python" ]]; then
   PY="$TMP/venv/bin/python"
-  AK5="$TMP/venv/bin/ak5"
-elif [[ -x "$TMP/venv/Scripts/python.exe" ]]; then
+  BIN_DIR="$TMP/venv/bin"
+elif [[ -f "$TMP/venv/Scripts/python.exe" ]]; then
   # Windows / Git Bash layout
   PY="$TMP/venv/Scripts/python.exe"
-  AK5="$TMP/venv/Scripts/ak5.exe"
+  BIN_DIR="$TMP/venv/Scripts"
 else
   echo "error: could not find python in isolated venv under $TMP/venv" >&2
   exit 1
 fi
 uv pip install --python "$PY" --quiet "$WHEEL"
+
+AK5=""
+for candidate in "$BIN_DIR/ak5.exe" "$BIN_DIR/ak5"; do
+  if [[ -f "$candidate" ]]; then
+    AK5="$candidate"
+    break
+  fi
+done
+if [[ -z "$AK5" ]]; then
+  echo "error: could not find ak5 CLI entrypoint under $BIN_DIR" >&2
+  exit 1
+fi
 
 echo "==> Import gate (SQLAlchemy asyncio / greenlet / FastAPI app)"
 "$PY" - <<'PY'

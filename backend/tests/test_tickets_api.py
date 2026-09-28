@@ -77,6 +77,92 @@ async def test_ticket_move_and_status_sync(client: AsyncClient, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_create_status_follows_column_stage(client: AsyncClient, auth_headers):
+    """Creating into a non-open column must not leave status stuck at open."""
+    headers = auth_headers("user_pm", "human")
+
+    in_progress = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Already started",
+            "board_id": "proj-core-engine",
+            "column_id": "col_in_progress",
+            "priority": "medium",
+        },
+        headers=headers,
+    )
+    assert in_progress.status_code == 201, in_progress.text
+    assert in_progress.json()["column_id"] == "col_in_progress"
+    assert in_progress.json()["status"] == "in_progress"
+
+    done = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Already finished",
+            "board_id": "proj-core-engine",
+            "column_id": "col_done",
+            "priority": "medium",
+        },
+        headers=headers,
+    )
+    assert done.status_code == 201, done.text
+    assert done.json()["column_id"] == "col_done"
+    assert done.json()["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_patch_status_cannot_desync_from_column(client: AsyncClient, auth_headers):
+    """PATCH status must not leave workflow status disagreeing with column stage."""
+    headers = auth_headers("user_pm", "human")
+
+    created = await client.post(
+        "/api/v1/tickets",
+        json={"title": "Sync guard", "board_id": "proj-core-engine", "column_id": "col_todo"},
+        headers=headers,
+    )
+    assert created.status_code == 201
+    ticket_id = created.json()["ticket_id"]
+
+    moved = await client.patch(
+        f"/api/v1/tickets/{ticket_id}/move",
+        json={"target_column_id": "col_done"},
+        headers=headers,
+    )
+    assert moved.status_code == 200
+    assert moved.json()["status"] == "done"
+
+    # Historical bug: unblock/status patch to in_progress while still in Done.
+    bad_patch = await client.patch(
+        f"/api/v1/tickets/{ticket_id}",
+        json={"status": "in_progress"},
+        headers=headers,
+    )
+    assert bad_patch.status_code == 200, bad_patch.text
+    assert bad_patch.json()["column_id"] == "col_done"
+    assert bad_patch.json()["status"] == "done"
+
+    blocked = await client.patch(
+        f"/api/v1/tickets/{ticket_id}",
+        json={"status": "blocked", "blocked_by": "needs audit"},
+        headers=headers,
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["status"] == "blocked"
+    assert blocked.json()["column_id"] == "col_done"
+
+    # Unblock with a wrong workflow status must restore Done from column stage.
+    unblocked = await client.patch(
+        f"/api/v1/tickets/{ticket_id}",
+        json={"status": "open", "blocked_by": None},
+        headers=headers,
+    )
+    assert unblocked.status_code == 200, unblocked.text
+    assert unblocked.json()["status"] == "done"
+    assert unblocked.json()["column_id"] == "col_done"
+    assert unblocked.json()["blocked_by"] is None
+
+
+@pytest.mark.asyncio
 async def test_ticket_lexorank_ordering(client: AsyncClient, auth_headers):
     headers = auth_headers("user_pm", "human")
 

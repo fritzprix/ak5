@@ -31,6 +31,7 @@ from ak5.schemas.ticket import (
 )
 from ak5.services.event_bus import event_bus
 from ak5.services.lexorank import rank_between
+from ak5.services.ticket_status import status_for_column_stage
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 
@@ -140,7 +141,7 @@ async def create_ticket(
         labels=json.dumps(req.labels),
         assigned_to=req.assigned_to,
         created_by=current_actor.actor_id,
-        status="open",
+        status=status_for_column_stage(column.stage),
         execution_context=json.dumps(req.execution_context) if req.execution_context else None,
         due_date=req.due_date,
     )
@@ -330,8 +331,25 @@ async def update_ticket(
         changes["assigned_to"] = (ticket.assigned_to, new_assignee)
         ticket.assigned_to = new_assignee
     if "status" in data and data["status"] is not None:
-        changes["status"] = (ticket.status, data["status"])
-        ticket.status = data["status"]
+        requested_status = data["status"]
+        if requested_status == "blocked":
+            # Overlay: blocked may sit on any column without moving the ticket.
+            changes["status"] = (ticket.status, "blocked")
+            ticket.status = "blocked"
+        else:
+            # Workflow statuses are owned by column stage. Coerce so PATCH cannot
+            # desync status from column (e.g. unblock with status=open while in Done).
+            column = await db.get(Column, ticket.column_id)
+            if not column:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Ticket column '{ticket.column_id}' not found",
+                )
+            synced_status = status_for_column_stage(column.stage)
+            changes["status"] = (ticket.status, synced_status)
+            if requested_status != synced_status:
+                changes["status_coerced_from"] = requested_status
+            ticket.status = synced_status
     if "blocked_by" in data:
         raw_blocked = data["blocked_by"]
         new_blocked_by = raw_blocked.strip() if isinstance(raw_blocked, str) else raw_blocked
@@ -492,14 +510,7 @@ async def move_ticket(
     ticket.rank = new_rank
 
     # Synchronize ticket status with target column stage
-    stage_to_status = {
-        "open": "open",
-        "in_progress": "in_progress",
-        "review": "in_progress",
-        "done": "done",
-    }
-    if target_column.stage in stage_to_status:
-        ticket.status = stage_to_status[target_column.stage]
+    ticket.status = status_for_column_stage(target_column.stage)
 
     audit = AuditLog(
         actor_id=current_actor.actor_id,
@@ -582,7 +593,7 @@ async def delegate_subtask(
         labels=json.dumps(req.labels),
         assigned_to=target_actor.actor_id,
         created_by=current_actor.actor_id,
-        status="open",
+        status=status_for_column_stage(target_col.stage),
         execution_context=json.dumps(req.execution_context) if req.execution_context else None,
     )
     db.add(subtask)
