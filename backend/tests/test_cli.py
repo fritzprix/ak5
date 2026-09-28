@@ -110,6 +110,16 @@ def test_cli_create_board_help():
     result = runner.invoke(cli, ["create-board", "--help"])
     assert result.exit_code == 0
     assert "--name" in result.output
+    assert "--owner" in result.output
+    assert "user_pm" in result.output
+
+
+def test_cli_claim_board_help():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["claim-board", "--help"])
+    assert result.exit_code == 0
+    assert "claim" in result.output.lower()
+    assert "human" in result.output.lower()
 
 
 def test_cli_boards_help():

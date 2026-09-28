@@ -16,6 +16,7 @@ from ak5.routers.actors import _to_actor_out
 from ak5.routers.auth import get_current_actor
 from ak5.schemas.actor import ActorOut
 from ak5.schemas.board import (
+    BoardClaimOut,
     BoardCreate,
     BoardDetailOut,
     BoardOut,
@@ -156,6 +157,7 @@ async def get_board(
         created_by=board.created_by,
         created_at=board.created_at,
         columns=columns_out,
+        has_human_admin=await _board_has_human_admin(board, db),
     )
 
 
@@ -165,12 +167,33 @@ async def create_board(
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> BoardOut:
-    """Create a new board and seed standard columns."""
+    """Create a new board and seed standard columns.
+
+    Optionally enroll human owners as board admins via ``owner_actor_ids`` so
+    agents can hand admin to humans at creation time (preferred over claim).
+    """
     board_id = req.board_id or f"board_{uuid.uuid4().hex[:8]}"
 
     existing = await db.get(Board, board_id)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Board '{board_id}' already exists")
+
+    # Validate owners before mutating
+    owner_ids = list(dict.fromkeys(req.owner_actor_ids))  # preserve order, dedupe
+    owner_actors: list[Actor] = []
+    for owner_id in owner_ids:
+        owner = await db.get(Actor, owner_id)
+        if not owner:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Owner actor '{owner_id}' not found",
+            )
+        if owner.actor_type != "human":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"owner_actor_ids must be human actors; '{owner_id}' is '{owner.actor_type}'",
+            )
+        owner_actors.append(owner)
 
     board = Board(
         board_id=board_id,
@@ -194,12 +217,25 @@ async def create_board(
         db.add(col)
 
     # Add creator as initial board member (admin)
-    initial_member = BoardMember(
-        board_id=board_id,
-        actor_id=current_actor.actor_id,
-        role="admin",
+    db.add(
+        BoardMember(
+            board_id=board_id,
+            actor_id=current_actor.actor_id,
+            role="admin",
+        )
     )
-    db.add(initial_member)
+
+    # Enroll human owners as admins (skip creator already enrolled above)
+    for owner in owner_actors:
+        if owner.actor_id == current_actor.actor_id:
+            continue
+        db.add(
+            BoardMember(
+                board_id=board_id,
+                actor_id=owner.actor_id,
+                role="admin",
+            )
+        )
 
     await db.commit()
     await db.refresh(board)
@@ -297,6 +333,101 @@ async def _assert_board_admin(board: Board, actor: Actor, db: AsyncSession) -> N
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Board administrator privileges required",
         )
+
+
+async def _actor_is_board_admin(board: Board, actor: Actor, db: AsyncSession) -> bool:
+    """Return True if actor already has board admin privileges."""
+    from ak5.authz import is_admin
+    if is_admin(actor) or board.created_by == actor.actor_id:
+        return True
+    stmt = select(BoardMember).where(
+        BoardMember.board_id == board.board_id,
+        BoardMember.actor_id == actor.actor_id,
+        BoardMember.role == "admin",
+    )
+    res = await db.execute(stmt)
+    return res.scalar_one_or_none() is not None
+
+
+async def _board_has_human_admin(board: Board, db: AsyncSession) -> bool:
+    """True if a human already owns admin on this board (creator or member)."""
+    if board.created_by:
+        creator = await db.get(Actor, board.created_by)
+        if creator and creator.actor_type == "human":
+            return True
+    stmt = (
+        select(BoardMember.id)
+        .join(Actor, Actor.actor_id == BoardMember.actor_id)
+        .where(
+            BoardMember.board_id == board.board_id,
+            BoardMember.role == "admin",
+            Actor.actor_type == "human",
+        )
+        .limit(1)
+    )
+    res = await db.execute(stmt)
+    return res.scalar_one_or_none() is not None
+
+
+@router.post("/{board_id}/claim", response_model=BoardClaimOut)
+async def claim_board(
+    board_id: str,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BoardClaimOut:
+    """Claim board admin as a human when no human admin exists yet.
+
+    Preferred path is ``owner_actor_ids`` on ``POST /boards``. This endpoint is
+    the escape hatch for agent-created boards that were not given a human owner.
+    """
+    if current_actor.actor_type != "human":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only human actors can claim a board",
+        )
+
+    board = await db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+
+    if await _actor_is_board_admin(board, current_actor, db):
+        return BoardClaimOut(
+            board_id=board_id,
+            actor_id=current_actor.actor_id,
+            role="admin",
+            message="Already board admin",
+        )
+
+    if await _board_has_human_admin(board, db):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Board already has a human admin; ask them to enroll you",
+        )
+
+    stmt = select(BoardMember).where(
+        BoardMember.board_id == board_id,
+        BoardMember.actor_id == current_actor.actor_id,
+    )
+    res = await db.execute(stmt)
+    existing = res.scalar_one_or_none()
+    if existing:
+        existing.role = "admin"
+    else:
+        db.add(
+            BoardMember(
+                board_id=board_id,
+                actor_id=current_actor.actor_id,
+                role="admin",
+            )
+        )
+    await db.commit()
+
+    return BoardClaimOut(
+        board_id=board_id,
+        actor_id=current_actor.actor_id,
+        role="admin",
+        message="Board admin claimed",
+    )
 
 
 @router.post("/{board_id}/members", response_model=BoardMemberOut)

@@ -8,6 +8,7 @@ from ak5.schemas.actor import (
 from ak5.schemas.audit import AuditLogOut
 from ak5.schemas.board import (
     BoardBase,
+    BoardClaimOut,
     BoardCreate,
     BoardDetailOut,
     BoardOut,
@@ -41,6 +42,7 @@ __all__ = [
     "ActorUpdate",
     "AuditLogOut",
     "BoardBase",
+    "BoardClaimOut",
     "BoardCreate",
     "BoardDetailOut",
     "BoardOut",

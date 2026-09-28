@@ -3,7 +3,7 @@ from rich.console import Console
 
 from ak5.cli.commands.agents import agents_command
 from ak5.cli.commands.board import board_command
-from ak5.cli.commands.boards import boards_command, create_board_command
+from ak5.cli.commands.boards import boards_command, claim_board_command, create_board_command
 from ak5.cli.commands.delegate import delegate_command
 from ak5.cli.commands.demo import demo_command
 from ak5.cli.commands.events import events_command, watch_command
@@ -46,6 +46,7 @@ cli.add_command(mcp_command)
 cli.add_command(board_command)
 cli.add_command(boards_command)
 cli.add_command(create_board_command)
+cli.add_command(claim_board_command)
 cli.add_command(agents_command)
 cli.add_command(ticket_group)
 cli.add_command(delegate_command)

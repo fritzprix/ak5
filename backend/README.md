@@ -62,7 +62,8 @@ Requires a running gateway (`ak5 web` or `ak5 serve`).
 # Boards
 ak5 boards
 ak5 board [BOARD_ID] [--watch]
-ak5 create-board <BOARD_ID> --name <NAME> [--desc <DESC>]
+ak5 create-board <BOARD_ID> --name <NAME> [--desc <DESC>] [--owner <HUMAN_ID>]...
+ak5 claim-board <BOARD_ID>
 
 # Tickets
 ak5 ticket create --title <TITLE> [--board <ID>] [--priority <PRIORITY>] [--assign <ACTOR_ID>]

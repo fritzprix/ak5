@@ -32,6 +32,9 @@ export function getEventsStreamUrl(): string {
   return `${getAbsoluteApiBase()}/events/stream`;
 }
 
+/** Dashboard identity used by getAuthToken identify. */
+export const DASHBOARD_ACTOR_ID = "user_pm";
+
 let cachedToken: string | null = null;
 
 export async function getAuthToken(): Promise<string> {
@@ -44,7 +47,7 @@ export async function getAuthToken(): Promise<string> {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        actor_id: "user_pm",
+        actor_id: DASHBOARD_ACTOR_ID,
         actor_type: "human",
         name: "David (Lead PM)",
         role: "PM",
@@ -346,7 +349,7 @@ export async function addBoardMember(
 export async function removeBoardMember(
   boardId: string,
   actorId: string
-): Promise<any> {
+): Promise<unknown> {
   const token = await getAuthToken();
   const res = await fetch(`${API_BASE}/boards/${boardId}/members/${actorId}`, {
     method: "DELETE",
@@ -359,6 +362,28 @@ export async function removeBoardMember(
     throw new Error(detail);
   }
   return res.json();
+}
+
+export interface BoardClaimResult {
+  board_id: string;
+  actor_id: string;
+  role: string;
+  message: string;
+}
+
+export async function claimBoard(boardId: string): Promise<BoardClaimResult> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/boards/${boardId}/claim`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw new Error(detail);
+  }
+  return res.json() as Promise<BoardClaimResult>;
 }
 
 export interface DeviceRequestView {

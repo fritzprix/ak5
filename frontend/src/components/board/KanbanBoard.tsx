@@ -19,6 +19,8 @@ import {
   fetchActors,
   fetchBoardMembers,
   addBoardMember,
+  claimBoard,
+  DASHBOARD_ACTOR_ID,
   moveTicket,
   createTicket,
   delegateSubtask,
@@ -39,7 +41,7 @@ import { TicketCard } from "./TicketCard";
 import { TicketDetailDrawer } from "./TicketDetailDrawer";
 import { AgentFleetStrip } from "../actor/AgentFleetStrip";
 import { Dialog } from "../ui/Dialog";
-import { Plus, RefreshCw, Radio, ClipboardCopy, Check, Terminal } from "lucide-react";
+import { Plus, RefreshCw, Radio, ClipboardCopy, Check, Terminal, ShieldCheck } from "lucide-react";
 
 interface KanbanBoardProps {
   boardId: string;
@@ -60,6 +62,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [selectedEnrollActorId, setSelectedEnrollActorId] = useState("");
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [enrollError, setEnrollError] = useState<string | null>(null);
+  const [isClaiming, setIsClaiming] = useState(false);
   const [isConnectedSSE, setIsConnectedSSE] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -243,6 +246,26 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     }
   };
 
+  const canClaimBoard =
+    Boolean(board) &&
+    !board.has_human_admin &&
+    !actors.some((a) => a.actor_id === DASHBOARD_ACTOR_ID);
+
+  const handleClaimBoard = async () => {
+    setIsClaiming(true);
+    setActionError(null);
+    try {
+      await claimBoard(boardId);
+      const updated = await fetchBoardMembers(boardId);
+      setActors(updated);
+      await reloadBoard({ silent: true });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to claim board");
+    } finally {
+      setIsClaiming(false);
+    }
+  };
+
   const handleDragStart = (event: DragStartEvent) => {
     const ticketId = event.active.id as string;
     if (!board) return;
@@ -401,6 +424,19 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
           >
             <RefreshCw className="h-4 w-4" />
           </button>
+          {canClaimBoard ? (
+            <button
+              type="button"
+              onClick={() => void handleClaimBoard()}
+              disabled={isClaiming}
+              className="ak-btn-secondary p-2 sm:px-3.5"
+              title="Claim board admin (when no human admin exists)"
+              aria-label="Claim board"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              <span className="hidden sm:inline">{isClaiming ? "Claiming…" : "Claim Board"}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setIsAgentSetupOpen(true)}

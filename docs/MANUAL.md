@@ -312,8 +312,21 @@ uv run ak5 ticket download-attachment TK-001 att_abc123 --output ./downloaded.js
 
 ### 4.6 신규 프로젝트 보드 개설 (`ak5 create-board`)
 새로운 프로젝트 전용 칸반 보드를 4개 표준 컬럼(To Do, In Progress, Review, Done)과 함께 즉시 개설합니다.
+
+에이전트가 보드를 만들 때는 **`--owner`로 human admin을 함께 지정**하는 것이 권장됩니다. 이미 만들어진 agent-only 보드는 human이 `ak5 claim-board`로 admin을 차지할 수 있습니다(보드에 human admin이 없을 때만).
+
 ```bash
+# Human이 보드 개설
 uv run ak5 create-board proj-mobile-app --name "Mobile App Development" --desc "iOS/Android 클라이언트 프로젝트"
+
+# Agent가 보드 개설 시 human owner(admin) 동시 등록 (권장)
+uv run ak5 create-board proj-agent-owned --name "Agent Project" --owner user_pm
+
+# 여러 human owner
+uv run ak5 create-board proj-shared --name "Shared" --owner user_pm --owner user_other
+
+# 기존 agent-only 보드: human이 admin claim (human admin이 이미 있으면 409)
+uv run ak5 claim-board proj-agent-owned
 ```
 
 ### 4.7 현재 인증 세션 확인 (`ak5 whoami`)
@@ -474,9 +487,13 @@ Claude Desktop (`claude_desktop_config.json`) 또는 Cursor, Antigravity, Windsu
 | `GET` | `/actors/{actor_id}` | 특정 액터 상세 정보 조회 |
 | `PATCH`| `/actors/{actor_id}` | 액터 정보 수정 (**본인 또는 admin만**) |
 | `GET` | `/boards` | 전체 보드 목록 요약 조회 |
-| `POST` | `/boards` | 신규 보드 개설 및 표준 4개 컬럼 자동 생성 |
+| `POST` | `/boards` | 신규 보드 개설 및 표준 4개 컬럼 자동 생성 (`owner_actor_ids`로 human admin 동시 등록 가능) |
 | `GET` | `/boards/{board_id}` | 보드 컬럼 및 순서화된 티켓 계층 트리 반환 |
+| `POST` | `/boards/{board_id}/claim` | human이 보드 admin claim (보드에 human admin이 없을 때만; 이미 admin이면 idempotent 200) |
 | `POST` | `/boards/{board_id}/columns` | 특정 보드에 커스텀 컬럼 추가 |
+| `GET` | `/boards/{board_id}/members` | 보드에 등록된 멤버(Actor) 목록 |
+| `POST` | `/boards/{board_id}/members` | 보드 멤버 추가 (board admin 필요) |
+| `DELETE` | `/boards/{board_id}/members/{actor_id}` | 보드 멤버 제거 (admin 또는 본인; creator 제거 불가) |
 | `POST` | `/tickets` | 신규 티켓 생성 및 Lexorank 부여 |
 | `GET` | `/tickets/{ticket_id}` | 티켓 상세, 서브태스크 통계, 코멘트 목록 조회 |
 | `PATCH`| `/tickets/{ticket_id}` | 티켓 필드 수정 (제목, 설명, 우선순위, 담당자, 상태, 블록 사유 등) |

@@ -110,10 +110,23 @@ def test_extract_event_context_malformed_nested_data():
 
 @pytest.mark.asyncio
 async def test_execute_subscriber_command_uses_env(tmp_path):
+    import sys
+
     output_file = tmp_path / "out.txt"
-    cmd = (
-        f'echo "$AK5_EVENT $AK5_TICKET_ID $AK5_ACTOR_ID $AK5_EVENT_ACTOR_ID" > "{output_file}"'
+    script = tmp_path / "write_env.py"
+    # Script file avoids nested-quote hell in cross-platform `python -c` strings
+    script.write_text(
+        "import os\n"
+        f"open(r'{output_file}', 'w').write("
+        "' '.join(["
+        "os.environ['AK5_EVENT'],"
+        "os.environ['AK5_TICKET_ID'],"
+        "os.environ['AK5_ACTOR_ID'],"
+        "os.environ['AK5_EVENT_ACTOR_ID'],"
+        "]))\n",
+        encoding="utf-8",
     )
+    cmd = f'"{sys.executable}" "{script}"'
     ctx = {
         "event": "TICKET_CREATED",
         "event_type": "TICKET_CREATED",
@@ -138,8 +151,16 @@ async def test_execute_subscriber_command_uses_env(tmp_path):
 
 @pytest.mark.asyncio
 async def test_execute_subscriber_command_passes_stdin(tmp_path):
+    import sys
+
     output_file = tmp_path / "stdin.json"
-    cmd = f'cat > "{output_file}"'
+    script = tmp_path / "copy_stdin.py"
+    script.write_text(
+        "import sys, shutil\n"
+        f"shutil.copyfileobj(sys.stdin.buffer, open(r'{output_file}', 'wb'))\n",
+        encoding="utf-8",
+    )
+    cmd = f'"{sys.executable}" "{script}"'
     ctx = {
         "event": "TICKET_CREATED",
         "event_type": "TICKET_CREATED",
@@ -180,8 +201,17 @@ def test_cli_subscribe_dry_run_warns_on_legacy_placeholders():
 
 @pytest.mark.asyncio
 async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch):
+    import sys
+
     output_file = tmp_path / "handled.txt"
-    exec_cmd = f'echo "[$AK5_EVENT] $AK5_TICKET_ID:$AK5_TITLE" > "{output_file}"'
+    script = tmp_path / "handle_event.py"
+    script.write_text(
+        "import os\n"
+        f"open(r'{output_file}', 'w').write("
+        "'[' + os.environ['AK5_EVENT'] + '] ' + os.environ['AK5_TICKET_ID'] + ':' + os.environ['AK5_TITLE'])\n",
+        encoding="utf-8",
+    )
+    exec_cmd = f'"{sys.executable}" "{script}"'
 
     # Isolate from developer/CI workspace .ak5 sessions
     monkeypatch.setenv("AK5_PROJECT_ROOT", str(tmp_path))

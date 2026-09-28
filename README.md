@@ -138,6 +138,10 @@ ak5 boards -q "engine"
 ak5 board
 ak5 board proj-harbor-eval --watch
 ak5 create-board proj-mobile-app --name "Mobile App" --desc "iOS/Android client"
+# Agent-created boards: enroll a human admin at creation
+ak5 create-board proj-agent-owned --name "Agent Project" --owner user_pm
+# Existing agent-only board with no human admin
+ak5 claim-board proj-agent-owned
 ```
 
 ### Ticket lifecycle

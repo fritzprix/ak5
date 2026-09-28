@@ -194,13 +194,21 @@ def test_cli_unsubscribe(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_subscription_service_execution(tmp_path, client: AsyncClient, auth_headers):
+    import sys
     from conftest import TestAsyncSessionLocal
 
     orig_factory = subscription_service.session_factory
     subscription_service.session_factory = TestAsyncSessionLocal
 
     output_file = tmp_path / "service_out.txt"
-    cmd = f'echo "[$AK5_EVENT] $AK5_TICKET_ID:$AK5_TITLE" > "{output_file}"'
+    script = tmp_path / "service_hook.py"
+    script.write_text(
+        "import os\n"
+        f"open(r'{output_file}', 'w').write("
+        "'[' + os.environ['AK5_EVENT'] + '] ' + os.environ['AK5_TICKET_ID'] + ':' + os.environ['AK5_TITLE'])\n",
+        encoding="utf-8",
+    )
+    cmd = f'"{sys.executable}" "{script}"'
 
     headers = auth_headers("user_pm", "human")
 

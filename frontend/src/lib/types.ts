@@ -84,4 +84,6 @@ export interface BoardSummary {
 
 export interface Board extends BoardSummary {
   columns: Column[];
+  /** True when a human already has board admin (creator or BoardMember). */
+  has_human_admin?: boolean;
 }

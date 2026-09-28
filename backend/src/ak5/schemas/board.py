@@ -13,6 +13,10 @@ class BoardBase(BaseModel):
 
 class BoardCreate(BoardBase):
     board_id: str | None = None  # Auto-generated if not supplied
+    owner_actor_ids: list[str] = Field(
+        default_factory=list,
+        description="Human actors to enroll as board admins at creation",
+    )
 
 
 class BoardOut(BoardBase):
@@ -23,6 +27,13 @@ class BoardOut(BoardBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BoardClaimOut(BaseModel):
+    board_id: str
+    actor_id: str
+    role: str
+    message: str
+
+
 class ColumnWithTicketsOut(ColumnOut):
     tickets: list[TicketOut] = Field(default_factory=list)
     total_ticket_count: int | None = None
@@ -30,3 +41,7 @@ class ColumnWithTicketsOut(ColumnOut):
 
 class BoardDetailOut(BoardOut):
     columns: list[ColumnWithTicketsOut] = Field(default_factory=list)
+    has_human_admin: bool = Field(
+        default=False,
+        description="True if a human already has board admin (creator or BoardMember)",
+    )
