@@ -26,6 +26,14 @@ BUILD_SCRIPT = ROOT / "scripts" / "build_web_ui.sh"
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke_uvx_wheel.sh"
 
 
+def _configure_stdio() -> None:
+    """Avoid UnicodeEncodeError on Windows cp949/legacy consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def run_cmd(cmd: list[str] | str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
     shell = isinstance(cmd, str)
     cwd_path = cwd or ROOT
@@ -96,6 +104,7 @@ def update_json_version(path: Path, new_version: str) -> None:
 
 
 def main() -> None:
+    _configure_stdio()
     parser = argparse.ArgumentParser(description="AK5 Release Automation Script")
     parser.add_argument("bump", choices=["patch", "minor", "major"], help="Bump type (patch, minor, major)")
     parser.add_argument("--push", action="store_true", help="Automatically commit, tag, and push to origin")
