@@ -24,7 +24,7 @@ wheels = [
 
 [[package]]
 name = "ak5"
-version = "1.0.25"
+version = "1.0.26"
 source = { editable = "backend" }
 dependencies = [
     { name = "aiosqlite" },
