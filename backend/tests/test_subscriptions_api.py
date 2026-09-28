@@ -195,6 +195,7 @@ def test_cli_unsubscribe(monkeypatch):
 @pytest.mark.asyncio
 async def test_subscription_service_execution(tmp_path, client: AsyncClient, auth_headers):
     import sys
+
     from conftest import TestAsyncSessionLocal
 
     orig_factory = subscription_service.session_factory
