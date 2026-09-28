@@ -53,12 +53,18 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 uv venv "$TMP/venv" --python 3.13 --quiet
-# shellcheck disable=SC1091
-source "$TMP/venv/bin/activate"
-uv pip install --python "$TMP/venv/bin/python" --quiet "$WHEEL"
-
-PY="$TMP/venv/bin/python"
-AK5="$TMP/venv/bin/ak5"
+if [[ -x "$TMP/venv/bin/python" ]]; then
+  PY="$TMP/venv/bin/python"
+  AK5="$TMP/venv/bin/ak5"
+elif [[ -x "$TMP/venv/Scripts/python.exe" ]]; then
+  # Windows / Git Bash layout
+  PY="$TMP/venv/Scripts/python.exe"
+  AK5="$TMP/venv/Scripts/ak5.exe"
+else
+  echo "error: could not find python in isolated venv under $TMP/venv" >&2
+  exit 1
+fi
+uv pip install --python "$PY" --quiet "$WHEEL"
 
 echo "==> Import gate (SQLAlchemy asyncio / greenlet / FastAPI app)"
 "$PY" - <<'PY'
