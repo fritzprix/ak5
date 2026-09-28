@@ -248,7 +248,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
   const canClaimBoard =
     Boolean(board) &&
-    !board.has_human_admin &&
+    !board?.has_human_admin &&
     !actors.some((a) => a.actor_id === DASHBOARD_ACTOR_ID);
 
   const handleClaimBoard = async () => {
