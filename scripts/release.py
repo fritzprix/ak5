@@ -117,7 +117,7 @@ def main() -> None:
     # 1. Pre-flight tests & linting
     if not args.skip_tests:
         print("\033[1m[1/7] Running pre-flight linting and tests...\033[0m")
-        run_cmd(["uv", "run", "ruff", "check", "backend"])
+        run_cmd(["uvx", "ruff", "check", "backend"])
         run_cmd(["uv", "run", "pytest", "backend/tests"])
     else:
         print("\033[1m[1/7] Skipping pre-flight tests (--skip-tests)\033[0m")
