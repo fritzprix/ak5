@@ -22,7 +22,29 @@ async def create_subscription(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
 ) -> SubscriptionOut:
-    """Register a new server-side event subscription hook."""
+    """Register a new server-side event subscription hook.
+
+    ``exec_command`` is executed by the server via a shell under the AK5 process
+    user. Only **human** actors may register hooks by default. Agents need
+    ``AK5_ALLOW_AGENT_HOOKS=1`` (compromised agent JWTs otherwise become RCE).
+    """
+    import os
+
+    if current_actor.actor_type != "human":
+        allowed = os.environ.get("AK5_ALLOW_AGENT_HOOKS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Agent actors cannot register exec_command hooks. "
+                    "Set AK5_ALLOW_AGENT_HOOKS=1 only if you accept shell RCE risk."
+                ),
+            )
+
     sub_id = sub_in.subscription_id or f"sub-{uuid.uuid4().hex[:8]}"
 
     # Check for duplicate ID

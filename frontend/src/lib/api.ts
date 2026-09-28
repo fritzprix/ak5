@@ -65,8 +65,16 @@ export async function getAuthToken(): Promise<string> {
   return "";
 }
 
+async function authHeaders(): Promise<HeadersInit> {
+  const token = await getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export async function fetchBoards(): Promise<BoardSummary[]> {
-  const res = await fetch(`${API_BASE}/boards`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/boards`, {
+    cache: "no-store",
+    headers: await authHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`Failed to fetch boards: ${res.statusText}`);
   }
@@ -74,7 +82,10 @@ export async function fetchBoards(): Promise<BoardSummary[]> {
 }
 
 export async function fetchBoard(boardId: string): Promise<Board> {
-  const res = await fetch(`${API_BASE}/boards/${boardId}`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/boards/${boardId}`, {
+    cache: "no-store",
+    headers: await authHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`Failed to fetch board: ${res.statusText}`);
   }
@@ -82,7 +93,10 @@ export async function fetchBoard(boardId: string): Promise<Board> {
 }
 
 export async function fetchTicket(ticketId: string): Promise<Ticket> {
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}`, {
+    cache: "no-store",
+    headers: await authHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`Failed to fetch ticket: ${res.statusText}`);
   }
@@ -90,7 +104,10 @@ export async function fetchTicket(ticketId: string): Promise<Ticket> {
 }
 
 export async function fetchActors(): Promise<Actor[]> {
-  const res = await fetch(`${API_BASE}/actors`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/actors`, {
+    cache: "no-store",
+    headers: await authHeaders(),
+  });
   if (!res.ok) return [];
   return res.json();
 }
@@ -236,7 +253,11 @@ export async function addComment(
 }
 
 export function getAttachmentDownloadUrl(ticketId: string, attachmentId: string): string {
-  return `${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`;
+  const base = `${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`;
+  if (cachedToken) {
+    return `${base}?access_token=${encodeURIComponent(cachedToken)}`;
+  }
+  return base;
 }
 
 export async function uploadAttachment(
@@ -283,44 +304,58 @@ export function subscribeToBoardEvents(
     onError?: () => void;
   }
 ): () => void {
-  const eventSource = new EventSource(`${API_BASE}/events/stream`);
+  let eventSource: EventSource | null = null;
+  let cancelled = false;
 
-  const events = [
-    "TICKET_CREATED",
-    "TICKET_MOVED",
-    "TICKET_DELEGATED",
-    "TICKET_UPDATED",
-    "COMMENT_ADDED",
-    "ATTACHMENT_ADDED",
-    "ATTACHMENT_DELETED",
-  ];
+  void (async () => {
+    const token = await getAuthToken();
+    if (cancelled) return;
+    const url = token
+      ? `${API_BASE}/events/stream?access_token=${encodeURIComponent(token)}`
+      : `${API_BASE}/events/stream`;
+    eventSource = new EventSource(url);
 
-  eventSource.onopen = () => {
-    options?.onOpen?.();
-  };
+    const events = [
+      "TICKET_CREATED",
+      "TICKET_MOVED",
+      "TICKET_DELEGATED",
+      "TICKET_UPDATED",
+      "COMMENT_ADDED",
+      "ATTACHMENT_ADDED",
+      "ATTACHMENT_DELETED",
+    ];
 
-  eventSource.onerror = () => {
-    options?.onError?.();
-  };
+    eventSource.onopen = () => {
+      options?.onOpen?.();
+    };
 
-  events.forEach((evt) => {
-    eventSource.addEventListener(evt, (e: MessageEvent) => {
-      try {
-        const parsed: unknown = JSON.parse(e.data);
-        onEvent(evt, parsed);
-      } catch (err) {
-        console.error("Failed to parse SSE event:", err);
-      }
+    eventSource.onerror = () => {
+      options?.onError?.();
+    };
+
+    events.forEach((evt) => {
+      eventSource?.addEventListener(evt, (e: MessageEvent) => {
+        try {
+          const parsed: unknown = JSON.parse(e.data);
+          onEvent(evt, parsed);
+        } catch (err) {
+          console.error("Failed to parse SSE event:", err);
+        }
+      });
     });
-  });
+  })();
 
   return () => {
-    eventSource.close();
+    cancelled = true;
+    eventSource?.close();
   };
 }
 
 export async function fetchBoardMembers(boardId: string): Promise<Actor[]> {
-  const res = await fetch(`${API_BASE}/boards/${boardId}/members`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/boards/${boardId}/members`, {
+    cache: "no-store",
+    headers: await authHeaders(),
+  });
   if (!res.ok) return [];
   return res.json();
 }

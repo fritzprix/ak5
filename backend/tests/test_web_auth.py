@@ -2,7 +2,6 @@ import pytest
 from ak5.main import app
 from ak5.web_auth import (
     COOKIE_NAME,
-    compute_session_hash,
     reset_rate_limits_for_tests,
 )
 from httpx import ASGITransport, AsyncClient
@@ -52,9 +51,11 @@ async def test_web_auth_login_and_gate(monkeypatch):
         assert ok.status_code == 200
         assert ok.json().get("success") is True
         assert COOKIE_NAME in ok.cookies
-
-        expected = compute_session_hash("admin", "secret-pass")
-        assert ok.cookies.get(COOKIE_NAME) == expected
+        cookie_val = ok.cookies.get(COOKIE_NAME)
+        assert cookie_val
+        assert len(cookie_val) >= 32
+        # Must NOT be a deterministic password digest
+        assert cookie_val != "secret-pass"
 
         status = await client.get("/api/auth/status")
         assert status.json()["authEnabled"] is True
@@ -76,6 +77,49 @@ async def test_web_auth_brute_force_lockout(monkeypatch):
         locked = await client.post("/api/auth/login", json={"username": "admin", "password": "correct"})
         assert locked.status_code == 429
         assert "Retry-After" in locked.headers
+
+
+@pytest.mark.asyncio
+async def test_web_auth_login_rejects_wrong_length_without_500(monkeypatch):
+    """Unequal credential lengths must be 401, never ValueError → 500."""
+    monkeypatch.setenv("AK5_AUTH_USERNAME", "admin")
+    monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret-pass")
+    reset_rate_limits_for_tests()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/auth/login",
+            json={"username": "a", "password": "x"},
+        )
+        assert resp.status_code == 401
+        assert "error" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_web_auth_logout_revokes_session(monkeypatch):
+    monkeypatch.setenv("AK5_AUTH_USERNAME", "admin")
+    monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret-pass")
+    reset_rate_limits_for_tests()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        ok = await client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "secret-pass"},
+        )
+        assert ok.status_code == 200
+        assert client.cookies.get(COOKIE_NAME)
+
+        status_ok = await client.get("/api/auth/status")
+        assert status_ok.json()["authenticated"] is True
+
+        logout = await client.post("/api/auth/logout")
+        assert logout.status_code == 200
+
+        status_after = await client.get("/api/auth/status")
+        # Cookie may still be sent empty/cleared; session store must reject it.
+        assert status_after.json()["authenticated"] is False
 
 
 def test_detect_tailscale_without_cli(monkeypatch):

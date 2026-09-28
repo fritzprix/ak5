@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,7 @@ from ak5.models.audit import AuditLog
 from ak5.models.board import Board
 from ak5.models.column import Column
 from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
-from ak5.routers.auth import get_current_actor
+from ak5.routers.auth import get_current_actor, get_current_actor_optional
 from ak5.schemas.ticket import (
     TicketAttachmentOut,
     TicketCommentCreate,
@@ -174,6 +174,7 @@ async def create_ticket(
 @router.get("", response_model=list[TicketOut])
 async def list_tickets(
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
     board_id: str | None = None,
     is_archived: bool = False,
     include_all: bool = False,
@@ -189,12 +190,9 @@ async def list_tickets(
 ) -> list[TicketOut]:
     """List and filter tickets with rich selection parameters.
 
-    - is_archived: False by default (only active). Set True for archived only. Ignored if include_all is True.
-    - include_all: If True, returns both active and archived tickets without filtering by archive status.
-    - q: Text search across ticket title and description.
-    - stage: Stage name (open, in_progress, review, done).
-    - labels: Comma-separated list of labels to filter by.
+    Requires Bearer JWT. ``current_actor`` is reserved for future board-scoped ACL.
     """
+    _ = current_actor
     safe_limit = min(max(1, limit), 200)
     stmt = select(Ticket).options(selectinload(Ticket.subtasks))
     if board_id:
@@ -238,8 +236,10 @@ async def list_tickets(
 async def get_ticket_detail(
     ticket_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
 ) -> TicketDetailOut:
-    """Get ticket detail, subtasks, and comments."""
+    """Get ticket detail, subtasks, and comments. Requires Bearer JWT."""
+    _ = current_actor
     stmt = (
         select(Ticket)
         .where(Ticket.ticket_id == ticket_id)
@@ -787,8 +787,10 @@ async def upload_attachment(
 async def list_attachments(
     ticket_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
 ) -> list[TicketAttachmentOut]:
-    """List all attachments for a ticket."""
+    """List all attachments for a ticket. Requires Bearer JWT."""
+    _ = current_actor
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(
@@ -811,8 +813,32 @@ async def download_attachment(
     ticket_id: str,
     attachment_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor | None, Depends(get_current_actor_optional)],
+    access_token: Annotated[str | None, Query()] = None,
 ) -> FileResponse:
-    """Download an attachment file from a ticket."""
+    """Download an attachment. Requires Bearer JWT or ``access_token`` query (for ``<a href>``)."""
+    import jwt
+
+    from ak5.security import get_jwt_secret
+
+    actor = current_actor
+    if actor is None and access_token:
+        try:
+            payload = jwt.decode(
+                access_token, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM]
+            )
+            actor_id = payload.get("sub")
+            if actor_id:
+                actor = await db.get(Actor, actor_id)
+        except jwt.PyJWTError:
+            actor = None
+    if actor is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header or access_token query param required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     attachment = await db.get(TicketAttachment, attachment_id)
     if not attachment or attachment.ticket_id != ticket_id:
         raise HTTPException(

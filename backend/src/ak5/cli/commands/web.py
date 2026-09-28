@@ -55,7 +55,6 @@ def _print_ready_banner(host: str, port: int, is_ssl: bool = False) -> None:
     cfg = get_web_auth_config()
     scheme = "https" if is_ssl else "http"
     from ak5.config import settings
-    from ak5.paths import check_legacy_cwd_db
 
     local = f"{scheme}://127.0.0.1:{port}"
     lines = [
@@ -63,14 +62,6 @@ def _print_ready_banner(host: str, port: int, is_ssl: bool = False) -> None:
         f"[bold]API Docs:[/bold]           [cyan]{local}/docs[/cyan]",
         f"[bold]Database:[/bold]           [cyan]{settings.DATABASE_URL}[/cyan]",
     ]
-    legacy_local_db = check_legacy_cwd_db()
-    if legacy_local_db:
-        lines.append(
-            f"[bold yellow]Local DB Found:[/bold yellow]    [yellow]{legacy_local_db}[/yellow] (ignoring; using global DB)"
-        )
-        lines.append(
-            "                         [dim]Run 'ak5 migrate-legacy' or set AK5_MIGRATE_LEGACY=1 to import[/dim]"
-        )
     if ts.https_active and ts.https_url:
         lines.append(f"[bold]Tailscale HTTPS:[/bold]   [green]{ts.https_url}[/green] (secure port 443)")
     elif ts.dns_name:
@@ -141,6 +132,22 @@ def web_command(
     Optional login gate via AK5_AUTH_PASSWORD (see .env.example).
     """
     _load_dotenv_files()
+
+    from ak5.config import settings
+    from ak5.paths import DatabaseConflictError, check_legacy_cwd_db
+    from ak5.services.db_safety import DatabaseWipeError, prepare_database_for_use
+
+    try:
+        prepare_database_for_use(settings.DATABASE_URL)
+    except (DatabaseConflictError, DatabaseWipeError) as exc:
+        console.print(f"[bold red]✗ Database conflict[/bold red]\n{exc}")
+        raise SystemExit(1) from exc
+    if check_legacy_cwd_db():
+        console.print(
+            "[bold red]✗ Local ./ak5.db still present after reconcile.[/bold red] "
+            "Run [cyan]ak5 migrate-legacy --force[/cyan] or delete ./ak5.db."
+        )
+        raise SystemExit(1)
 
     if not web_ui_available():
         console.print(

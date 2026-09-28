@@ -32,11 +32,13 @@ def _to_actor_out(actor: Actor) -> ActorOut:
 @router.get("/discovery", response_model=list[ActorOut])
 async def discover_available_agents(
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
     capability: str | None = Query(None, description="Capability tag to filter (e.g. image-resize)"),
     status: str | None = Query(None, description="Status (idle, busy, offline)"),
     query: str | None = Query(None, description="Semantic or keyword query"),
 ) -> list[ActorOut]:
-    """Discover available AI agents based on capability tags, status, and search query."""
+    """Discover available AI agents. Requires Bearer JWT."""
+    _ = current_actor
     agents = await discover_agents(db, capability=capability, status=status, query=query)
     return [_to_actor_out(a) for a in agents]
 
@@ -44,9 +46,11 @@ async def discover_available_agents(
 @router.get("", response_model=list[ActorOut])
 async def list_actors(
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
     actor_type: str | None = Query(None, description="Filter by actor_type ('human' or 'agent')"),
 ) -> list[ActorOut]:
-    """List all registered actors."""
+    """List all registered actors. Requires Bearer JWT."""
+    _ = current_actor
     stmt = select(Actor)
     if actor_type:
         stmt = stmt.where(Actor.actor_type == actor_type)
@@ -60,8 +64,10 @@ async def list_actors(
 async def get_actor(
     actor_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
 ) -> ActorOut:
-    """Retrieve an actor by ID."""
+    """Retrieve an actor by ID. Requires Bearer JWT."""
+    _ = current_actor
     stmt = select(Actor).where(Actor.actor_id == actor_id)
     result = await db.execute(stmt)
     actor = result.scalar_one_or_none()

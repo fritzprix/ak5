@@ -8,7 +8,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./data/ak5.db
+      # One source of truth: AK5_DATA_DIR owns the store; do not point DATABASE_URL elsewhere.
+      - AK5_DATA_DIR=/app/data
       - SQLITE_BUSY_TIMEOUT=5000
       - CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
     volumes:

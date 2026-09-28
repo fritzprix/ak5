@@ -1,13 +1,14 @@
-"""Optional web-dashboard gate: username/password cookie + brute-force shield.
+"""Optional web-dashboard gate: username/password + opaque session cookies.
 
-Mirrors the Next.js auth contract (cookie name, hash salt, rate limits) so the
-embedded static UI and `next dev` proxy share the same session semantics.
+Session cookies are random high-entropy tokens (not password digests). Password
+verification and cookie checks use ``secrets.compare_digest`` (timing-safe).
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ class _AttemptRecord:
 
 
 _attempts: dict[str, _AttemptRecord] = {}
+# token -> unix expiry
+_sessions: dict[str, float] = {}
 _lock = threading.Lock()
 
 
@@ -57,9 +60,47 @@ def get_web_auth_config() -> WebAuthConfig:
     return WebAuthConfig(enabled=bool(password), username=username, password=password)
 
 
-def compute_session_hash(username: str, password: str) -> str:
-    payload = f"ak5_salt_{username}_{password}_2026".encode()
-    return hashlib.sha256(payload).hexdigest()
+def credentials_match(username: str, password: str) -> bool:
+    """Timing-safe credential check against configured web auth.
+
+    Digests are compared so unequal username/password lengths never raise
+    ``ValueError`` from ``secrets.compare_digest`` (would become HTTP 500).
+    """
+    cfg = get_web_auth_config()
+    if not cfg.enabled:
+        return False
+    user_ok = secrets.compare_digest(
+        hashlib.sha256(username.encode("utf-8")).digest(),
+        hashlib.sha256(cfg.username.encode("utf-8")).digest(),
+    )
+    pass_ok = secrets.compare_digest(
+        hashlib.sha256(password.encode("utf-8")).digest(),
+        hashlib.sha256(cfg.password.encode("utf-8")).digest(),
+    )
+    return user_ok and pass_ok
+
+
+def issue_session_token() -> str:
+    """Mint an opaque session token after successful login (server-side store)."""
+    token = secrets.token_urlsafe(48)
+    expires = time.time() + SESSION_MAX_AGE_SECONDS
+    with _lock:
+        _prune_sessions_locked(now=time.time())
+        _sessions[token] = expires
+    return token
+
+
+def revoke_session_token(token: str | None) -> None:
+    if not token:
+        return
+    with _lock:
+        _sessions.pop(token, None)
+
+
+def _prune_sessions_locked(*, now: float) -> None:
+    expired = [t for t, exp in _sessions.items() if exp <= now]
+    for t in expired:
+        del _sessions[t]
 
 
 def verify_session_cookie(cookie_value: str | None) -> bool:
@@ -68,8 +109,21 @@ def verify_session_cookie(cookie_value: str | None) -> bool:
         return True
     if not cookie_value:
         return False
-    expected = compute_session_hash(cfg.username, cfg.password)
-    return cookie_value == expected
+    now = time.time()
+    with _lock:
+        _prune_sessions_locked(now=now)
+        expires = _sessions.get(cookie_value)
+        if expires is None or expires <= now:
+            # Timing-safe miss: compare against a dummy so length still matters less.
+            secrets.compare_digest(cookie_value, cookie_value)
+            return False
+        # Confirm membership with compare_digest against the stored key.
+        for token, exp in _sessions.items():
+            if exp <= now:
+                continue
+            if secrets.compare_digest(cookie_value, token):
+                return True
+        return False
 
 
 def check_rate_limit(ip: str) -> tuple[bool, int | None]:
@@ -80,6 +134,8 @@ def check_rate_limit(ip: str) -> tuple[bool, int | None]:
         if not record:
             return True, None
         if record.blocked_until > now:
+            # Extend lockout while still hammering (M-8).
+            record.blocked_until = now + BLOCK_SECONDS
             return False, max(1, int(record.blocked_until - now))
         if now - record.first_attempt > WINDOW_SECONDS:
             del _attempts[ip]
@@ -118,3 +174,12 @@ def client_ip_from_headers(x_forwarded_for: str | None, x_real_ip: str | None, f
 def reset_rate_limits_for_tests() -> None:
     with _lock:
         _attempts.clear()
+        _sessions.clear()
+
+
+# Back-compat alias used by older tests — prefer issue_session_token().
+def compute_session_hash(username: str, password: str) -> str:
+    """Deprecated: issues a real session only if credentials match."""
+    if not credentials_match(username, password):
+        raise ValueError("Invalid credentials for session mint")
+    return issue_session_token()

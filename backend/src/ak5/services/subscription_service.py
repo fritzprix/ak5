@@ -116,9 +116,15 @@ class SubscriptionService:
                 if not matches_agent_filter(sub.for_agent, ticket_data, data):
                     continue
 
-            # 5. Debounce check
-            debounce_key = f"{sub.subscription_id}:{context['ticket_id']}:{event_type}"
+            # 5. Debounce check (include board_id so board-level events don't collide)
+            ticket_part = context.get("ticket_id") or ""
+            board_part = context.get("board_id") or ""
+            debounce_key = f"{sub.subscription_id}:{board_part}:{ticket_part}:{event_type}"
             now = time.time()
+            # Drop expired debounce entries (memory bound)
+            if len(self._last_exec) > 10_000:
+                cutoff = now - 3600
+                self._last_exec = {k: v for k, v in self._last_exec.items() if v >= cutoff}
             if (
                 sub.debounce_seconds > 0
                 and debounce_key in self._last_exec

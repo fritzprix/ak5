@@ -15,11 +15,10 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_mcp_tools_flow(client: AsyncClient, auth_headers, monkeypatch):
-    # Set up AK5Client to talk to test ASGI client
+async def test_mcp_tools_flow(anon_client: AsyncClient, auth_headers, monkeypatch):
+    # Use unauthenticated ASGI client so MCP must attach its own Bearer JWT on reads.
     test_mcp_client = AK5Client(base_url="http://test/api/v1", actor_id="agent_orchestrator")
-    # Replace internal httpx client with test client
-    test_mcp_client._http = client
+    test_mcp_client._http = anon_client
     monkeypatch.setattr(mcp_tools, "_client", test_mcp_client)
 
     # 0. Test ak5_list_boards
@@ -34,7 +33,7 @@ async def test_mcp_tools_flow(client: AsyncClient, auth_headers, monkeypatch):
 
     # Create a parent ticket first via API
     headers = auth_headers("user_pm", "human")
-    t_resp = await client.post(
+    t_resp = await anon_client.post(
         "/api/v1/tickets",
         json={"title": "Master Feature", "board_id": "proj-core-engine", "column_id": "col_todo"},
         headers=headers,

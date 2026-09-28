@@ -15,6 +15,10 @@ from ak5.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Do NOT call prepare_database_for_use here. Importing ak5.database (via CLI
+# reset → seed) must not refuse dual-DB before `ak5 migrate-legacy` can run.
+# Safety gate lives in lifespan + `ak5 serve` / `ak5 web` (see main.py).
+
 # Configure SQLite async engine with WAL mode and busy_timeout
 connect_args = {}
 if "sqlite" in settings.DATABASE_URL:

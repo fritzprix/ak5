@@ -44,24 +44,34 @@ class AK5Client:
         return {"Authorization": f"Bearer {token}"}
 
     async def list_boards(self) -> list[dict[str, Any]]:
-        resp = await self._http.get(f"{self.base_url.rstrip('/')}/boards")
+        headers = await self._headers()
+        resp = await self._http.get(f"{self.base_url.rstrip('/')}/boards", headers=headers)
         resp.raise_for_status()
         return resp.json()
 
     async def list_available_agents(
         self, capability: str | None = None, search_query: str | None = None
     ) -> list[dict[str, Any]]:
+        headers = await self._headers()
         params = {}
         if capability:
             params["capability"] = capability
         if search_query:
             params["query"] = search_query
-        resp = await self._http.get(f"{self.base_url.rstrip('/')}/actors/discovery", params=params)
+        resp = await self._http.get(
+            f"{self.base_url.rstrip('/')}/actors/discovery",
+            params=params,
+            headers=headers,
+        )
         resp.raise_for_status()
         return resp.json()
 
     async def get_ticket_context(self, ticket_id: str) -> dict[str, Any]:
-        resp = await self._http.get(f"{self.base_url.rstrip('/')}/tickets/{ticket_id}")
+        headers = await self._headers()
+        resp = await self._http.get(
+            f"{self.base_url.rstrip('/')}/tickets/{ticket_id}",
+            headers=headers,
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -99,7 +109,10 @@ class AK5Client:
         headers = await self._headers()
         # Fetch ticket to get board
         ticket = await self.get_ticket_context(ticket_id)
-        board_resp = await self._http.get(f"{self.base_url.rstrip('/')}/boards/{ticket['board_id']}")
+        board_resp = await self._http.get(
+            f"{self.base_url.rstrip('/')}/boards/{ticket['board_id']}",
+            headers=headers,
+        )
         board_resp.raise_for_status()
         board_data = board_resp.json()
 
@@ -197,7 +210,12 @@ class AK5Client:
             params["assigned_to"] = assigned_to
         if labels:
             params["labels"] = labels
-        resp = await self._http.get(f"{self.base_url.rstrip('/')}/tickets", params=params)
+        headers = await self._headers()
+        resp = await self._http.get(
+            f"{self.base_url.rstrip('/')}/tickets",
+            params=params,
+            headers=headers,
+        )
         resp.raise_for_status()
         return resp.json()
 

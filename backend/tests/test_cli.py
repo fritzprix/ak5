@@ -50,6 +50,7 @@ def test_cli_migrate_legacy_copies_cwd_data(tmp_path, monkeypatch):
     assert "Migration complete" in result.output
     assert (app_data / "ak5.db").read_text(encoding="utf-8") == "project-db"
     assert (app_data / "attachments" / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert not (cwd / "ak5.db").exists(), "migrate must remove cwd DB to end dual-DB"
 
     # Second run without --force refuses overwrite
     (cwd / "ak5.db").write_text("changed", encoding="utf-8")
@@ -61,6 +62,7 @@ def test_cli_migrate_legacy_copies_cwd_data(tmp_path, monkeypatch):
     forced = runner.invoke(cli, ["migrate-legacy", "--force"])
     assert forced.exit_code == 0, forced.output
     assert (app_data / "ak5.db").read_text(encoding="utf-8") == "changed"
+    assert not (cwd / "ak5.db").exists()
 
 
 def test_cli_web_help():

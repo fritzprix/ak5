@@ -76,8 +76,10 @@ def _to_ticket_out(t: Ticket, subtask_stats: dict[str, tuple[int, int]]) -> Tick
 @router.get("", response_model=list[BoardOut])
 async def list_boards(
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
 ) -> list[BoardOut]:
-    """List all boards (summary without columns/tickets)."""
+    """List all boards (summary without columns/tickets). Requires Bearer JWT."""
+    _ = current_actor
     stmt = select(Board).order_by(Board.created_at.asc(), Board.name.asc())
     result = await db.execute(stmt)
     boards = result.scalars().all()
@@ -88,14 +90,15 @@ async def list_boards(
 async def get_board(
     board_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
     include_archived: bool = False,
     done_limit: int | None = 10,
 ) -> BoardDetailOut:
     """Retrieve full board details including columns and tickets ordered by rank.
 
-    - include_archived: If False (default), filters out archived tickets.
-    - done_limit: If specified (default 10), limits tickets in 'done' stage columns to the most recent N tickets.
+    Requires Bearer JWT.
     """
+    _ = current_actor
     stmt = (
         select(Board)
         .where(Board.board_id == board_id)
@@ -284,8 +287,10 @@ async def add_column(
 async def list_board_members(
     board_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
 ) -> list[ActorOut]:
-    """List all actors enrolled as members of the specified board."""
+    """List all actors enrolled as members of the specified board. Requires Bearer JWT."""
+    _ = current_actor
     board = await db.get(Board, board_id)
     if not board:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
@@ -309,8 +314,13 @@ async def list_board_members(
                 db.add(auto_mem)
                 await db.commit()
                 members = [creator]
-            except Exception:
+            except Exception as exc:
+                # Duplicate key / race on concurrent auto-enroll — re-read members.
+                from sqlalchemy.exc import IntegrityError
+
                 await db.rollback()
+                if not isinstance(exc, IntegrityError):
+                    raise
                 res = await db.execute(stmt)
                 members = res.scalars().all()
 

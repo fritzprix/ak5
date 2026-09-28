@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
@@ -22,15 +23,32 @@ from ak5.services.subscription_service import subscription_service
 from ak5.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 from ak5.web_ui_static import mount_web_ui, web_ui_available
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # One source of truth before create_all/seed — covers raw `uvicorn ak5.main:app`
+    # (Docker/harness) which never passes through `ak5 serve` / `ak5 web` CLI gates.
+    try:
+        from ak5.services.db_safety import prepare_database_for_use, snapshot_live_database
+
+        prepare_database_for_use(settings.DATABASE_URL)
+    except Exception:
+        logger.exception("Database safety preflight failed")
+        raise
+
     # Initialize DB tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await run_sqlite_schema_migrations()
-    # Seed initial entities
+    # Seed initial entities (never deletes existing boards/tickets)
     await seed_initial_data()
+    # Keep a rolling backup whenever the live DB has real ticket data.
+    try:
+        snapshot_live_database(reason="startup")
+    except Exception:
+        logger.exception("Failed to snapshot live database on startup")
     # Start background event subscriber service
     await subscription_service.start()
     yield

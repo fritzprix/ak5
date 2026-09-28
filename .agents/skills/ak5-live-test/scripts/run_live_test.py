@@ -59,8 +59,11 @@ class LiveTestRunner:
         self.verbose = verbose
         self.keep_artifacts = keep_artifacts
         self.sandbox_dir = Path(tempfile.mkdtemp(prefix="ak5_live_test_"))
-        self.db_path = self.sandbox_dir / "ak5_test.db"
-        self.jwt_secret_path = self.sandbox_dir / "jwt_secret"
+        # Canonical store under AK5_DATA_DIR — never a divergent DATABASE_URL file.
+        self.data_dir = self.sandbox_dir / "data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = self.data_dir / "ak5.db"
+        self.jwt_secret_path = self.data_dir / "jwt_secret"
         self.shared_secret = "test-identify-secret-live-2026"
         self.web_user = "admin"
         self.web_pass = "ak5livepass123"
@@ -93,7 +96,9 @@ class LiveTestRunner:
 
     def spawn_server(self, extra_env: dict[str, str], use_web: bool = True) -> subprocess.Popen[str]:
         env = os.environ.copy()
-        env["DATABASE_URL"] = f"sqlite+aiosqlite:///{self.db_path}"
+        env["AK5_DATA_DIR"] = str(self.data_dir)
+        # Keep URL aligned with canonical path (or omit); never point at a second file.
+        env["DATABASE_URL"] = f"sqlite+aiosqlite:///{self.db_path.as_posix()}"
         env["AK5_JWT_SECRET_FILE"] = str(self.jwt_secret_path)
         env["HOME"] = str(self.sandbox_dir)  # Sandbox user home for CLI sessions
         env.update(extra_env)

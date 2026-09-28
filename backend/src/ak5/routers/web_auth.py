@@ -12,10 +12,12 @@ from ak5.web_auth import (
     SESSION_MAX_AGE_SECONDS,
     check_rate_limit,
     client_ip_from_headers,
-    compute_session_hash,
+    credentials_match,
     get_web_auth_config,
+    issue_session_token,
     record_failed_attempt,
     record_successful_attempt,
+    revoke_session_token,
     verify_session_cookie,
 )
 
@@ -53,13 +55,13 @@ async def web_login(body: LoginBody, request: Request, response: Response) -> di
     if not cfg.enabled:
         return {"success": True, "message": "Auth disabled"}
 
-    if body.username != cfg.username or body.password != cfg.password:
+    if not credentials_match(body.username, body.password):
         record_failed_attempt(ip)
         response.status_code = 401
         return {"error": "Invalid username or password"}
 
     record_successful_attempt(ip)
-    token = compute_session_hash(cfg.username, cfg.password)
+    token = issue_session_token()
     secure = _is_secure(request)
     response.set_cookie(
         key=COOKIE_NAME,
@@ -75,6 +77,7 @@ async def web_login(body: LoginBody, request: Request, response: Response) -> di
 
 @router.post("/logout")
 async def web_logout(request: Request, response: Response) -> dict[str, bool]:
+    revoke_session_token(request.cookies.get(COOKIE_NAME))
     secure = _is_secure(request)
     response.set_cookie(
         key=COOKIE_NAME,

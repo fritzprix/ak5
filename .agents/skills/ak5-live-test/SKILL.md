@@ -60,7 +60,7 @@ The test runner tests the system across three distinct phases in clean sandboxes
 
 The test runner operates with zero side-effects on the host workspace:
 
-1. **Ephemeral Database**: Uses `DATABASE_URL=sqlite+aiosqlite:////tmp/ak5_live_test_.../ak5_test.db`. Never touches `ak5.db`.
+1. **Ephemeral Database**: Sets `AK5_DATA_DIR` to a sandbox and opens that dir's `ak5.db` (aligned `DATABASE_URL`). Never touches the host global store.
 2. **Isolated JWT Key**: Uses `AK5_JWT_SECRET_FILE=/tmp/ak5_live_test_.../jwt_secret`. Never overwrites `.ak5/jwt_secret`.
 3. **Sandboxed CLI Environment**: Sets `HOME` to the temporary directory so CLI credentials (`.ak5/sessions/*.json`, `.ak5/identity/*.json`) are created in the sandbox and removed immediately after the test.
 4. **Dynamic Port Allocation**: Binds to a randomly assigned available OS port (`127.0.0.1:0`), preventing conflicts with currently running development servers.

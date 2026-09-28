@@ -3,7 +3,7 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_device_auth_full_flow(client: AsyncClient, auth_headers):
+async def test_device_auth_full_flow(client: AsyncClient, anon_client: AsyncClient, auth_headers):
     # 1. Request device code
     req_payload = {
         "actor_id": "test_agent_devflow",
@@ -37,7 +37,7 @@ async def test_device_auth_full_flow(client: AsyncClient, auth_headers):
     assert "proj-core-engine" in view_data["target_board_ids"]
 
     # 4. Unauthenticated approval must be blocked (HTTP 401)
-    unauth_appr = await client.post(
+    unauth_appr = await anon_client.post(
         "/auth/device/approve",
         json={"user_code": user_code, "approved": True, "board_ids": ["proj-core-engine"]},
     )

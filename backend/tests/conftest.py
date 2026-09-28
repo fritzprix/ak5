@@ -1,18 +1,48 @@
+"""Pytest fixtures.
+
+CRITICAL: env isolation MUST happen before any ``ak5.*`` import. Otherwise
+``ak5.database.engine`` binds to the real ``~/.local/share/ak5/ak5.db`` and
+tests like ``ak5 reset --yes`` wipe production boards.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
-import ak5.models  # noqa: F401
-import pytest
-import pytest_asyncio
-from ak5.database import get_db
-from ak5.main import app
-from ak5.models.base import Base
-from ak5.routers.auth import create_access_token
-from ak5.security import reset_secret_caches
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+# --- Isolate production DB BEFORE importing ak5 (order matters) ---
+_TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="ak5_pytest_data_"))
+os.environ["AK5_DATA_DIR"] = str(_TEST_DATA_DIR)
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(_TEST_DATA_DIR / 'ak5.db').as_posix()}"
+os.environ.setdefault("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
+os.environ.pop("AK5_IDENTIFY_SECRET", None)
+os.environ.pop("IDENTIFY_SECRET", None)
 
-# Use in-memory SQLite database for tests
+import ak5.models  # noqa: E402, F401
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from ak5.config import settings  # noqa: E402
+from ak5.database import get_db  # noqa: E402
+from ak5.main import app  # noqa: E402
+from ak5.models.base import Base  # noqa: E402
+from ak5.routers.auth import create_access_token  # noqa: E402
+from ak5.security import reset_secret_caches  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import event  # noqa: E402
+from sqlalchemy.engine import make_url  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+
+# Guard: fail collection if we somehow still point at the user global store.
+_db_path = make_url(settings.DATABASE_URL).database or ""
+if "/.local/share/ak5/" in _db_path.replace("\\", "/"):
+    raise RuntimeError(
+        f"Refusing to run tests against production DB: {settings.DATABASE_URL}. "
+        "conftest isolation failed."
+    )
+
+# Use in-memory SQLite database for HTTP API tests (override get_db).
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 test_engine = create_async_engine(
@@ -46,6 +76,9 @@ def _isolate_runtime_secrets(monkeypatch):
     monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("AK5_JWT_SECRET_FILE", raising=False)
+    # Keep AK5_DATA_DIR / DATABASE_URL on the isolated temp dir for the whole session.
+    monkeypatch.setenv("AK5_DATA_DIR", str(_TEST_DATA_DIR))
+    monkeypatch.setenv("DATABASE_URL", os.environ["DATABASE_URL"])
     reset_secret_caches()
     yield
     reset_secret_caches()
@@ -109,7 +142,14 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
 
         cols = [
             Column(column_id="col_todo", board_id="proj-core-engine", name="To Do", stage="open", position=1, wip_limit=0),
-            Column(column_id="col_in_progress", board_id="proj-core-engine", name="In Progress", stage="in_progress", position=2, wip_limit=3),
+            Column(
+                column_id="col_in_progress",
+                board_id="proj-core-engine",
+                name="In Progress",
+                stage="in_progress",
+                position=2,
+                wip_limit=3,
+            ),
             Column(column_id="col_review", board_id="proj-core-engine", name="Review", stage="review", position=3, wip_limit=3),
             Column(column_id="col_done", board_id="proj-core-engine", name="Done", stage="done", position=4, wip_limit=0),
         ]
@@ -127,6 +167,20 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
 
 @pytest_asyncio.fixture(scope="function")
 async def client(test_db: AsyncSession) -> AsyncGenerator[AsyncClient]:
+    """Authenticated as user_pm by default (read endpoints now require JWT)."""
+    transport = ASGITransport(app=app)
+    token = create_access_token("user_pm", "human")
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture(scope="function")
+async def anon_client(test_db: AsyncSession) -> AsyncGenerator[AsyncClient]:
+    """Unauthenticated client for auth-gate tests."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
@@ -137,4 +191,5 @@ def auth_headers():
     def _headers(actor_id: str = "user_pm", actor_type: str = "human") -> dict[str, str]:
         token = create_access_token(actor_id, actor_type)
         return {"Authorization": f"Bearer {token}"}
+
     return _headers

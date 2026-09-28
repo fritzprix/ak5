@@ -62,12 +62,36 @@ def reset_command(yes: bool, keep_boards: bool, clear_sessions: bool) -> None:
     """
     # 1. Non-interactive guard: require TTY if --yes not provided (protect against background agents)
     is_test = bool(os.environ.get("PYTEST_CURRENT_TEST"))
-    if not yes and not is_test and not sys.stdin.isatty():
+    is_tty = bool(sys.stdin.isatty())
+    if not yes and not is_test and not is_tty:
         console.print(
             "[bold red]✗ Error: 'ak5 reset' requires an interactive terminal (TTY).[/bold red]\n"
             "[yellow]Automated agents cannot run reset without interactive confirmation.[/yellow]"
         )
         raise SystemExit(1)
+
+    from ak5.config import settings
+    from ak5.paths import DatabaseConflictError
+    from ak5.services.db_safety import (
+        DatabaseWipeError,
+        destructive_reset_allowed,
+        mark_skip_auto_restore,
+        prepare_database_for_use,
+        snapshot_live_database,
+    )
+
+    if not is_test:
+        allowed, reason = destructive_reset_allowed(yes_flag=yes, is_tty=is_tty)
+        if not allowed:
+            console.print(f"[bold red]✗ {reason}[/bold red]")
+            raise SystemExit(1)
+
+    # Resolve dual-DB before opening the engine — refuse ambiguous stores.
+    try:
+        prepare_database_for_use(settings.DATABASE_URL)
+    except (DatabaseConflictError, DatabaseWipeError) as exc:
+        console.print(f"[bold red]✗ Database conflict[/bold red]\n{exc}")
+        raise SystemExit(1) from exc
 
     # 2. Interactive confirmation prompt
     if not yes:
@@ -85,12 +109,21 @@ def reset_command(yes: bool, keep_boards: bool, clear_sessions: bool) -> None:
             console.print("[yellow]Reset cancelled.[/yellow]")
             return
 
+    # Snapshot before wipe so forensics can recover (auto-restore is suppressed below).
+    snap = snapshot_live_database(reason="pre-reset")
+    if snap:
+        console.print(f"[dim]Pre-reset snapshot: {snap}[/dim]")
+
     console.print("[cyan]▶ Resetting AK5 Kanban data...[/cyan]")
     try:
         counts = _run_coroutine(reset_kanban_data(keep_boards=keep_boards, clear_sessions=clear_sessions))
     except Exception as e:
         console.print(f"[bold red]✗ Reset failed:[/bold red] {e}")
         raise SystemExit(1) from e
+
+    # Prevent next startup from undoing this intentional empty seed via backups/.
+    marker = mark_skip_auto_restore()
+    console.print(f"[dim]Auto-restore suppressed until real ticket data returns ({marker.name})[/dim]")
 
     console.print(
         Panel(

@@ -9,7 +9,7 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_subscriptions_api_crud(client: AsyncClient, auth_headers):
+async def test_subscriptions_api_crud(client: AsyncClient, anon_client: AsyncClient, auth_headers):
     # 0. Unauthenticated access must fail with 401 (Prevent RCE)
     create_payload = {
         "board_id": "proj-core-engine",
@@ -18,8 +18,26 @@ async def test_subscriptions_api_crud(client: AsyncClient, auth_headers):
         "for_agent": "agent-worker",
         "debounce_seconds": 1.5,
     }
-    unauth_res = await client.post("/api/v1/subscriptions", json=create_payload)
+    unauth_res = await anon_client.post("/api/v1/subscriptions", json=create_payload)
     assert unauth_res.status_code == 401
+
+    # Agent JWT must not register shell hooks by default (C-3)
+    agent_headers = auth_headers("agent_image_worker", "agent")
+    agent_denied = await client.post("/api/v1/subscriptions", json=create_payload, headers=agent_headers)
+    assert agent_denied.status_code == 403
+    assert "AK5_ALLOW_AGENT_HOOKS" in agent_denied.json()["detail"]
+
+    # Opt-in: agents may register hooks when explicitly allowed
+    import os
+
+    os.environ["AK5_ALLOW_AGENT_HOOKS"] = "1"
+    try:
+        agent_ok = await client.post("/api/v1/subscriptions", json=create_payload, headers=agent_headers)
+        assert agent_ok.status_code == 201, agent_ok.text
+        agent_sub_id = agent_ok.json()["subscription_id"]
+        await client.delete(f"/api/v1/subscriptions/{agent_sub_id}", headers=agent_headers)
+    finally:
+        os.environ.pop("AK5_ALLOW_AGENT_HOOKS", None)
 
     headers = auth_headers("user_pm", "human")
 
