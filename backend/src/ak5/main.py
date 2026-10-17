@@ -4,6 +4,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -81,7 +82,8 @@ async def request_validation_error_handler(
     _request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     """Map FastAPI/Pydantic 422 into the contracts error envelope (cli.md §3)."""
-    errors: list[Any] = list(exc.errors())
+    # jsonable_encoder: pydantic validators may put Exception in ctx.error
+    errors: list[Any] = jsonable_encoder(list(exc.errors()))
     return JSONResponse(
         status_code=HTTP_STATUS[ErrorCode.PAYLOAD_INVALID],
         content=error_body(
