@@ -93,7 +93,6 @@ def ticket_group() -> None:
     type=click.Choice(["low", "medium", "high", "urgent"]),
     default="medium",
 )
-@click.option("--assign", "-a", "assigned_to", default=None, help="Assignee Actor ID")
 @click.option("--labels", "-l", default="", help="Comma-separated labels")
 @click.option("--due", default=None, help="Due date (ISO)")
 @click.option("--column", "-c", "column_name", default=None, help="Ignored (compat); stage via workflow")
@@ -107,12 +106,14 @@ def create_ticket_cmd(
     spec: str | None,
     criteria_raw: str | None,
     priority: str,
-    assigned_to: str | None,
     labels: str,
     due: str | None,
     column_name: str | None,
 ) -> None:
-    """Create a ticket. Default destination is inbox (T1); ``--board`` → T2."""
+    """Create a ticket. Default destination is inbox (T1); ``--board`` → T2.
+
+    Assignee is claim-derived only (no create-time assignee flag).
+    """
     _ = column_name
     json_mode = _jm(ctx)
     resolved_title = title_opt or title
@@ -129,8 +130,6 @@ def create_ticket_cmd(
         payload["description"] = description
     if due:
         payload["due_date"] = due
-    if assigned_to:
-        payload["assigned_to"] = assigned_to
 
     if board_id:
         payload["board_id"] = board_id

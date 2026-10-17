@@ -73,7 +73,6 @@ async def run_collaboration_simulation(api_url: str) -> None:
                 "board_id": board_id,
                 "column_id": col_map["open"],
                 "priority": "high",
-                "assigned_to": "agent_orchestrator",
                 "labels": ["avatar", "optimization"],
             },
             headers={"Authorization": f"Bearer {pm_token}"},
