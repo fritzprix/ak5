@@ -5,7 +5,7 @@ Status: Draft · 2026-10-17 · 관련: [workflow.md](workflow.md), [events.md](e
 ## 0. 원칙
 
 1. **단일 entry point `ak5`**: server, client, daemon을 한 명령으로 제공한다. 묶이는 범위는 사용자 경험까지이며, 코드·의존성·프로세스는 분리한다.
-2. **REST가 정본**: CLI와 MCP는 같은 동사 집합의 얇은 어댑터다.
+2. **REST가 정본**: CLI와 MCP는 같은 동사 집합의 얇은 어댑터다. 단 **MCP는 agent 전용 표면**이다 — LLM이 조작하는 인터페이스이므로 사람 전용 동사(human verdict T15/T16, `reopen`, `reroute`, `needs_human`/`escalation` 해제, T1 `create`)는 MCP tool로 노출하지 않는다. 사람의 최종 승인은 CLI(user principal) 또는 Web UI로만 한다.
 3. **루프는 외부**: CLI는 외부 루프가 호출하는 원자적 명령 집합이다. 루프 러너를 제공하지 않는다.
 4. **평평한 동사**: role별 명령 그룹을 만들지 않는다. 권한은 서버가 role로 강제한다.
 
