@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.contracts.stages import STANDARD_STAGES, Stage
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.models.board import Board
@@ -31,6 +32,8 @@ from ak5.schemas.ticket import TicketOut
 from ak5.seed import INBOX_BOARD_ID
 from ak5.services.templates import get_template, template_column_dicts
 
+_STANDARD_STAGE_VALUES = frozenset(s.value for s in STANDARD_STAGES)
+
 router = APIRouter(prefix="/boards", tags=["boards"])
 
 
@@ -38,6 +41,13 @@ def _system_board_response(message: str) -> JSONResponse:
     return JSONResponse(
         status_code=HTTP_STATUS[ErrorCode.SYSTEM_BOARD],
         content=error_body(ErrorCode.SYSTEM_BOARD, message),
+    )
+
+
+def _payload_invalid_response(message: str, *, details: dict | None = None) -> JSONResponse:
+    return JSONResponse(
+        status_code=HTTP_STATUS[ErrorCode.PAYLOAD_INVALID],
+        content=error_body(ErrorCode.PAYLOAD_INVALID, message, details=details or {}),
     )
 
 
@@ -306,25 +316,6 @@ async def update_board(
     return _to_board_out(board)
 
 
-@router.delete("/{board_id}", response_model=None)
-async def delete_board(
-    board_id: str,
-    current_actor: Annotated[Actor, Depends(get_current_actor)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, str] | JSONResponse:
-    """Delete a board. Inbox cannot be deleted (SYSTEM_BOARD)."""
-    board = await db.get(Board, board_id)
-    if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
-    if _is_inbox(board):
-        return _system_board_response("Cannot delete the system inbox board")
-
-    await _assert_board_admin(board, current_actor, db)
-    await db.delete(board)
-    await db.commit()
-    return {"success": "true", "board_id": board_id}
-
-
 @router.post("/{board_id}/columns", response_model=None)
 async def add_column(
     board_id: str,
@@ -339,6 +330,13 @@ async def add_column(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
     if _is_inbox(board):
         return _system_board_response("Cannot add columns to the system inbox board")
+
+    # Invariant 7: standard boards only host STANDARD_STAGES (not unclassified).
+    if req.stage == Stage.UNCLASSIFIED.value or req.stage not in _STANDARD_STAGE_VALUES:
+        return _payload_invalid_response(
+            f"Standard boards only allow stages: {', '.join(sorted(_STANDARD_STAGE_VALUES))}",
+            details={"stage": req.stage, "allowed": sorted(_STANDARD_STAGE_VALUES)},
+        )
 
     existing_col = await db.get(Column, req.column_id)
     if existing_col:

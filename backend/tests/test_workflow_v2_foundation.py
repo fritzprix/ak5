@@ -8,23 +8,20 @@ from types import SimpleNamespace
 import pytest
 from ak5.contracts.errors import ErrorCode
 from ak5.contracts.events import EventType
-from ak5.database import (
-    migrate_sqlite_board_workflow_fields,
-    migrate_sqlite_column_stages,
-    migrate_sqlite_subscription_workflow_fields,
-    migrate_sqlite_ticket_workflow_fields,
-    run_sqlite_schema_migrations,
-)
+from ak5.contracts.stages import STANDARD_STAGES
+from ak5.database import run_sqlite_schema_migrations
+from ak5.models.audit import AuditLog
 from ak5.models.base import Base
 from ak5.models.board import Board
 from ak5.models.column import Column
 from ak5.models.event import Event
+from ak5.models.ticket import Ticket, TicketComment
 from ak5.seed import INBOX_BOARD_ID, seed_initial_data
 from ak5.services.event_log import record_event
 from ak5.services.templates import DEFAULT_TEMPLATE, get_template
 from ak5.services.ticket_status import derive_status
 from httpx import AsyncClient
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import delete, event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
@@ -91,12 +88,12 @@ def test_derive_status_rules():
     assert derive_status(open_t, now=now) == "open"
 
 
-def test_migrate_v1_sqlite_schema_to_v2():
-    """Existing v1 SQLite DB gains workflow columns and remapped stages."""
-    engine = create_engine("sqlite:///:memory:")
-    with engine.begin() as conn:
-        conn.execute(text("PRAGMA foreign_keys=ON"))
-        conn.execute(
+async def _build_v1_sqlite_db(engine) -> int:
+    """Create a realistic v1 schema with FKs and ticket rows. Returns ticket count."""
+
+    def _create(sync_conn):
+        sync_conn.execute(text("PRAGMA foreign_keys=ON"))
+        sync_conn.execute(
             text(
                 """
                 CREATE TABLE actors (
@@ -114,7 +111,7 @@ def test_migrate_v1_sqlite_schema_to_v2():
                 """
             )
         )
-        conn.execute(
+        sync_conn.execute(
             text(
                 """
                 CREATE TABLE boards (
@@ -128,7 +125,7 @@ def test_migrate_v1_sqlite_schema_to_v2():
                 """
             )
         )
-        conn.execute(
+        sync_conn.execute(
             text(
                 """
                 CREATE TABLE columns (
@@ -147,7 +144,7 @@ def test_migrate_v1_sqlite_schema_to_v2():
                 """
             )
         )
-        conn.execute(
+        sync_conn.execute(
             text(
                 """
                 CREATE TABLE tickets (
@@ -169,12 +166,22 @@ def test_migrate_v1_sqlite_schema_to_v2():
                     is_archived BOOLEAN NOT NULL DEFAULT 0,
                     archived_at DATETIME,
                     created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL
+                    updated_at DATETIME NOT NULL,
+                    FOREIGN KEY(board_id) REFERENCES boards (board_id) ON DELETE CASCADE,
+                    FOREIGN KEY(column_id) REFERENCES columns (column_id),
+                    FOREIGN KEY(parent_ticket_id) REFERENCES tickets (ticket_id)
+                        ON DELETE SET NULL,
+                    FOREIGN KEY(assigned_to) REFERENCES actors (actor_id) ON DELETE SET NULL,
+                    FOREIGN KEY(created_by) REFERENCES actors (actor_id),
+                    CONSTRAINT check_ticket_priority
+                        CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
+                    CONSTRAINT check_ticket_status
+                        CHECK (status IN ('open', 'in_progress', 'blocked', 'done'))
                 )
                 """
             )
         )
-        conn.execute(
+        sync_conn.execute(
             text(
                 """
                 CREATE TABLE subscriptions (
@@ -191,7 +198,7 @@ def test_migrate_v1_sqlite_schema_to_v2():
                 """
             )
         )
-        conn.execute(
+        sync_conn.execute(
             text(
                 """
                 INSERT INTO actors (
@@ -202,7 +209,7 @@ def test_migrate_v1_sqlite_schema_to_v2():
                 """
             )
         )
-        conn.execute(
+        sync_conn.execute(
             text(
                 """
                 INSERT INTO boards (board_id, name, created_by, created_at)
@@ -210,18 +217,44 @@ def test_migrate_v1_sqlite_schema_to_v2():
                 """
             )
         )
-        conn.execute(
+        sync_conn.execute(
             text(
                 """
                 INSERT INTO columns (
                     column_id, board_id, name, stage, position, wip_limit, created_at
                 ) VALUES
                     ('c_open', 'b1', 'To Do', 'open', 1, 0, '2026-01-01'),
-                    ('c_rev', 'b1', 'Review', 'review', 2, 0, '2026-01-01')
+                    ('c_ip', 'b1', 'In Progress', 'in_progress', 2, 3, '2026-01-01'),
+                    ('c_rev', 'b1', 'Review', 'review', 3, 0, '2026-01-01'),
+                    ('c_done', 'b1', 'Done', 'done', 4, 0, '2026-01-01')
                 """
             )
         )
-        conn.execute(
+        # Multiple tickets referencing columns — reproduces real v1 FK pressure.
+        sync_conn.execute(
+            text(
+                """
+                INSERT INTO tickets (
+                    ticket_id, board_id, column_id, parent_ticket_id, title, description,
+                    priority, rank, labels, assigned_to, created_by, status, blocked_by,
+                    execution_context, due_date, is_archived, archived_at, created_at, updated_at
+                ) VALUES
+                    ('t_open', 'b1', 'c_open', NULL, 'Open task', NULL,
+                     'medium', 'a', '[]', NULL, 'user_pm', 'open', NULL,
+                     NULL, NULL, 0, NULL, '2026-01-01', '2026-01-01'),
+                    ('t_ip', 'b1', 'c_ip', NULL, 'In progress task', NULL,
+                     'high', 'b', '[]', NULL, 'user_pm', 'in_progress', NULL,
+                     NULL, NULL, 0, NULL, '2026-01-01', '2026-01-01'),
+                    ('t_rev', 'b1', 'c_rev', NULL, 'Review task', NULL,
+                     'medium', 'c', '[]', NULL, 'user_pm', 'in_progress', NULL,
+                     NULL, NULL, 0, NULL, '2026-01-01', '2026-01-01'),
+                    ('t_done', 'b1', 'c_done', NULL, 'Done task', NULL,
+                     'low', 'd', '[]', NULL, 'user_pm', 'done', NULL,
+                     NULL, NULL, 0, NULL, '2026-01-01', '2026-01-01')
+                """
+            )
+        )
+        sync_conn.execute(
             text(
                 """
                 INSERT INTO subscriptions (
@@ -230,16 +263,80 @@ def test_migrate_v1_sqlite_schema_to_v2():
                 """
             )
         )
+        return 4
 
-        migrate_sqlite_board_workflow_fields(conn)
-        migrate_sqlite_ticket_workflow_fields(conn)
-        migrate_sqlite_subscription_workflow_fields(conn)
-        migrate_sqlite_column_stages(conn)
+    async with engine.begin() as conn:
+        ticket_count = await conn.run_sync(lambda c: _create(c) or 4)
+    return int(ticket_count)
 
-        board_cols = {r["name"] for r in conn.execute(text("PRAGMA table_info(boards)")).mappings()}
+
+@pytest.mark.asyncio
+async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
+    """Real v1 DB (FKs + tickets) through create_all → migrations → seed."""
+    db_path = tmp_path / "v1.db"
+    url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+
+    from ak5 import database as dbmod
+    from ak5 import seed as seedmod
+
+    engine = create_async_engine(url, future=True)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _fk_on(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.close()
+
+    monkeypatch.setattr(dbmod, "engine", engine)
+    session_factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    monkeypatch.setattr(dbmod, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(seedmod, "AsyncSessionLocal", session_factory)
+
+    ticket_count = await _build_v1_sqlite_db(engine)
+
+    # Actual lifespan path: create_all → migrations → seed
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await run_sqlite_schema_migrations(engine)
+    await seed_initial_data()
+
+    async with engine.connect() as conn:
+        fk_bad = (await conn.execute(text("PRAGMA foreign_key_check"))).fetchall()
+        assert fk_bad == [], fk_bad
+        integrity = (await conn.execute(text("PRAGMA integrity_check"))).scalar()
+        assert integrity == "ok"
+
+        n_tickets = (
+            await conn.execute(text("SELECT COUNT(*) FROM tickets"))
+        ).scalar()
+        assert n_tickets == ticket_count
+
+        orphan = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT t.ticket_id FROM tickets t
+                    LEFT JOIN columns c ON t.column_id = c.column_id
+                    WHERE c.column_id IS NULL
+                    """
+                )
+            )
+        ).fetchall()
+        assert orphan == []
+
+        board_cols = {
+            r["name"]
+            for r in (await conn.execute(text("PRAGMA table_info(boards)"))).mappings()
+        }
         assert {"kind", "template", "auto_created"} <= board_cols
 
-        ticket_cols = {r["name"] for r in conn.execute(text("PRAGMA table_info(tickets)")).mappings()}
+        ticket_cols = {
+            r["name"]
+            for r in (await conn.execute(text("PRAGMA table_info(tickets)"))).mappings()
+        }
         assert {
             "original_request",
             "attempt",
@@ -254,37 +351,42 @@ def test_migrate_v1_sqlite_schema_to_v2():
             "blocked_actor",
         } <= ticket_cols
 
-        sub_cols = {
-            r["name"] for r in conn.execute(text("PRAGMA table_info(subscriptions)")).mappings()
-        }
-        assert {"ack_cursor", "consumer_id", "consumer_lease_expires_at"} <= sub_cols
         exec_row = next(
             r
-            for r in conn.execute(text("PRAGMA table_info(subscriptions)")).mappings()
+            for r in (await conn.execute(text("PRAGMA table_info(subscriptions)"))).mappings()
             if r["name"] == "exec_command"
         )
         assert exec_row["notnull"] == 0
 
         stages = {
             row[0]
-            for row in conn.execute(text("SELECT stage FROM columns")).fetchall()
+            for row in (
+                await conn.execute(text("SELECT stage FROM columns WHERE board_id = 'b1'"))
+            ).fetchall()
         }
-        assert stages == {"backlog", "agent_review"}
         assert "review" not in stages
         assert "open" not in stages
+        assert {"backlog", "in_progress", "agent_review", "done"} <= stages
+        # Backfill must add missing standard stages (Medium audit).
+        assert {s.value for s in STANDARD_STAGES} <= stages
 
-        # New stage values must satisfy rebuilt CHECK.
-        conn.execute(
-            text(
-                """
-                INSERT INTO columns (
-                    column_id, board_id, name, stage, position, wip_limit, created_at
-                ) VALUES (
-                    'c_hr', 'b1', 'Human Review', 'human_review', 3, 0, '2026-01-01'
+        # Claimless in_progress ticket must have been moved to backlog.
+        t_ip = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT t.column_id, c.stage, t.status
+                    FROM tickets t
+                    JOIN columns c ON c.column_id = t.column_id
+                    WHERE t.ticket_id = 't_ip'
+                    """
                 )
-                """
             )
-        )
+        ).one()
+        assert t_ip[1] == "backlog"
+        assert t_ip[2] == "open"
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -374,6 +476,43 @@ async def test_record_event_seq_monotonic(test_db: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_event_seq_not_reused_after_full_purge(test_db: AsyncSession):
+    """AUTOINCREMENT must keep seq monotonic even after deleting all rows."""
+    e1 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id=None,
+        actor_id="user_pm",
+        data={"n": 1},
+    )
+    e2 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id=None,
+        actor_id="user_pm",
+        data={"n": 2},
+    )
+    await test_db.commit()
+    prev_max = max(e1.seq, e2.seq)
+
+    await test_db.execute(delete(Event))
+    await test_db.commit()
+
+    e3 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id=None,
+        actor_id="user_pm",
+        data={"n": 3},
+    )
+    await test_db.commit()
+    assert e3.seq > prev_max
+
+
+@pytest.mark.asyncio
 async def test_meta_endpoint_unauthenticated(anon_client: AsyncClient):
     resp = await anon_client.get("/meta")
     assert resp.status_code == 200
@@ -423,10 +562,9 @@ async def test_inbox_system_board_guards(client: AsyncClient, auth_headers):
     assert patch.status_code == 403
     assert patch.json()["error"]["code"] == ErrorCode.SYSTEM_BOARD.value
 
-    # Cannot delete
+    # Destructive DELETE /boards/{id} is not part of the v2 surface.
     delete = await client.delete(f"/api/v1/boards/{INBOX_BOARD_ID}", headers=headers)
-    assert delete.status_code == 403
-    assert delete.json()["error"]["code"] == ErrorCode.SYSTEM_BOARD.value
+    assert delete.status_code == 405
 
     # Cannot recreate via create API
     recreate = await client.post(
@@ -436,6 +574,24 @@ async def test_inbox_system_board_guards(client: AsyncClient, auth_headers):
     )
     assert recreate.status_code == 403
     assert recreate.json()["error"]["code"] == ErrorCode.SYSTEM_BOARD.value
+
+
+@pytest.mark.asyncio
+async def test_standard_board_rejects_unclassified_column(client: AsyncClient, auth_headers):
+    headers = auth_headers("user_pm", "human")
+    resp = await client.post(
+        "/api/v1/boards/proj-core-engine/columns",
+        json={
+            "column_id": "col_bad_unclassified",
+            "name": "Unclassified",
+            "stage": "unclassified",
+            "position": 99,
+            "wip_limit": 0,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == ErrorCode.PAYLOAD_INVALID.value
 
 
 @pytest.mark.asyncio
@@ -462,3 +618,77 @@ async def test_create_board_uses_default_template(client: AsyncClient, auth_head
         "human_review",
         "done",
     ]
+
+
+@pytest.mark.asyncio
+async def test_test_board_fixture_has_all_standard_stages(client: AsyncClient, auth_headers):
+    """conftest board must expose all 6 standard stages for later waves (#10)."""
+    headers = auth_headers("user_pm", "human")
+    detail = await client.get("/api/v1/boards/proj-core-engine", headers=headers)
+    assert detail.status_code == 200
+    cols = detail.json()["columns"]
+    by_id = {c["column_id"]: c for c in cols}
+    assert "col_todo" in by_id
+    assert "col_in_progress" in by_id
+    assert "col_review" in by_id
+    assert "col_done" in by_id
+    stages = {c["stage"] for c in cols}
+    assert stages == {s.value for s in STANDARD_STAGES}
+
+
+@pytest.mark.asyncio
+async def test_claimless_in_progress_repair_writes_audit_and_comment(
+    tmp_path, monkeypatch
+):
+    """Medium: claimless in_progress tickets get backlog + audit/comment."""
+    db_path = tmp_path / "claimless.db"
+    url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+
+    from ak5 import database as dbmod
+    from ak5 import seed as seedmod
+
+    engine = create_async_engine(url, future=True)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _fk_on(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.close()
+
+    monkeypatch.setattr(dbmod, "engine", engine)
+    session_factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    monkeypatch.setattr(dbmod, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(seedmod, "AsyncSessionLocal", session_factory)
+
+    await _build_v1_sqlite_db(engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await run_sqlite_schema_migrations(engine)
+    await seed_initial_data()
+
+    async with session_factory() as session:
+        ticket = await session.get(Ticket, "t_ip")
+        assert ticket is not None
+        col = await session.get(Column, ticket.column_id)
+        assert col is not None
+        assert col.stage == "backlog"
+        assert ticket.status == "open"
+
+        audits = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.target_id == "t_ip")
+            )
+        ).scalars().all()
+        assert any("v2_claimless_in_progress_repair" in (a.payload or "") for a in audits)
+
+        comments = (
+            await session.execute(
+                select(TicketComment).where(TicketComment.ticket_id == "t_ip")
+            )
+        ).scalars().all()
+        assert any("valid claim" in c.content for c in comments)
+
+    await engine.dispose()

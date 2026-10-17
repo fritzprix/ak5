@@ -15,6 +15,9 @@ class Event(Base):
         Index("idx_events_board_seq", "board_id", "seq"),
         Index("idx_events_type", "type"),
         Index("idx_events_created", "created_at"),
+        # Without AUTOINCREMENT, SQLite may reuse rowids after a full purge,
+        # causing cursors to silently skip events (events.md §1).
+        {"sqlite_autoincrement": True},
     )
 
     seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

@@ -153,6 +153,9 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
         ]
         session.add_all(members)
 
+        # Full default-template stage set (workflow.md §2.2). Keep legacy
+        # column_ids (col_todo / col_in_progress / col_review / col_done) for
+        # existing test compatibility.
         cols = [
             Column(
                 column_id="col_todo",
@@ -179,11 +182,27 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
                 wip_limit=3,
             ),
             Column(
+                column_id="col_postmortem_pending",
+                board_id="proj-core-engine",
+                name="Postmortem Pending",
+                stage="postmortem_pending",
+                position=4,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="col_human_review",
+                board_id="proj-core-engine",
+                name="Human Review",
+                stage="human_review",
+                position=5,
+                wip_limit=0,
+            ),
+            Column(
                 column_id="col_done",
                 board_id="proj-core-engine",
                 name="Done",
                 stage="done",
-                position=4,
+                position=6,
                 wip_limit=0,
             ),
             Column(
