@@ -30,7 +30,11 @@ import { buildAgentSetupMarkdown } from "@/lib/agentSetup";
 import { decideLiveRefresh, shouldFlushDeferredRefresh } from "@/lib/liveRefresh";
 import {
   buildTicketIndex,
+  collectHumanBlockedTickets,
+  evaluateBoardDrop,
+  findTicketColumnId,
   isEmptyColumnSlotId,
+  isInboxBoard,
   resolveDropLabel,
   resolveTargetColumnId,
   resolveTicketTitle,
@@ -39,9 +43,19 @@ import { Board, Column, Ticket, Actor } from "@/lib/types";
 import { KanbanColumn } from "./KanbanColumn";
 import { TicketCard } from "./TicketCard";
 import { TicketDetailDrawer } from "./TicketDetailDrawer";
+import { BlockedQueue } from "./BlockedQueue";
 import { AgentFleetStrip } from "../actor/AgentFleetStrip";
 import { Dialog } from "../ui/Dialog";
-import { Plus, RefreshCw, Radio, ClipboardCopy, Check, Terminal, ShieldCheck } from "lucide-react";
+import { Plus, RefreshCw, Radio, ClipboardCopy, Check, Terminal, ShieldCheck, Inbox } from "lucide-react";
+
+type PendingStageMove = {
+  ticketId: string;
+  targetColumnId: string;
+  prevId: string | null;
+  nextId: string | null;
+  command: string;
+  prompt: string;
+};
 
 interface KanbanBoardProps {
   boardId: string;
@@ -69,6 +83,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoadingBoard, setIsLoadingBoard] = useState(true);
+  const [pendingStageMove, setPendingStageMove] = useState<PendingStageMove | null>(null);
+  const [stageMoveReason, setStageMoveReason] = useState("");
+  const [stageMoveBusy, setStageMoveBusy] = useState(false);
   const copiedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pauseLiveRefreshRef = useRef(false);
@@ -102,7 +119,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     Boolean(delegatingTicket) ||
     isAgentSetupOpen ||
     Boolean(detailTicket) ||
-    isEnrollOpen;
+    isEnrollOpen ||
+    Boolean(pendingStageMove);
 
   useEffect(() => {
     boardIdRef.current = boardId;
@@ -278,6 +296,18 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     }
   };
 
+  const applyMove = async (
+    ticketId: string,
+    targetColumnId: string,
+    prevId: string | null,
+    nextId: string | null,
+    reason?: string | null
+  ) => {
+    setActionError(null);
+    await moveTicket(ticketId, targetColumnId, prevId, nextId, reason);
+    await reloadBoard({ silent: true });
+  };
+
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveTicket(null);
@@ -289,6 +319,15 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     const overId = over.id as string;
     const targetColumnId = resolveTargetColumnId(overId, board);
     if (!targetColumnId) return;
+
+    const sourceColumnId = findTicketColumnId(board, activeId);
+    if (!sourceColumnId) return;
+
+    const evaluation = evaluateBoardDrop(board, sourceColumnId, targetColumnId);
+    if (!evaluation.allowed) {
+      setActionError(evaluation.reason);
+      return;
+    }
 
     let targetCol: Column | undefined = board.columns.find((c) => c.column_id === targetColumnId);
     if (!targetCol) return;
@@ -311,14 +350,51 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       nextId = destTickets[targetIndex].ticket_id;
     }
 
+    if (evaluation.requiresReason) {
+      const prompt =
+        evaluation.command === "reopen"
+          ? "Reason required to reopen this done ticket (T17)."
+          : "Reason required to reject from human review (T16).";
+      setStageMoveReason("");
+      setPendingStageMove({
+        ticketId: activeId,
+        targetColumnId: targetCol.column_id,
+        prevId,
+        nextId,
+        command: evaluation.command,
+        prompt,
+      });
+      return;
+    }
+
     try {
-      setActionError(null);
-      await moveTicket(activeId, targetCol.column_id, prevId, nextId);
-      await reloadBoard({ silent: true });
+      await applyMove(activeId, targetCol.column_id, prevId, nextId);
     } catch (err) {
       console.error("Move ticket failed:", err);
       setActionError(err instanceof Error ? err.message : "Move ticket failed");
       await reloadBoard({ silent: true });
+    }
+  };
+
+  const confirmPendingStageMove = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingStageMove || !stageMoveReason.trim()) return;
+    setStageMoveBusy(true);
+    try {
+      await applyMove(
+        pendingStageMove.ticketId,
+        pendingStageMove.targetColumnId,
+        pendingStageMove.prevId,
+        pendingStageMove.nextId,
+        stageMoveReason.trim()
+      );
+      setPendingStageMove(null);
+      setStageMoveReason("");
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Stage move failed");
+      await reloadBoard({ silent: true });
+    } finally {
+      setStageMoveBusy(false);
     }
   };
 
@@ -334,7 +410,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
         newTitle,
         newDesc,
         newPriority,
-        newAssignee || null
+        newAssignee || null,
+        { toInbox: isInboxBoard(board) }
       );
       setNewTitle("");
       setNewDesc("");
@@ -388,15 +465,23 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
 
   const agents = actors.filter((a) => a.actor_type === "agent");
   const ticketIndex = buildTicketIndex(board);
+  const inbox = isInboxBoard(board);
+  const humanBlocked = collectHumanBlockedTickets(board);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 sm:gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            {inbox ? <Inbox className="h-4 w-4 shrink-0 text-[var(--accent)]" aria-hidden /> : null}
             <h2 className="truncate text-base font-semibold tracking-tight text-[var(--foreground)]">
-              {board.name}
+              {inbox ? "Inbox" : board.name}
             </h2>
+            {inbox ? (
+              <span className="rounded-md border border-[var(--accent)]/40 bg-[var(--accent-muted)] px-2 py-0.5 text-[10px] font-medium uppercase text-[var(--accent)]">
+                unclassified only
+              </span>
+            ) : null}
             <span
               className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 font-mono text-[10px] ${
                 isConnectedSSE
@@ -409,7 +494,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
             </span>
             <span className="hidden font-mono text-[10px] text-[var(--muted)] sm:inline">{board.board_id}</span>
           </div>
-          {board.description ? (
+          {inbox ? (
+            <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
+              Global triage queue — route tickets to a board; stage moves here are limited.
+            </p>
+          ) : board.description ? (
             <p className="mt-0.5 truncate text-xs text-[var(--muted)]">{board.description}</p>
           ) : null}
         </div>
@@ -450,16 +539,34 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
           <button type="button" onClick={() => setIsNewTicketOpen(true)} className="ak-btn-primary">
             <Plus className="h-4 w-4" />
             <span className="sm:hidden">New</span>
-            <span className="hidden sm:inline">New Ticket</span>
+            <span className="hidden sm:inline">{inbox ? "New request" : "New Ticket"}</span>
           </button>
         </div>
       </div>
 
-      <AgentFleetStrip actors={actors} onAddAgent={() => setIsEnrollOpen(true)} />
+      {!inbox ? <AgentFleetStrip actors={actors} onAddAgent={() => setIsEnrollOpen(true)} /> : null}
+
+      <BlockedQueue
+        tickets={humanBlocked}
+        onOpenTicket={setDetailTicket}
+        onUnblocked={() => {
+          void reloadBoard({ silent: true });
+        }}
+      />
 
       {actionError ? (
-        <div className="shrink-0 rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]">
+        <div
+          role="alert"
+          className="shrink-0 rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-3 py-2 text-sm text-[var(--danger)]"
+        >
           {actionError}
+          <button
+            type="button"
+            className="ml-2 text-xs underline"
+            onClick={() => setActionError(null)}
+          >
+            Dismiss
+          </button>
         </div>
       ) : null}
 
@@ -534,9 +641,54 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
       />
 
       <Dialog
+        open={Boolean(pendingStageMove)}
+        onClose={() => {
+          if (!stageMoveBusy) setPendingStageMove(null);
+        }}
+        title="Confirm stage change"
+        footer={
+          <>
+            <button
+              type="button"
+              className="ak-btn-ghost"
+              disabled={stageMoveBusy}
+              onClick={() => setPendingStageMove(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="stage-move-reason-form"
+              className="ak-btn-primary"
+              disabled={stageMoveBusy || !stageMoveReason.trim()}
+            >
+              {stageMoveBusy ? "Applying…" : "Confirm"}
+            </button>
+          </>
+        }
+      >
+        {pendingStageMove ? (
+          <form id="stage-move-reason-form" onSubmit={confirmPendingStageMove} className="space-y-3">
+            <p className="text-xs text-[var(--muted)]">{pendingStageMove.prompt}</p>
+            <div>
+              <label className="mb-1 block text-xs text-[var(--muted)]">Reason</label>
+              <textarea
+                className="ak-input"
+                rows={3}
+                required
+                value={stageMoveReason}
+                onChange={(e) => setStageMoveReason(e.target.value)}
+                placeholder="Required free-text reason"
+              />
+            </div>
+          </form>
+        ) : null}
+      </Dialog>
+
+      <Dialog
         open={isNewTicketOpen}
         onClose={closeNewTicket}
-        title="Create ticket"
+        title={inbox ? "Create inbox request" : "Create ticket"}
         footer={
           <>
             <button type="button" className="ak-btn-ghost" onClick={closeNewTicket}>

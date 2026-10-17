@@ -50,7 +50,9 @@ export const BoardSwitcher: React.FC = () => {
         {!activeBoardId ? <option value="">Select board…</option> : null}
         {boards.map((board) => (
           <option key={board.board_id} value={board.board_id}>
-            {board.name}
+            {board.kind === "inbox" || board.board_id === "inbox"
+              ? `Inbox · ${board.name}`
+              : board.name}
           </option>
         ))}
       </select>

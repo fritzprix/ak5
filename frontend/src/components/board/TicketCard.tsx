@@ -38,11 +38,22 @@ export const TicketCard: React.FC<TicketCardProps> = ({
     opacity: isDragging ? 0.45 : 1,
   };
 
-  const isBlocked = ticket.status === "blocked";
+  const isBlocked = ticket.status === "blocked" || Boolean(ticket.blocked_kind);
+  const blockedLabel =
+    ticket.blocked_kind === "needs_human"
+      ? "Needs human"
+      : ticket.blocked_kind === "escalation"
+        ? "Escalated"
+        : ticket.blocked_kind === "dependency"
+          ? "Dependency"
+          : ticket.blocked_kind === "external"
+            ? "External"
+            : "Blocked";
   const hasSubtasks = ticket.subtask_count > 0;
+  const isClaimed = Boolean(ticket.claimed_by || ticket.claim_token);
   const isAgentActive =
-    ticket.status === "in_progress" &&
-    Boolean(ticket.assigned_to?.startsWith("agent"));
+    (ticket.status === "in_progress" || isClaimed) &&
+    Boolean(ticket.assigned_to?.startsWith("agent") || ticket.claimed_by?.startsWith("agent"));
 
   return (
     <div
@@ -90,7 +101,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({
         {isBlocked ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[var(--danger)]">
             <AlertOctagon className="h-3 w-3" />
-            Blocked
+            {blockedLabel}
           </span>
         ) : null}
       </div>
