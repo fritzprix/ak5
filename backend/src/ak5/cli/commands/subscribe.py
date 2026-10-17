@@ -6,7 +6,7 @@ from typing import Any
 import click
 import httpx
 from ak5.cli.config import clean_actor_id, get_api_url, require_auth_headers
-from ak5.services.event_context import (
+from ak5.contracts.event_context import (
     build_hook_environ,
     extract_event_context,
     matches_agent_filter,

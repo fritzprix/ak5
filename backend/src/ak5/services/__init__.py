@@ -1,18 +1,20 @@
-"""Compatibility shim — prefer ``ak5.server.services``."""
+"""Lazy compatibility shim — prefer ``ak5.server.services``.
+
+``event_context`` is a real client-safe submodule (contracts re-export).
+"""
+
 from __future__ import annotations
 
-import pkgutil
-import sys
-from importlib import import_module
+import importlib
+from typing import Any
 
-_server = import_module("ak5.server.services")
-sys.modules[__name__] = _server
+from ak5._lazy_shim import install_submodule_shim
 
-# Ensure ``import ak5.services.X`` resolves to the already-loaded server submodule
-# (avoids re-executing model modules and duplicating SQLAlchemy tables).
-_prefix = "ak5.server.services."
-_alias = "ak5.services."
-if getattr(_server, "__path__", None) is not None:
-    for info in pkgutil.walk_packages(_server.__path__, _prefix):
-        mod = import_module(info.name)
-        sys.modules[_alias + info.name[len(_prefix) :]] = mod
+install_submodule_shim(alias_prefix="ak5.services", target_prefix="ak5.server.services")
+
+
+def __getattr__(name: str) -> Any:
+    if name.startswith("_"):
+        raise AttributeError(name)
+    mod = importlib.import_module(f"ak5.server.services.{name}")
+    return mod

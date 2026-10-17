@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
@@ -11,7 +12,6 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
-from ak5.mcp.tools import server as mcp_server
 from ak5.server.config import settings
 from ak5.server.database import engine, run_sqlite_schema_migrations
 from ak5.server.models.base import Base
@@ -144,8 +144,18 @@ def create_app() -> FastAPI:
     application.include_router(subscriptions_router, prefix=settings.API_V1_STR)
     application.include_router(web_auth_router)
 
-    # Mount Embedded MCP Bridge Endpoint (/mcp/sse, /mcp/messages)
-    application.mount("/mcp", mcp_server.sse_app())
+    # Optional MCP bridge: requires ak5[mcp] + AK5_ENABLE_MCP=1 (client.md §7)
+    if os.environ.get("AK5_ENABLE_MCP", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from ak5.mcp.tools import server as mcp_server
+
+            application.mount("/mcp", mcp_server.sse_app())
+            logger.info("Mounted /mcp (AK5_ENABLE_MCP=1)")
+        except ImportError:
+            logger.warning(
+                "AK5_ENABLE_MCP=1 but mcp extra is not installed; skip /mcp mount. "
+                "Install with: pip install 'ak5[mcp]'"
+            )
 
     @application.get("/health", tags=["system"])
     async def health_check():

@@ -1,18 +1,17 @@
-"""Compatibility shim — prefer ``ak5.server.routers``."""
+"""Lazy compatibility shim — prefer ``ak5.server.routers``."""
+
 from __future__ import annotations
 
-import pkgutil
-import sys
-from importlib import import_module
+import importlib
+from typing import Any
 
-_server = import_module("ak5.server.routers")
-sys.modules[__name__] = _server
+from ak5._lazy_shim import install_submodule_shim
 
-# Ensure ``import ak5.routers.X`` resolves to the already-loaded server submodule
-# (avoids re-executing model modules and duplicating SQLAlchemy tables).
-_prefix = "ak5.server.routers."
-_alias = "ak5.routers."
-if getattr(_server, "__path__", None) is not None:
-    for info in pkgutil.walk_packages(_server.__path__, _prefix):
-        mod = import_module(info.name)
-        sys.modules[_alias + info.name[len(_prefix) :]] = mod
+install_submodule_shim(alias_prefix="ak5.routers", target_prefix="ak5.server.routers")
+
+
+def __getattr__(name: str) -> Any:
+    if name.startswith("_"):
+        raise AttributeError(name)
+    mod = importlib.import_module("ak5.server.routers")
+    return getattr(mod, name)

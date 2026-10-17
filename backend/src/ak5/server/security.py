@@ -16,27 +16,11 @@ from pathlib import Path
 from fastapi import Request
 
 from ak5.paths import get_app_data_dir
-from ak5.security import (
-    IDENTIFY_SECRET_HEADER,
-    get_identify_secret,
-    identify_headers_from_env,
-)
 from ak5.server.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 
 logger = logging.getLogger(__name__)
 
-# Re-export for ``from ak5.server.security import …`` callers.
-__all__ = [
-    "IDENTIFY_SECRET_HEADER",
-    "extract_identify_secret",
-    "get_identify_secret",
-    "get_jwt_secret",
-    "identify_headers_from_env",
-    "is_identify_authorized",
-    "jwt_secret_file",
-    "reset_secret_caches",
-    "resolve_jwt_secret",
-]
+IDENTIFY_SECRET_HEADER = "X-AK5-Identify-Secret"
 
 # Legacy hard-coded value — never treat as a configured production secret.
 _LEGACY_INSECURE_JWT = "ak5-dev-secret-key-change-in-production-2026"
@@ -123,6 +107,26 @@ def get_jwt_secret() -> str:
     if _jwt_secret_cache is None:
         _jwt_secret_cache = resolve_jwt_secret()
     return _jwt_secret_cache
+
+
+def get_identify_secret() -> str:
+    """Optional shared secret required for ``POST /auth/identify`` when set."""
+    for key in ("AK5_IDENTIFY_SECRET", "IDENTIFY_SECRET"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+
+    from ak5.server.config import settings
+
+    return (settings.IDENTIFY_SECRET or "").strip()
+
+
+def identify_headers_from_env() -> dict[str, str]:
+    """Headers CLI/MCP/SDK should attach when calling identify (empty if unset)."""
+    secret = get_identify_secret()
+    if not secret:
+        return {}
+    return {IDENTIFY_SECRET_HEADER: secret}
 
 
 def extract_identify_secret(request: Request, body_secret: str | None = None) -> str | None:

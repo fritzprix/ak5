@@ -1,18 +1,17 @@
-"""Compatibility shim — prefer ``ak5.server.schemas``."""
+"""Lazy compatibility shim — prefer ``ak5.server.schemas``."""
+
 from __future__ import annotations
 
-import pkgutil
-import sys
-from importlib import import_module
+import importlib
+from typing import Any
 
-_server = import_module("ak5.server.schemas")
-sys.modules[__name__] = _server
+from ak5._lazy_shim import install_submodule_shim
 
-# Ensure ``import ak5.schemas.X`` resolves to the already-loaded server submodule
-# (avoids re-executing model modules and duplicating SQLAlchemy tables).
-_prefix = "ak5.server.schemas."
-_alias = "ak5.schemas."
-if getattr(_server, "__path__", None) is not None:
-    for info in pkgutil.walk_packages(_server.__path__, _prefix):
-        mod = import_module(info.name)
-        sys.modules[_alias + info.name[len(_prefix) :]] = mod
+install_submodule_shim(alias_prefix="ak5.schemas", target_prefix="ak5.server.schemas")
+
+
+def __getattr__(name: str) -> Any:
+    if name.startswith("_"):
+        raise AttributeError(name)
+    mod = importlib.import_module("ak5.server.schemas")
+    return getattr(mod, name)
