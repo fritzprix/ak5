@@ -225,7 +225,7 @@ def migrate_sqlite_ticket_workflow_fields(sync_conn: Connection) -> None:
 
 
 def migrate_sqlite_subscription_add_fields(sync_conn: Connection) -> None:
-    """Add subscription ack/consumer columns (events.md §2). Non-destructive."""
+    """Add subscription ack/consumer/filter columns (events.md §2). Non-destructive."""
     exists = sync_conn.execute(
         text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='subscriptions'")
     ).scalar()
@@ -237,10 +237,17 @@ def migrate_sqlite_subscription_add_fields(sync_conn: Connection) -> None:
     _add_column_if_missing(
         sync_conn, "subscriptions", "consumer_lease_expires_at", "DATETIME"
     )
+    _add_column_if_missing(sync_conn, "subscriptions", "role", "VARCHAR(64)")
+    _add_column_if_missing(sync_conn, "subscriptions", "capabilities", "TEXT")
 
 
 def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
-    """Rebuild subscriptions so exec_command is nullable (events.md §2).
+    """Legacy alias — prefer :func:`migrate_sqlite_subscription_filter_only`."""
+    migrate_sqlite_subscription_filter_only(sync_conn)
+
+
+def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
+    """Rebuild subscriptions as filter-only: drop server exec_command (events.md §2).
 
     Caller must disable foreign_keys outside any transaction before DROP/rebuild.
     """
@@ -250,9 +257,15 @@ def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
     if not exists:
         return
 
-    exec_info = sync_conn.execute(text("PRAGMA table_info(subscriptions)")).mappings().all()
-    exec_row = next((r for r in exec_info if r["name"] == "exec_command"), None)
-    if exec_row is None or exec_row["notnull"] == 0:
+    src_cols = _table_column_names(sync_conn, "subscriptions")
+    needs_rebuild = (
+        "exec_command" in src_cols
+        or "ignore_actor" in src_cols
+        or "debounce_seconds" in src_cols
+        or "role" not in src_cols
+        or "capabilities" not in src_cols
+    )
+    if not needs_rebuild:
         return
 
     sync_conn.execute(
@@ -261,11 +274,10 @@ def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
             CREATE TABLE subscriptions__mig (
                 subscription_id VARCHAR(128) NOT NULL PRIMARY KEY,
                 board_id VARCHAR(128),
-                exec_command TEXT,
                 events TEXT,
+                role VARCHAR(64),
+                capabilities TEXT,
                 for_agent VARCHAR(128),
-                ignore_actor VARCHAR(128),
-                debounce_seconds FLOAT NOT NULL DEFAULT 0.0,
                 created_by VARCHAR(128) NOT NULL DEFAULT 'system',
                 created_at DATETIME NOT NULL,
                 ack_cursor INTEGER NOT NULL DEFAULT 0,
@@ -275,8 +287,10 @@ def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
             """
         )
     )
-    # Preserve whatever columns exist.
-    src_cols = _table_column_names(sync_conn, "subscriptions")
+    select_events = "events" if "events" in src_cols else "NULL AS events"
+    select_role = "role" if "role" in src_cols else "NULL AS role"
+    select_caps = "capabilities" if "capabilities" in src_cols else "NULL AS capabilities"
+    select_for = "for_agent" if "for_agent" in src_cols else "NULL AS for_agent"
     select_ack = "ack_cursor" if "ack_cursor" in src_cols else "0 AS ack_cursor"
     select_consumer = "consumer_id" if "consumer_id" in src_cols else "NULL AS consumer_id"
     select_lease = (
@@ -288,13 +302,13 @@ def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
         text(
             f"""
             INSERT INTO subscriptions__mig (
-                subscription_id, board_id, exec_command, events, for_agent, ignore_actor,
-                debounce_seconds, created_by, created_at,
+                subscription_id, board_id, events, role, capabilities, for_agent,
+                created_by, created_at,
                 ack_cursor, consumer_id, consumer_lease_expires_at
             )
             SELECT
-                subscription_id, board_id, exec_command, events, for_agent, ignore_actor,
-                debounce_seconds, created_by, created_at,
+                subscription_id, board_id, {select_events}, {select_role}, {select_caps},
+                {select_for}, created_by, created_at,
                 {select_ack}, {select_consumer}, {select_lease}
             FROM subscriptions
             """
@@ -308,13 +322,13 @@ def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
 
 
 def migrate_sqlite_subscription_workflow_fields(sync_conn: Connection) -> None:
-    """Add subscription ack/consumer fields; allow nullable exec_command (events.md §2).
+    """Add subscription ack/consumer/filter fields; drop server exec (events.md §2).
 
     When used inside ``engine.begin()``, the rebuild half is a no-op for FK
     enforcement — prefer ``run_sqlite_schema_migrations`` which splits ADD vs rebuild.
     """
     migrate_sqlite_subscription_add_fields(sync_conn)
-    migrate_sqlite_subscription_nullable_exec(sync_conn)
+    migrate_sqlite_subscription_filter_only(sync_conn)
 
 
 def _column_stage_check_sql(sync_conn: Connection) -> str | None:
@@ -444,7 +458,7 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
         await conn.run_sync(migrate_sqlite_ticket_workflow_fields)
         await conn.run_sync(migrate_sqlite_subscription_add_fields)
 
-    await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_subscription_nullable_exec)
+    await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_subscription_filter_only)
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_column_stages)
 
 

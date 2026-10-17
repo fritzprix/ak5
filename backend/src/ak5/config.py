@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     ATTACHMENTS_DIR: str = Field(default_factory=lambda: str(get_default_attachments_dir()))
     MAX_ATTACHMENT_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
+    # Event long-poll / retention (events.md §1, §3)
+    LONG_POLL_MAX_WAIT: int = 25
+    LONG_POLL_DB_POLL_INTERVAL: float = 1.0
+    # Local/integrated mode: wake waiters via in-process event_bus notify.
+    # Serverless / multi-worker: set False to rely on DB polling only.
+    LONG_POLL_USE_INPROCESS_NOTIFY: bool = True
+    EVENT_RETENTION_DAYS: int = 7
+    CONSUMER_LEASE_SECONDS: int = 60
+    # Postgres commit-order ≠ seq-order guard (issue #11 orchestrator note).
+    # 0 = no-op (SQLite). >0 holds back events newer than this many seconds.
+    EVENT_VISIBILITY_WINDOW_SECONDS: float = 0.0
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
