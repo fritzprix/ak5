@@ -162,11 +162,10 @@ class AK5Client:
         required_actor_id: str | None = None,
     ) -> dict[str, Any]:
         headers = await self._headers()
-        # Update ticket status to blocked
-        update_payload: dict[str, Any] = {"status": "blocked"}
-        resp = await self._http.patch(
-            f"{self.base_url.rstrip('/')}/tickets/{ticket_id}",
-            json=update_payload,
+        # B1 via workflow block command (kind=external) — not raw PATCH status.
+        resp = await self._http.post(
+            f"{self.base_url.rstrip('/')}/tickets/{ticket_id}/block",
+            json={"kind": "external", "reason": blocking_reason},
             headers=headers,
         )
         resp.raise_for_status()

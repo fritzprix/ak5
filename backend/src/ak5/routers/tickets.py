@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from ak5.config import settings
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.payloads import Finding, Verdict
+from ak5.contracts.stages import BlockedKind
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.models.audit import AuditLog
@@ -49,7 +50,7 @@ from ak5.schemas.ticket import (
     VerdictRequest,
 )
 from ak5.services import workflow as wf
-from ak5.services.event_bus import event_bus
+from ak5.services.event_log import record_event
 from ak5.services.ticket_status import derive_status
 from ak5.services.workflow import WorkflowError
 
@@ -153,14 +154,20 @@ async def _idempotent(
     actor_id: str,
     op: str,
     response_builder,
+    ticket_id: str | None = None,
+    body: Any = None,
 ) -> tuple[Any, bool]:
     """Run ``response_builder`` once per Idempotency-Key.
 
     Returns ``(result, from_cache)``. Caller must ``commit`` when ``from_cache``
-    is False. Cached hits return the stored JSON dict.
+    is False. Cached hits return the stored JSON dict. Request fingerprint
+    (ticket_id + body hash) must match on replay.
     """
+    fingerprint = wf.compute_idempotency_fingerprint(ticket_id, body)
     if key:
-        cached = await wf.get_idempotent_response(db, key=key, actor_id=actor_id, op=op)
+        cached = await wf.get_idempotent_response(
+            db, key=key, actor_id=actor_id, op=op, fingerprint=fingerprint
+        )
         if cached is not None:
             return cached, True
     result = await response_builder()
@@ -172,7 +179,12 @@ async def _idempotent(
         else:
             payload = {"ok": True}
         await wf.store_idempotent_response(
-            db, key=key, actor_id=actor_id, op=op, response=payload
+            db,
+            key=key,
+            actor_id=actor_id,
+            op=op,
+            response=payload,
+            fingerprint=fingerprint,
         )
     return result, False
 
@@ -238,6 +250,8 @@ async def create_ticket(
             actor_id=current_actor.actor_id,
             op="ticket.create",
             response_builder=_run,
+            ticket_id=None,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -247,13 +261,7 @@ async def create_ticket(
 
     if from_cache:
         return TicketOut.model_validate(out)
-    ticket_out = out
-    actor_id = current_actor.actor_id
-    await event_bus.publish(
-        event_type="TICKET_CREATED",
-        data={"ticket": ticket_out.model_dump(mode="json"), "actor_id": actor_id},
-    )
-    return ticket_out
+    return out
 
 
 @router.get("", response_model=list[TicketOut])
@@ -369,17 +377,21 @@ async def get_ticket_detail(
     )
 
 
-@router.patch("/{ticket_id}", response_model=TicketOut)
+@router.patch("/{ticket_id}", response_model=None)
 async def update_ticket(
     ticket_id: str,
     req: TicketUpdate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> TicketOut:
+) -> TicketOut | JSONResponse:
     """Update ticket fields, status, or assignee.
 
     Uses exclude_unset so explicit JSON null can clear nullable fields
     (e.g. assigned_to, blocked_by) without requiring a sentinel value.
+
+    Setting ``status=blocked`` / non-empty ``blocked_by`` delegates to
+    ``block_ticket`` (B1, kind=external). Clearing blocked delegates to
+    ``unblock_ticket``.
     """
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
@@ -388,6 +400,37 @@ async def update_ticket(
     data = req.model_dump(exclude_unset=True)
     if not data:
         return _format_ticket_out(ticket)
+
+    should_block = False
+    should_unblock = False
+    block_reason = "blocked via PATCH"
+
+    if "status" in data and data["status"] == "blocked":
+        should_block = True
+        if "blocked_by" in data:
+            raw = data["blocked_by"]
+            cleaned = raw.strip() if isinstance(raw, str) else raw
+            if cleaned:
+                block_reason = cleaned
+            data.pop("blocked_by", None)
+        elif ticket.blocked_by:
+            block_reason = ticket.blocked_by
+        data.pop("status", None)
+    elif "blocked_by" in data:
+        raw_blocked = data["blocked_by"]
+        new_blocked_by = raw_blocked.strip() if isinstance(raw_blocked, str) else raw_blocked
+        if new_blocked_by == "":
+            new_blocked_by = None
+        data.pop("blocked_by")
+        if new_blocked_by:
+            should_block = True
+            block_reason = new_blocked_by
+            if data.get("status") == "blocked":
+                data.pop("status", None)
+        elif ticket.blocked_kind or ticket.blocked_by:
+            should_unblock = True
+            if data.get("status") == "blocked":
+                data.pop("status", None)
 
     changes: dict[str, Any] = {}
 
@@ -420,35 +463,17 @@ async def update_ticket(
         ticket.assigned_to = new_assignee
     if "status" in data and data["status"] is not None:
         requested_status = data["status"]
-        if requested_status == "blocked":
-            changes["status"] = (ticket.status, "blocked")
-            ticket.status = "blocked"
-            if not ticket.blocked_by:
-                ticket.blocked_by = "blocked via PATCH"
-        else:
-            # Clear legacy blocked_by when leaving blocked via PATCH; then derive.
-            if ticket.blocked_kind is None and ticket.blocked_by:
-                ticket.blocked_by = None
-            column = await db.get(Column, ticket.column_id)
-            if column is not None:
-                ticket.column = column
-            synced_status = derive_status(ticket)
-            changes["status"] = (ticket.status, synced_status)
-            if requested_status != synced_status:
-                changes["status_coerced_from"] = requested_status
-            ticket.status = synced_status
-    if "blocked_by" in data:
-        raw_blocked = data["blocked_by"]
-        new_blocked_by = raw_blocked.strip() if isinstance(raw_blocked, str) else raw_blocked
-        if new_blocked_by == "":
-            new_blocked_by = None
-        changes["blocked_by"] = (ticket.blocked_by, new_blocked_by)
-        ticket.blocked_by = new_blocked_by
-        if "status" not in data:
-            column = await db.get(Column, ticket.column_id)
-            if column is not None:
-                ticket.column = column
-            ticket.status = derive_status(ticket)
+        # Non-blocked status writes are derived; never bypass B1/B2 via PATCH.
+        if ticket.blocked_kind is None and ticket.blocked_by:
+            ticket.blocked_by = None
+        column = await db.get(Column, ticket.column_id)
+        if column is not None:
+            ticket.column = column
+        synced_status = derive_status(ticket)
+        changes["status"] = (ticket.status, synced_status)
+        if requested_status != synced_status:
+            changes["status_coerced_from"] = requested_status
+        ticket.status = synced_status
     if "execution_context" in data:
         changes["execution_context"] = True
         ticket.execution_context_dict = data["execution_context"]
@@ -462,23 +487,54 @@ async def update_ticket(
             ticket.is_archived = new_archived
             ticket.archived_at = datetime.now(UTC) if new_archived else None
 
+    try:
+        if should_block:
+            ticket = await wf.block_ticket(
+                db,
+                current_actor,
+                ticket_id,
+                kind=BlockedKind.EXTERNAL,
+                reason=block_reason,
+            )
+            changes["blocked"] = {"kind": BlockedKind.EXTERNAL.value, "reason": block_reason}
+        elif should_unblock:
+            ticket = await wf.unblock_ticket(db, current_actor, ticket_id, resolution=None)
+            changes["unblocked"] = True
+    except WorkflowError as exc:
+        await db.rollback()
+        return _workflow_error_response(exc)
+
     action = (
         "ARCHIVED"
         if ("is_archived" in changes and ticket.is_archived)
         else "UNARCHIVED"
         if ("is_archived" in changes and not ticket.is_archived)
-        else ("STATUS_CHANGE" if "status" in changes else "UPDATED")
+        else ("STATUS_CHANGE" if "status" in changes or should_block or should_unblock else "UPDATED")
     )
-    audit = AuditLog(
-        actor_id=current_actor.actor_id,
-        action=action,
-        target_type="ticket",
-        target_id=ticket_id,
-        payload=json.dumps(changes, default=str),
-    )
-    db.add(audit)
+    if not should_block and not should_unblock:
+        audit = AuditLog(
+            actor_id=current_actor.actor_id,
+            action=action,
+            target_type="ticket",
+            target_id=ticket_id,
+            payload=json.dumps(changes, default=str),
+        )
+        db.add(audit)
 
     actor_id = current_actor.actor_id
+    ticket_out = _format_ticket_out(ticket)
+    await record_event(
+        db,
+        "TICKET_UPDATED",
+        board_id=ticket.board_id,
+        ticket_id=ticket_id,
+        actor_id=actor_id,
+        data={
+            "ticket": ticket_out.model_dump(mode="json"),
+            "actor_id": actor_id,
+            "changes": changes,
+        },
+    )
     await db.commit()
     # Reload with column for stage field (avoid expired attrs after commit).
     stmt = (
@@ -487,14 +543,7 @@ async def update_ticket(
         .options(selectinload(Ticket.column))
     )
     ticket = (await db.execute(stmt)).scalar_one()
-    ticket_out = _format_ticket_out(ticket)
-
-    await event_bus.publish(
-        event_type="TICKET_UPDATED",
-        data={"ticket": ticket_out.model_dump(mode="json"), "actor_id": actor_id, "changes": changes},
-    )
-
-    return ticket_out
+    return _format_ticket_out(ticket)
 
 
 @router.post("/{ticket_id}/archive", response_model=TicketOut)
@@ -520,15 +569,18 @@ async def archive_ticket(
         payload=json.dumps(changes, default=str),
     )
     db.add(audit)
-    await db.commit()
-    await db.refresh(ticket)
-
     ticket_out = _format_ticket_out(ticket)
-    await event_bus.publish(
-        event_type="TICKET_ARCHIVED",
+    await record_event(
+        db,
+        "TICKET_ARCHIVED",
+        board_id=ticket.board_id,
+        ticket_id=ticket_id,
+        actor_id=current_actor.actor_id,
         data={"ticket": ticket_out.model_dump(mode="json"), "actor_id": current_actor.actor_id},
     )
-    return ticket_out
+    await db.commit()
+    await db.refresh(ticket)
+    return _format_ticket_out(ticket)
 
 
 @router.post("/{ticket_id}/unarchive", response_model=TicketOut)
@@ -554,15 +606,18 @@ async def unarchive_ticket(
         payload=json.dumps(changes, default=str),
     )
     db.add(audit)
-    await db.commit()
-    await db.refresh(ticket)
-
     ticket_out = _format_ticket_out(ticket)
-    await event_bus.publish(
-        event_type="TICKET_UNARCHIVED",
+    await record_event(
+        db,
+        "TICKET_UNARCHIVED",
+        board_id=ticket.board_id,
+        ticket_id=ticket_id,
+        actor_id=current_actor.actor_id,
         data={"ticket": ticket_out.model_dump(mode="json"), "actor_id": current_actor.actor_id},
     )
-    return ticket_out
+    await db.commit()
+    await db.refresh(ticket)
+    return _format_ticket_out(ticket)
 
 
 @router.patch("/{ticket_id}/move", response_model=None)
@@ -579,7 +634,6 @@ async def move_ticket(
         prev = await db.get(Ticket, ticket_id)
         if not prev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
-        prev_col_id = prev.column_id
         ticket = await wf.move_ticket_constrained(
             db,
             current_actor,
@@ -587,10 +641,21 @@ async def move_ticket(
             target_column_id=req.target_column_id,
             previous_ticket_id=req.previous_ticket_id,
             next_ticket_id=req.next_ticket_id,
+            reason=req.reason,
         )
         out = _format_ticket_out(ticket)
-        out_dict = out.model_dump(mode="json")
-        out_dict["_from_column"] = prev_col_id
+        await record_event(
+            db,
+            "TICKET_MOVED",
+            board_id=ticket.board_id,
+            ticket_id=ticket_id,
+            actor_id=current_actor.actor_id,
+            data={
+                "ticket": out.model_dump(mode="json"),
+                "to_column": req.target_column_id,
+                "actor_id": current_actor.actor_id,
+            },
+        )
         return out
 
     try:
@@ -600,6 +665,8 @@ async def move_ticket(
             actor_id=current_actor.actor_id,
             op=f"ticket.move:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -607,17 +674,7 @@ async def move_ticket(
         await db.rollback()
         return _workflow_error_response(exc)
 
-    ticket_out = TicketOut.model_validate(out) if from_cache else out
-    if not from_cache:
-        await event_bus.publish(
-            event_type="TICKET_MOVED",
-            data={
-                "ticket": ticket_out.model_dump(mode="json"),
-                "to_column": req.target_column_id,
-                "actor_id": current_actor.actor_id,
-            },
-        )
-    return ticket_out
+    return TicketOut.model_validate(out) if from_cache else out
 
 
 @router.post("/{ticket_id}/delegate", response_model=None, status_code=status.HTTP_201_CREATED)
@@ -658,7 +715,21 @@ async def delegate_subtask(
         )
         db.add(comment)
         await db.flush()
-        return _format_ticket_out(subtask)
+        subtask_out = _format_ticket_out(subtask)
+        await record_event(
+            db,
+            "TICKET_DELEGATED",
+            board_id=subtask.board_id,
+            ticket_id=subtask.ticket_id,
+            actor_id=current_actor.actor_id,
+            data={
+                "parent_ticket_id": ticket_id,
+                "subtask": subtask_out.model_dump(mode="json"),
+                "ticket": subtask_out.model_dump(mode="json"),
+                "actor_id": current_actor.actor_id,
+            },
+        )
+        return subtask_out
 
     try:
         out, from_cache = await _idempotent(
@@ -667,6 +738,8 @@ async def delegate_subtask(
             actor_id=current_actor.actor_id,
             op=f"ticket.delegate:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -676,17 +749,7 @@ async def delegate_subtask(
 
     if from_cache:
         return TicketOut.model_validate(out)
-    subtask_out = out
-    await event_bus.publish(
-        event_type="TICKET_DELEGATED",
-        data={
-            "parent_ticket_id": ticket_id,
-            "subtask": subtask_out.model_dump(mode="json"),
-            "ticket": subtask_out.model_dump(mode="json"),
-            "actor_id": current_actor.actor_id,
-        },
-    )
-    return subtask_out
+    return out
 
 
 @router.post("/{ticket_id}/comments", response_model=TicketCommentOut, status_code=status.HTTP_201_CREATED)
@@ -711,7 +774,7 @@ async def add_comment(
         metadata_json=json.dumps(req.metadata),
     )
     db.add(comment)
-    await db.commit()
+    await db.flush()
     await db.refresh(comment)
 
     comment_out = TicketCommentOut(
@@ -725,8 +788,12 @@ async def add_comment(
     )
 
     ticket_out = _format_ticket_out(ticket)
-    await event_bus.publish(
-        event_type="COMMENT_ADDED",
+    await record_event(
+        db,
+        "COMMENT_ADDED",
+        board_id=ticket.board_id,
+        ticket_id=ticket_id,
+        actor_id=current_actor.actor_id,
         data={
             "board_id": ticket.board_id,
             "ticket_id": ticket_id,
@@ -735,7 +802,7 @@ async def add_comment(
             "actor_id": current_actor.actor_id,
         },
     )
-
+    await db.commit()
     return comment_out
 
 
@@ -809,13 +876,17 @@ async def upload_attachment(
         payload=json.dumps({"attachment_id": attachment_id, "filename": clean_filename, "size": total_size}),
     )
     db.add(audit)
-    await db.commit()
+    await db.flush()
     await db.refresh(attachment)
 
     attachment_out = TicketAttachmentOut.model_validate(attachment)
     ticket_out = _format_ticket_out(ticket)
-    await event_bus.publish(
-        event_type="ATTACHMENT_ADDED",
+    await record_event(
+        db,
+        "ATTACHMENT_ADDED",
+        board_id=ticket.board_id,
+        ticket_id=ticket_id,
+        actor_id=current_actor.actor_id,
         data={
             "board_id": ticket.board_id,
             "ticket_id": ticket_id,
@@ -824,6 +895,7 @@ async def upload_attachment(
             "actor_id": current_actor.actor_id,
         },
     )
+    await db.commit()
     return attachment_out
 
 
@@ -928,20 +1000,24 @@ async def delete_attachment(
     ticket = await db.get(Ticket, ticket_id)
     board_id = ticket.board_id if ticket else None
 
+    filename = attachment.filename
     await db.delete(attachment)
     audit = AuditLog(
         actor_id=current_actor.actor_id,
         action="ATTACHMENT_DELETED",
         target_type="ticket",
         target_id=ticket_id,
-        payload=json.dumps({"attachment_id": attachment_id, "filename": attachment.filename}),
+        payload=json.dumps({"attachment_id": attachment_id, "filename": filename}),
     )
     db.add(audit)
-    await db.commit()
 
     ticket_out = _format_ticket_out(ticket) if ticket else None
-    await event_bus.publish(
-        event_type="ATTACHMENT_DELETED",
+    await record_event(
+        db,
+        "ATTACHMENT_DELETED",
+        board_id=board_id,
+        ticket_id=ticket_id,
+        actor_id=current_actor.actor_id,
         data={
             "board_id": board_id,
             "ticket_id": ticket_id,
@@ -950,6 +1026,7 @@ async def delete_attachment(
             "actor_id": current_actor.actor_id,
         },
     )
+    await db.commit()
 
     return {"deleted": True, "attachment_id": attachment_id}
 
@@ -989,6 +1066,8 @@ async def claim_ticket_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.claim:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=body.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1017,6 +1096,8 @@ async def heartbeat_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.heartbeat:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1047,6 +1128,8 @@ async def release_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.release:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1081,6 +1164,8 @@ async def submit_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.submit:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1111,6 +1196,8 @@ async def bounce_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.bounce:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1141,6 +1228,8 @@ async def route_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.route:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1188,6 +1277,8 @@ async def verdict_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.verdict:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1222,6 +1313,8 @@ async def postmortem_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.postmortem:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1257,6 +1350,8 @@ async def block_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.block:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1289,6 +1384,8 @@ async def unblock_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.unblock:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=body.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1317,6 +1414,8 @@ async def reopen_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.reopen:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()
@@ -1352,6 +1451,8 @@ async def reroute_endpoint(
             actor_id=current_actor.actor_id,
             op=f"ticket.reroute:{ticket_id}",
             response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
         )
         if not from_cache:
             await db.commit()

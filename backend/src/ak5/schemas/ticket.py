@@ -76,6 +76,8 @@ class TicketMoveRequest(BaseModel):
     target_column_id: str
     previous_ticket_id: str | None = None
     next_ticket_id: str | None = None
+    # Required for stage changes that mirror T16/T17 (human reject / reopen).
+    reason: str | None = None
 
 
 class TicketDelegateRequest(BaseModel):

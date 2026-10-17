@@ -8,6 +8,7 @@ revision/review/postmortem, audit, event log).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -39,7 +40,7 @@ from ak5.models.ticket import Ticket
 from ak5.models.ticket_postmortem import TicketPostmortem
 from ak5.models.ticket_review import TicketReview
 from ak5.models.ticket_revision import TicketRevision
-from ak5.seed import INBOX_BOARD_ID
+from ak5.seed import INBOX_BOARD_ID, SYSTEM_ACTOR_ID
 from ak5.services.event_log import record_event
 from ak5.services.lexorank import rank_between
 from ak5.services.templates import get_template, template_column_dicts
@@ -700,8 +701,7 @@ async def reclaim_expired_leases(
         stmt = stmt.where(Ticket.board_id == board_id)
     tickets = (await db.execute(stmt)).scalars().all()
     affected: list[str] = []
-    # AuditLog.actor_id is an FK; use the seeded PM until a dedicated system actor exists.
-    system_actor_id = "user_pm"
+    system_actor_id = SYSTEM_ACTOR_ID
     for ticket in tickets:
         stage = ticket_stage(ticket)
         from_stage = stage
@@ -762,6 +762,50 @@ async def recompute_all_ticket_statuses(db: AsyncSession) -> int:
 # Idempotency
 # ---------------------------------------------------------------------------
 
+_IDEM_FP_KEY = "_fp"
+_IDEM_BODY_KEY = "_response"
+
+
+def compute_idempotency_fingerprint(
+    ticket_id: str | None,
+    body: Any,
+) -> str:
+    """Stable request fingerprint: ticket_id + canonical body hash."""
+    payload = json.dumps(
+        {"ticket_id": ticket_id, "body": body},
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _unwrap_idempotent_payload(
+    parsed: dict[str, Any],
+    *,
+    fingerprint: str,
+) -> dict[str, Any]:
+    """Compare stored fingerprint; return the cached response body."""
+    if _IDEM_FP_KEY in parsed or _IDEM_BODY_KEY in parsed:
+        stored_fp = parsed.get(_IDEM_FP_KEY)
+        if stored_fp != fingerprint:
+            raise WorkflowError(
+                ErrorCode.PAYLOAD_INVALID,
+                "Idempotency-Key reused with a different request fingerprint",
+                details={"expected_fingerprint": stored_fp},
+            )
+        body = parsed.get(_IDEM_BODY_KEY)
+        if not isinstance(body, dict):
+            raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "Corrupt idempotency response cache")
+        return body
+    # Legacy rows without fingerprint: treat as mismatch if a fingerprint was required.
+    # Accept only when fingerprint matches an empty legacy sentinel (same key/op replay
+    # of identical create bodies still works via store always writing the envelope).
+    raise WorkflowError(
+        ErrorCode.PAYLOAD_INVALID,
+        "Idempotency-Key reused with a different request fingerprint",
+    )
+
 
 async def get_idempotent_response(
     db: AsyncSession,
@@ -769,6 +813,7 @@ async def get_idempotent_response(
     key: str,
     actor_id: str,
     op: str,
+    fingerprint: str,
 ) -> dict[str, Any] | None:
     row = await db.get(IdempotencyKey, key)
     if row is None:
@@ -788,7 +833,7 @@ async def get_idempotent_response(
         ) from exc
     if not isinstance(parsed, dict):
         raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "Corrupt idempotency response cache")
-    return parsed
+    return _unwrap_idempotent_payload(parsed, fingerprint=fingerprint)
 
 
 async def store_idempotent_response(
@@ -798,13 +843,15 @@ async def store_idempotent_response(
     actor_id: str,
     op: str,
     response: dict[str, Any],
+    fingerprint: str,
 ) -> None:
+    envelope = {_IDEM_FP_KEY: fingerprint, _IDEM_BODY_KEY: response}
     db.add(
         IdempotencyKey(
             key=key,
             actor=actor_id,
             op=op,
-            response_json=json.dumps(response, default=str),
+            response_json=json.dumps(envelope, default=str),
         )
     )
     await db.flush()
@@ -1732,7 +1779,14 @@ async def block_ticket(
 
     role = resolve_workflow_role(actor)
     is_holder = is_claim_valid(ticket) and ticket.claimed_by == actor.actor_id
-    if role != Role.HUMAN and not is_holder:
+    # Humans and claim holders may always block. Unclaimed tickets also accept
+    # external/dependency blocks from any authenticated actor (MCP report-block).
+    unclaimed = not is_claim_valid(ticket)
+    allow_unclaimed_external = unclaimed and kind in (
+        BlockedKind.EXTERNAL,
+        BlockedKind.DEPENDENCY,
+    )
+    if role != Role.HUMAN and not is_holder and not allow_unclaimed_external:
         raise WorkflowError(
             ErrorCode.ROLE_FORBIDDEN,
             "Only the claim holder or a human can block this ticket",
@@ -1865,8 +1919,14 @@ async def move_ticket_constrained(
     target_column_id: str,
     previous_ticket_id: str | None = None,
     next_ticket_id: str | None = None,
+    reason: str | None = None,
 ) -> Ticket:
-    """PATCH move under workflow.md §8 constraints."""
+    """PATCH move under workflow.md §8 constraints.
+
+    Stage-changing human moves delegate to the corresponding command
+    (``verdict`` / ``reopen``) so review records and reject reasons are
+    recorded. Same-stage reorders only adjust column/rank.
+    """
     ticket = await _load_ticket(db, ticket_id, for_update=True)
     target = await db.get(Column, target_column_id)
     if target is None:
@@ -1900,20 +1960,83 @@ async def move_ticket_constrained(
                 ErrorCode.SYSTEM_BOARD,
                 "Cross-board stage moves must use reroute",
             )
-        # Mirror side effects of the corresponding human command lightly.
-        if to_stage == Stage.DONE:
-            if is_claim_valid(ticket):
-                _clear_claim(ticket)
-            ticket.blocked_kind = None
-            ticket.blocked_by = None
-            ticket.blocked_since = None
-            ticket.blocked_actor = None
+
+        # Delegate to T15 / T16 / T17 so side effects (reviews, reasons) apply.
+        if (from_stage, to_stage) == (Stage.HUMAN_REVIEW, Stage.DONE):
+            ticket = await verdict(
+                db,
+                actor,
+                ticket_id,
+                claim_token=None,
+                body=Verdict.model_construct(
+                    decision="approve",
+                    reason=reason or "",
+                    misrouted=False,
+                    findings=[],
+                ),
+            )
+        elif (from_stage, to_stage) == (Stage.HUMAN_REVIEW, Stage.POSTMORTEM_PENDING):
+            if not (reason or "").strip():
+                raise WorkflowError(
+                    ErrorCode.PAYLOAD_INVALID,
+                    "reason is required for human reject move (T16)",
+                )
+            ticket = await verdict(
+                db,
+                actor,
+                ticket_id,
+                claim_token=None,
+                body=Verdict.model_construct(
+                    decision="reject",
+                    reason=reason.strip(),
+                    misrouted=False,
+                    findings=[],
+                ),
+            )
+        elif (from_stage, to_stage) == (Stage.DONE, Stage.POSTMORTEM_PENDING):
+            if not (reason or "").strip():
+                raise WorkflowError(
+                    ErrorCode.PAYLOAD_INVALID,
+                    "reason is required for reopen move (T17)",
+                )
+            ticket = await reopen(db, actor, ticket_id, reason=reason.strip())
+        else:
+            raise WorkflowError(
+                ErrorCode.INVALID_TRANSITION,
+                "Unhandled human move stage pair",
+                details={"from": from_stage.value, "to": to_stage.value},
+            )
+
+        # Snap to the requested column within the resulting stage when needed.
+        if ticket.column_id != target_column_id and ticket_stage(ticket) == to_stage:
+            if target.board_id != ticket.board_id:
+                raise WorkflowError(
+                    ErrorCode.SYSTEM_BOARD,
+                    "Cross-board stage moves must use reroute",
+                )
+            await _assert_wip(db, target, excluding_ticket_id=ticket.ticket_id)
+            prev_rank: str | None = None
+            next_rank: str | None = None
+            if previous_ticket_id:
+                prev = await db.get(Ticket, previous_ticket_id)
+                if prev:
+                    prev_rank = prev.rank
+            if next_ticket_id:
+                nxt = await db.get(Ticket, next_ticket_id)
+                if nxt:
+                    next_rank = nxt.rank
+            ticket.column_id = target_column_id
+            ticket.column = target
+            ticket.rank = rank_between(prev_rank, next_rank)
+            _sync_status(ticket)
+            await db.flush()
+        return await _reload_ticket(db, ticket.ticket_id)
 
     if ticket.column_id != target_column_id:
         await _assert_wip(db, target, excluding_ticket_id=ticket.ticket_id)
 
-    prev_rank: str | None = None
-    next_rank: str | None = None
+    prev_rank = None
+    next_rank = None
     if previous_ticket_id:
         prev = await db.get(Ticket, previous_ticket_id)
         if prev:
@@ -1929,17 +2052,6 @@ async def move_ticket_constrained(
     ticket.rank = rank_between(prev_rank, next_rank)
     _sync_status(ticket)
 
-    if from_stage != to_stage:
-        return await _finish_transition(
-            db,
-            ticket,
-            actor=actor,
-            op="move",
-            from_stage=from_stage,
-            to_stage=to_stage,
-            work_available=to_stage in _CLAIMABLE_STAGES and not is_blocked(ticket),
-            human_action=to_stage == Stage.HUMAN_REVIEW,
-        )
     await _write_audit(
         db,
         actor_id=actor.actor_id,

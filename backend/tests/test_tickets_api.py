@@ -149,23 +149,34 @@ async def test_patch_status_cannot_desync_from_column(client: AsyncClient, auth_
     assert bad_patch.json()["column_id"] == "col_done"
     assert bad_patch.json()["status"] == "done"
 
-    blocked = await client.patch(
+    # done is not blockable via B1; PATCH blocked must not bypass the stage guard.
+    blocked_done = await client.patch(
         f"/api/v1/tickets/{ticket_id}",
+        json={"status": "blocked", "blocked_by": "needs audit"},
+        headers=headers,
+    )
+    assert blocked_done.status_code == 409, blocked_done.text
+
+    # Block on backlog (allowed), then clear via unblock rules.
+    backlog = (
+        await client.post("/api/v1/tickets", json=board_ticket("Blockable"), headers=headers)
+    ).json()["ticket_id"]
+    blocked = await client.patch(
+        f"/api/v1/tickets/{backlog}",
         json={"status": "blocked", "blocked_by": "needs audit"},
         headers=headers,
     )
     assert blocked.status_code == 200
     assert blocked.json()["status"] == "blocked"
-    assert blocked.json()["column_id"] == "col_done"
+    assert blocked.json()["stage"] == "backlog"
 
     unblocked = await client.patch(
-        f"/api/v1/tickets/{ticket_id}",
+        f"/api/v1/tickets/{backlog}",
         json={"status": "open", "blocked_by": None},
         headers=headers,
     )
     assert unblocked.status_code == 200, unblocked.text
-    assert unblocked.json()["status"] == "done"
-    assert unblocked.json()["column_id"] == "col_done"
+    assert unblocked.json()["status"] == "open"
     assert unblocked.json()["blocked_by"] is None
 
 

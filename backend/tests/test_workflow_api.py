@@ -665,3 +665,337 @@ async def test_work_available_events_emitted(client: AsyncClient, roles, test_db
         await test_db.execute(select(Event).where(Event.type == "WORK_AVAILABLE"))
     ).scalars().all()
     assert rows
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator audit round-1 regressions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_with_human_role_cannot_t15_to_done(client: AsyncClient, roles, test_db: AsyncSession):
+    """High: role=human on actor_type=agent must not unlock T15 (done is human-only)."""
+    from ak5.models.column import Column
+    from ak5.models.ticket import Ticket as TicketModel
+    from ak5.services.ticket_status import derive_status
+    from sqlalchemy.orm import selectinload
+
+    human = _h(roles, "user_pm", "human")
+    spoof = Actor(
+        actor_id="agent_spoof_human",
+        actor_type="agent",
+        name="Spoof",
+        role="human",
+        capabilities=json.dumps([]),
+        status="idle",
+    )
+    if await test_db.get(Actor, spoof.actor_id) is None:
+        test_db.add(spoof)
+        await test_db.commit()
+
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Guard done"), headers=human)
+    ).json()["ticket_id"]
+    ticket = (
+        await test_db.execute(
+            select(TicketModel)
+            .where(TicketModel.ticket_id == tid)
+            .options(selectinload(TicketModel.column))
+        )
+    ).scalar_one()
+    hr = await test_db.get(Column, "col_human_review")
+    assert hr is not None
+    ticket.column_id = hr.column_id
+    ticket.column = hr
+    ticket.status = derive_status(ticket)
+    await test_db.commit()
+
+    spoof_headers = _h(roles, "agent_spoof_human", "agent")
+    verdict = await client.post(
+        f"/api/v1/tickets/{tid}/verdict",
+        json={"verdict": {"decision": "approve"}},
+        headers=spoof_headers,
+    )
+    assert verdict.status_code == 403, verdict.text
+    assert verdict.json()["error"]["code"] == ErrorCode.ROLE_FORBIDDEN.value
+    ticket2 = await test_db.get(TicketModel, tid)
+    await test_db.refresh(ticket2)
+    assert ticket2.status != "done"
+
+
+@pytest.mark.asyncio
+async def test_ticket_mutations_persist_event_log_rows(client: AsyncClient, roles, test_db: AsyncSession):
+    """Medium: create/update/archive/move/delegate/comment/attachment write events rows."""
+    import io
+
+    human = _h(roles, "user_pm", "human")
+
+    created = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("Event log create"),
+        headers=human,
+    )
+    assert created.status_code == 201
+    tid = created.json()["ticket_id"]
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "TICKET_CREATED", Event.ticket_id == tid)
+        )
+    ).scalars().first()
+
+    updated = await client.patch(
+        f"/api/v1/tickets/{tid}",
+        json={"title": "Event log updated"},
+        headers=human,
+    )
+    assert updated.status_code == 200
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "TICKET_UPDATED", Event.ticket_id == tid)
+        )
+    ).scalars().first()
+
+    archived = await client.post(f"/api/v1/tickets/{tid}/archive", headers=human)
+    assert archived.status_code == 200
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "TICKET_ARCHIVED", Event.ticket_id == tid)
+        )
+    ).scalars().first()
+
+    unarchived = await client.post(f"/api/v1/tickets/{tid}/unarchive", headers=human)
+    assert unarchived.status_code == 200
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "TICKET_UNARCHIVED", Event.ticket_id == tid)
+        )
+    ).scalars().first()
+
+    tid2 = (
+        await client.post("/api/v1/tickets", json=board_ticket("Move me"), headers=human)
+    ).json()["ticket_id"]
+    tid3 = (
+        await client.post("/api/v1/tickets", json=board_ticket("Anchor"), headers=human)
+    ).json()["ticket_id"]
+    moved = await client.patch(
+        f"/api/v1/tickets/{tid2}/move",
+        json={"target_column_id": "col_todo", "previous_ticket_id": tid3},
+        headers=human,
+    )
+    assert moved.status_code == 200
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "TICKET_MOVED", Event.ticket_id == tid2)
+        )
+    ).scalars().first()
+
+    delegated = await client.post(
+        f"/api/v1/tickets/{tid}/delegate",
+        json={
+            "subtask_title": "Child",
+            "subtask_description": "child work",
+            "acceptance_criteria": ["ok"],
+        },
+        headers=human,
+    )
+    assert delegated.status_code == 201
+    child_id = delegated.json()["ticket_id"]
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "TICKET_DELEGATED", Event.ticket_id == child_id)
+        )
+    ).scalars().first()
+
+    comment = await client.post(
+        f"/api/v1/tickets/{tid}/comments",
+        json={"content": "hello event", "is_internal": False},
+        headers=human,
+    )
+    assert comment.status_code == 201
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "COMMENT_ADDED", Event.ticket_id == tid)
+        )
+    ).scalars().first()
+
+    upload = await client.post(
+        f"/api/v1/tickets/{tid}/attachments",
+        files={"file": ("note.txt", io.BytesIO(b"hi"), "text/plain")},
+        headers=human,
+    )
+    assert upload.status_code == 201, upload.text
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "ATTACHMENT_ADDED", Event.ticket_id == tid)
+        )
+    ).scalars().first()
+    att_id = upload.json()["attachment_id"]
+    deleted = await client.delete(f"/api/v1/tickets/{tid}/attachments/{att_id}", headers=human)
+    assert deleted.status_code == 200
+    assert (
+        await test_db.execute(
+            select(Event).where(Event.type == "ATTACHMENT_DELETED", Event.ticket_id == tid)
+        )
+    ).scalars().first()
+
+
+@pytest.mark.asyncio
+async def test_move_t16_requires_reason_and_records_review(
+    client: AsyncClient, roles, test_db: AsyncSession
+):
+    """Medium: human_review→postmortem_pending move needs reason + review row."""
+    from ak5.models.column import Column
+    from ak5.models.ticket import Ticket as TicketModel
+    from ak5.models.ticket_review import TicketReview
+    from ak5.services.ticket_status import derive_status
+    from sqlalchemy.orm import selectinload
+
+    human = _h(roles, "user_pm", "human")
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Reject via drag"), headers=human)
+    ).json()["ticket_id"]
+    ticket = (
+        await test_db.execute(
+            select(TicketModel)
+            .where(TicketModel.ticket_id == tid)
+            .options(selectinload(TicketModel.column))
+        )
+    ).scalar_one()
+    hr = await test_db.get(Column, "col_human_review")
+    assert hr is not None
+    ticket.column_id = hr.column_id
+    ticket.column = hr
+    ticket.status = derive_status(ticket)
+    await test_db.commit()
+
+    missing = await client.patch(
+        f"/api/v1/tickets/{tid}/move",
+        json={"target_column_id": "col_postmortem_pending"},
+        headers=human,
+    )
+    assert missing.status_code == 422, missing.text
+    assert missing.json()["error"]["code"] == ErrorCode.PAYLOAD_INVALID.value
+
+    ok = await client.patch(
+        f"/api/v1/tickets/{tid}/move",
+        json={
+            "target_column_id": "col_postmortem_pending",
+            "reason": "needs clearer acceptance criteria",
+        },
+        headers=human,
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["stage"] == "postmortem_pending"
+    review = (
+        await test_db.execute(
+            select(TicketReview).where(
+                TicketReview.ticket_id == tid,
+                TicketReview.stage == "human_review",
+                TicketReview.decision == "reject",
+            )
+        )
+    ).scalars().first()
+    assert review is not None
+    assert review.reason == "needs clearer acceptance criteria"
+
+
+@pytest.mark.asyncio
+async def test_patch_blocked_releases_claim_and_moves_to_backlog(
+    client: AsyncClient, roles, test_db: AsyncSession
+):
+    """Medium: PATCH status=blocked on claimed in_progress must run B1 side effects."""
+    human = _h(roles, "user_pm", "human")
+    worker = _h(roles, "agent_worker")
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Claim then PATCH block"), headers=human)
+    ).json()["ticket_id"]
+    claim = await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)
+    assert claim.status_code == 200
+    assert claim.json()["ticket"]["stage"] == "in_progress"
+    assert claim.json()["claim_token"]
+
+    blocked = await client.patch(
+        f"/api/v1/tickets/{tid}",
+        json={"status": "blocked", "blocked_by": "waiting on vendor"},
+        headers=human,
+    )
+    assert blocked.status_code == 200, blocked.text
+    body = blocked.json()
+    assert body["status"] == "blocked"
+    assert body["stage"] == "backlog"
+    assert body["claim_token"] is None
+    assert body["claimed_by"] is None
+    assert body["blocked_kind"] == "external"
+    assert body["blocked_by"] == "waiting on vendor"
+
+
+@pytest.mark.asyncio
+async def test_idempotency_fingerprint_rejects_different_ticket_body(
+    client: AsyncClient, roles
+):
+    """Low: same Idempotency-Key + op with different body/ticket → PAYLOAD_INVALID."""
+    human = _h(roles, "user_pm", "human")
+    headers = {**human, "Idempotency-Key": "idem-fp-cross"}
+    r1 = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("First fingerprint"),
+        headers=headers,
+    )
+    assert r1.status_code == 201
+    r2 = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("Second fingerprint"),
+        headers=headers,
+    )
+    assert r2.status_code == 422, r2.text
+    assert r2.json()["error"]["code"] == ErrorCode.PAYLOAD_INVALID.value
+
+
+@pytest.mark.asyncio
+async def test_lease_reclaim_audits_as_system_actor(
+    client: AsyncClient, roles, test_db: AsyncSession
+):
+    """Low: T8/T20 reclaim audit uses seeded system actor, not user_pm."""
+    from ak5.models.audit import AuditLog
+    from ak5.seed import SYSTEM_ACTOR_ID
+
+    human = _h(roles, "user_pm", "human")
+    worker = _h(roles, "agent_worker")
+    # Ensure system actor exists even if this DB was seeded before the seed change.
+    if await test_db.get(Actor, SYSTEM_ACTOR_ID) is None:
+        test_db.add(
+            Actor(
+                actor_id=SYSTEM_ACTOR_ID,
+                actor_type="agent",
+                name="System",
+                role="system",
+                capabilities=json.dumps([]),
+                status="idle",
+            )
+        )
+        await test_db.commit()
+
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Expire me"), headers=human)
+    ).json()["ticket_id"]
+    claim = await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)
+    assert claim.status_code == 200
+    ticket = await test_db.get(Ticket, tid)
+    assert ticket is not None
+    ticket.lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+    await test_db.commit()
+
+    nxt = await client.get("/api/v1/boards/proj-core-engine/next", headers=worker)
+    assert nxt.status_code == 200
+
+    rows = (
+        await test_db.execute(
+            select(AuditLog)
+            .where(AuditLog.target_id == tid, AuditLog.action == "TRANSITION")
+            .order_by(AuditLog.log_id.desc())
+        )
+    ).scalars().all()
+    reclaim = [a for a in rows if a.payload and "lease_expire" in a.payload]
+    assert reclaim, [(a.actor_id, a.payload) for a in rows[:5]]
+    assert all(a.actor_id == SYSTEM_ACTOR_ID for a in reclaim)
+    assert all(a.actor_id != "user_pm" for a in reclaim)

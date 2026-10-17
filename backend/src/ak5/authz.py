@@ -9,10 +9,6 @@ from ak5.models.actor import Actor
 RESERVED_ADMIN_ROLES: frozenset[str] = frozenset({"admin", "system_admin", "root", "superuser"})
 RESERVED_ADMIN_IDS: frozenset[str] = frozenset({"admin", "system", "root"})
 
-# Roles accepted by login / workflow transitions (cli.md §4.2, workflow.md §1).
-WORKFLOW_ROLES: frozenset[str] = frozenset(r.value for r in Role)
-
-
 def is_admin(actor: Actor) -> bool:
     """Check if the given actor possesses administrative privileges."""
     return actor.role.lower() in RESERVED_ADMIN_ROLES or actor.actor_id.lower() in RESERVED_ADMIN_IDS
@@ -28,15 +24,29 @@ def is_admin_or_owner(actor: Actor, created_by: str | None) -> bool:
 def resolve_workflow_role(actor: Actor) -> Role | None:
     """Map an actor's stored role to a workflow :class:`Role`.
 
-    Explicit ``triage|worker|gatekeeper|human`` values win. Legacy human
-    actors (e.g. role ``PM``) are treated as :attr:`Role.HUMAN` so existing
-    seeds keep working until identities are re-logged with v2 roles.
+    Role and ``actor_type`` must agree:
+
+    - :attr:`Role.HUMAN` only when ``actor_type == "human"`` (legacy display
+      roles like ``PM`` still count as human).
+    - ``triage`` / ``worker`` / ``gatekeeper`` only when ``actor_type == "agent"``.
+
+    Mismatches (e.g. agent with stored role ``human``) return ``None`` so
+    callers raise :class:`~ak5.contracts.errors.ErrorCode.ROLE_FORBIDDEN`.
     """
     raw = (actor.role or "").strip().lower()
-    if raw in WORKFLOW_ROLES:
-        return Role(raw)
-    if actor.actor_type == "human":
+    actor_type = (actor.actor_type or "").strip().lower()
+    agent_roles = {Role.TRIAGE.value, Role.WORKER.value, Role.GATEKEEPER.value}
+
+    if actor_type == "human":
+        if raw in agent_roles:
+            return None
         return Role.HUMAN
+
+    if actor_type == "agent":
+        if raw in agent_roles:
+            return Role(raw)
+        return None
+
     return None
 
 
