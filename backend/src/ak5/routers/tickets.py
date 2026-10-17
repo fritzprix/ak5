@@ -92,7 +92,6 @@ def _format_ticket_out(t: Ticket, subtask_stats: tuple[int, int] = (0, 0)) -> Ti
         stage=stage,
         attempt=t.attempt,
         max_attempts=t.max_attempts,
-        claim_token=t.claim_token,
         claimed_by=t.claimed_by,
         lease_expires_at=t.lease_expires_at,
         lease_expirations=t.lease_expirations,
