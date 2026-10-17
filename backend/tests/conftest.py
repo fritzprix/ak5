@@ -25,15 +25,15 @@ os.environ.pop("AK5_AUTH_PASSWORD", None)
 os.environ.pop("AK5_WEB_PASSWORD", None)
 os.environ.pop("AK5_AUTH_USERNAME", None)
 
-import ak5.models  # noqa: E402, F401
+import ak5.server.models  # noqa: E402, F401  # register SQLAlchemy metadata
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
-from ak5.config import settings  # noqa: E402
-from ak5.database import get_db  # noqa: E402
-from ak5.main import app  # noqa: E402
-from ak5.models.base import Base  # noqa: E402
-from ak5.routers.auth import create_access_token  # noqa: E402
-from ak5.security import reset_secret_caches  # noqa: E402
+from ak5.server.config import settings  # noqa: E402
+from ak5.server.database import get_db  # noqa: E402
+from ak5.server.main import app  # noqa: E402
+from ak5.server.models.base import Base  # noqa: E402
+from ak5.server.routers.auth import create_access_token  # noqa: E402
+from ak5.server.security import reset_secret_caches  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import event  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402

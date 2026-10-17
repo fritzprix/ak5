@@ -1,78 +1,13 @@
-"""Authorization utilities and workflow role checks for AK5."""
-
+"""Lazy compatibility shim — prefer ``ak5.server.authz``."""
 from __future__ import annotations
 
-from ak5.contracts.errors import ErrorCode
-from ak5.contracts.stages import Role
-from ak5.models.actor import Actor
+from ak5._lazy_shim import make_module_getattr
 
-RESERVED_ADMIN_ROLES: frozenset[str] = frozenset({"admin", "system_admin", "root", "superuser"})
-RESERVED_ADMIN_IDS: frozenset[str] = frozenset({"admin", "system", "root"})
-
-def is_admin(actor: Actor) -> bool:
-    """Check if the given actor possesses administrative privileges."""
-    return actor.role.lower() in RESERVED_ADMIN_ROLES or actor.actor_id.lower() in RESERVED_ADMIN_IDS
+__getattr__ = make_module_getattr(__name__, "ak5.server.authz")
 
 
-def is_admin_or_owner(actor: Actor, created_by: str | None) -> bool:
-    """Check if the actor has administrative privileges or matches the owner/creator ID."""
-    if is_admin(actor):
-        return True
-    return created_by == actor.actor_id
+def __dir__() -> list[str]:
+    import importlib
 
-
-def resolve_workflow_role(actor: Actor) -> Role | None:
-    """Map an actor's stored role to a workflow :class:`Role`.
-
-    Role and ``actor_type`` must agree:
-
-    - :attr:`Role.HUMAN` only when ``actor_type == "human"`` (legacy display
-      roles like ``PM`` still count as human).
-    - ``triage`` / ``worker`` / ``gatekeeper`` only when ``actor_type == "agent"``.
-
-    Mismatches (e.g. agent with stored role ``human``) return ``None`` so
-    callers raise :class:`~ak5.contracts.errors.ErrorCode.ROLE_FORBIDDEN`.
-    """
-    raw = (actor.role or "").strip().lower()
-    actor_type = (actor.actor_type or "").strip().lower()
-    agent_roles = {Role.TRIAGE.value, Role.WORKER.value, Role.GATEKEEPER.value}
-
-    if actor_type == "human":
-        if raw in agent_roles:
-            return None
-        return Role.HUMAN
-
-    if actor_type == "agent":
-        if raw in agent_roles:
-            return Role(raw)
-        return None
-
-    return None
-
-
-class RoleForbiddenError(Exception):
-    """Raised when an actor lacks a required workflow role."""
-
-    def __init__(self, message: str) -> None:
-        self.code = ErrorCode.ROLE_FORBIDDEN
-        self.message = message
-        super().__init__(message)
-
-
-def require_roles(actor: Actor, *allowed: Role) -> Role:
-    """Return the actor's workflow role or raise :class:`RoleForbiddenError`."""
-    role = resolve_workflow_role(actor)
-    if role is None or role not in allowed:
-        allowed_names = ", ".join(sorted(r.value for r in allowed))
-        raise RoleForbiddenError(
-            f"Role '{actor.role}' cannot perform this action (requires one of: {allowed_names})",
-        )
-    return role
-
-
-def actor_has_capabilities(actor: Actor, required: list[str] | tuple[str, ...] | None) -> bool:
-    """True when ``required`` is empty or every required capability is on the actor."""
-    if not required:
-        return True
-    have = {c.lower() for c in actor.capability_list}
-    return all(c.lower() in have for c in required)
+    mod = importlib.import_module("ak5.server.authz")
+    return sorted(set(dir(mod)) | set(globals()))

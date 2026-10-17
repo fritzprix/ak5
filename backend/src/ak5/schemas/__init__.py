@@ -1,77 +1,17 @@
-from ak5.schemas.actor import (
-    ActorBase,
-    ActorIdentifyRequest,
-    ActorOut,
-    ActorUpdate,
-    TokenResponse,
-)
-from ak5.schemas.audit import AuditLogOut
-from ak5.schemas.board import (
-    BoardBase,
-    BoardClaimOut,
-    BoardCreate,
-    BoardDetailOut,
-    BoardOut,
-    ColumnWithTicketsOut,
-)
-from ak5.schemas.column import ColumnBase, ColumnCreate, ColumnOut
-from ak5.schemas.event import EventOut, EventsPollOut, SSEEventOut
-from ak5.schemas.subscription import (
-    LongPollEventsOut,
-    SubscriptionAckIn,
-    SubscriptionAckOut,
-    SubscriptionCreate,
-    SubscriptionFilter,
-    SubscriptionOut,
-)
-from ak5.schemas.ticket import (
-    TicketAttachmentOut,
-    TicketBase,
-    TicketCommentBase,
-    TicketCommentCreate,
-    TicketCommentOut,
-    TicketCreate,
-    TicketDelegateRequest,
-    TicketDetailOut,
-    TicketMoveRequest,
-    TicketOut,
-    TicketUpdate,
-)
+"""Lazy compatibility shim — prefer ``ak5.server.schemas``."""
 
-__all__ = [
-    "ActorBase",
-    "ActorIdentifyRequest",
-    "ActorOut",
-    "ActorUpdate",
-    "AuditLogOut",
-    "BoardBase",
-    "BoardClaimOut",
-    "BoardCreate",
-    "BoardDetailOut",
-    "BoardOut",
-    "ColumnBase",
-    "ColumnCreate",
-    "ColumnOut",
-    "ColumnWithTicketsOut",
-    "EventOut",
-    "EventsPollOut",
-    "LongPollEventsOut",
-    "SSEEventOut",
-    "SubscriptionAckIn",
-    "SubscriptionAckOut",
-    "SubscriptionCreate",
-    "SubscriptionFilter",
-    "SubscriptionOut",
-    "TicketAttachmentOut",
-    "TicketBase",
-    "TicketCommentBase",
-    "TicketCommentCreate",
-    "TicketCommentOut",
-    "TicketCreate",
-    "TicketDelegateRequest",
-    "TicketDetailOut",
-    "TicketMoveRequest",
-    "TicketOut",
-    "TicketUpdate",
-    "TokenResponse",
-]
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+from ak5._lazy_shim import install_submodule_shim
+
+install_submodule_shim(alias_prefix="ak5.schemas", target_prefix="ak5.server.schemas")
+
+
+def __getattr__(name: str) -> Any:
+    if name.startswith("_"):
+        raise AttributeError(name)
+    mod = importlib.import_module("ak5.server.schemas")
+    return getattr(mod, name)

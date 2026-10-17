@@ -1,12 +1,20 @@
-from ak5.services.discovery import discover_agents
-from ak5.services.event_bus import BoardEvent, event_bus
-from ak5.services.lexorank import initial_rank, rank_between, rebalance_ranks
+"""Lazy compatibility shim — prefer ``ak5.server.services``.
 
-__all__ = [
-    "BoardEvent",
-    "discover_agents",
-    "event_bus",
-    "initial_rank",
-    "rank_between",
-    "rebalance_ranks",
-]
+``event_context`` is a real client-safe submodule (contracts re-export).
+"""
+
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+from ak5._lazy_shim import install_submodule_shim
+
+install_submodule_shim(alias_prefix="ak5.services", target_prefix="ak5.server.services")
+
+
+def __getattr__(name: str) -> Any:
+    if name.startswith("_"):
+        raise AttributeError(name)
+    mod = importlib.import_module(f"ak5.server.services.{name}")
+    return mod

@@ -1,35 +1,17 @@
-from ak5.models.actor import Actor
-from ak5.models.audit import AuditLog
-from ak5.models.base import Base
-from ak5.models.board import Board
-from ak5.models.board_member import BoardMember
-from ak5.models.column import Column
-from ak5.models.device_code import DeviceCode
-from ak5.models.event import Event
-from ak5.models.event_log_meta import EventLogMeta
-from ak5.models.idempotency import IdempotencyKey
-from ak5.models.subscription import Subscription
-from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
-from ak5.models.ticket_postmortem import TicketPostmortem
-from ak5.models.ticket_review import TicketReview
-from ak5.models.ticket_revision import TicketRevision
+"""Lazy compatibility shim — prefer ``ak5.server.models``."""
 
-__all__ = [
-    "Actor",
-    "AuditLog",
-    "Base",
-    "Board",
-    "BoardMember",
-    "Column",
-    "DeviceCode",
-    "Event",
-    "EventLogMeta",
-    "IdempotencyKey",
-    "Subscription",
-    "Ticket",
-    "TicketAttachment",
-    "TicketComment",
-    "TicketPostmortem",
-    "TicketReview",
-    "TicketRevision",
-]
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+from ak5._lazy_shim import install_submodule_shim
+
+install_submodule_shim(alias_prefix="ak5.models", target_prefix="ak5.server.models")
+
+
+def __getattr__(name: str) -> Any:
+    if name.startswith("_"):
+        raise AttributeError(name)
+    mod = importlib.import_module("ak5.server.models")
+    return getattr(mod, name)

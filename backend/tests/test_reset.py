@@ -92,16 +92,16 @@ def test_reset_nontty_yes_allowed_with_env(monkeypatch):
     monkeypatch.setenv("AK5_ALLOW_DESTRUCTIVE_RESET", "1")
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr(
-        "ak5.cli.commands.reset.reset_kanban_data",
+        "ak5.server.seed.reset_kanban_data",
         lambda **_kwargs: _async_counts(),
     )
     # Avoid dual-DB / wipe surprises in the isolated temp store.
     monkeypatch.setattr(
-        "ak5.services.db_safety.prepare_database_for_use",
+        "ak5.server.services.db_safety.prepare_database_for_use",
         lambda *_a, **_k: None,
     )
     monkeypatch.setattr(
-        "ak5.services.db_safety.snapshot_live_database",
+        "ak5.server.services.db_safety.snapshot_live_database",
         lambda *_a, **_k: None,
     )
     runner = CliRunner()
