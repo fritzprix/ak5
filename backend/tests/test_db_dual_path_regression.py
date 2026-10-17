@@ -209,8 +209,8 @@ def test_incomparable_conflict_blocks_web_cli(tmp_path, monkeypatch):
 
     runner = CliRunner()
     with (
-        patch("ak5.cli.commands.web._load_dotenv_files"),
-        patch("ak5.cli.commands.web.uvicorn.run") as run_mock,
+        patch("ak5.cli.commands.serve._load_dotenv_files"),
+        patch("ak5.cli.commands.serve.uvicorn.run") as run_mock,
     ):
         result = runner.invoke(cli, ["web", "--port", "18001", "--no-browser"])
 
