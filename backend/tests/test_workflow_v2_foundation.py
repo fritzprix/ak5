@@ -351,12 +351,13 @@ async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
             "blocked_actor",
         } <= ticket_cols
 
-        exec_row = next(
-            r
+        sub_cols = {
+            r["name"]
             for r in (await conn.execute(text("PRAGMA table_info(subscriptions)"))).mappings()
-            if r["name"] == "exec_command"
-        )
-        assert exec_row["notnull"] == 0
+        }
+        # Filter-only subscriptions (#11): server exec_command removed
+        assert "exec_command" not in sub_cols
+        assert {"ack_cursor", "role", "capabilities", "for_agent"} <= sub_cols
 
         stages = {
             row[0]
