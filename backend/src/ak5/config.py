@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     ATTACHMENTS_DIR: str = Field(default_factory=lambda: str(get_default_attachments_dir()))
     MAX_ATTACHMENT_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
+    # Workflow v2 (workflow.md §2.2 / claim lease)
+    CLAIM_LEASE_TTL_SECONDS: int = 300  # 5 minutes
+    MAX_AUTO_BOARDS: int = 50
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
