@@ -46,26 +46,95 @@ def auth_is_configured() -> bool:
     return get_web_auth_config().enabled or bool(get_identify_secret())
 
 
-def assert_safe_bind(host: str, *, insecure: bool) -> None:
-    """Refuse non-loopback bind when auth is off unless ``--insecure``."""
-    if is_loopback_bind(host):
+def assert_safe_bind(
+    host: str,
+    *,
+    insecure: bool,
+    tailscale_serve: bool = False,
+) -> None:
+    """Refuse public exposure when auth is off unless ``--insecure``.
+
+    Exposure includes non-loopback binds **and** ``--tailscale-serve`` (which
+    publishes the loopback-bound server to the tailnet over HTTPS).
+    """
+    exposed = (not is_loopback_bind(host)) or tailscale_serve
+    if not exposed:
         return
     if auth_is_configured():
         return
     if insecure:
+        reason = (
+            f"Tailscale Serve on [cyan]{host}[/cyan]"
+            if tailscale_serve and is_loopback_bind(host)
+            else f"Binding to [cyan]{host}[/cyan]"
+        )
+        if tailscale_serve and not is_loopback_bind(host):
+            reason = f"Binding to [cyan]{host}[/cyan] with Tailscale Serve"
         console.print(
-            "[bold yellow]Warning:[/bold yellow] Binding to "
-            f"[cyan]{host}[/cyan] with authentication disabled "
-            "([bold]--insecure[/bold])."
+            f"[bold yellow]Warning:[/bold yellow] {reason} with authentication "
+            "disabled ([bold]--insecure[/bold])."
         )
         return
-    console.print(
-        f"[bold red]✗ Refusing to bind to {host} without authentication.[/bold red]\n"
-        "  Non-loopback binds require [cyan]AK5_AUTH_PASSWORD[/cyan] and/or "
-        "[cyan]AK5_IDENTIFY_SECRET[/cyan],\n"
-        "  or pass [bold]--insecure[/bold] to override (not recommended)."
-    )
+    if tailscale_serve and is_loopback_bind(host):
+        console.print(
+            "[bold red]✗ Refusing --tailscale-serve without authentication.[/bold red]\n"
+            "  Tailscale Serve publishes this process to the tailnet over HTTPS.\n"
+            "  Set [cyan]AK5_AUTH_PASSWORD[/cyan] and/or [cyan]AK5_IDENTIFY_SECRET[/cyan],\n"
+            "  or pass [bold]--insecure[/bold] to override (not recommended)."
+        )
+    else:
+        console.print(
+            f"[bold red]✗ Refusing to bind to {host} without authentication.[/bold red]\n"
+            "  Non-loopback binds require [cyan]AK5_AUTH_PASSWORD[/cyan] and/or "
+            "[cyan]AK5_IDENTIFY_SECRET[/cyan],\n"
+            "  or pass [bold]--insecure[/bold] to override (not recommended)."
+        )
     raise SystemExit(1)
+
+
+_DEFAULT_TRUSTED_PROXIES = "127.0.0.1,::1"
+
+
+def trusted_proxy_ips() -> str:
+    """Comma-separated proxy IPs trusted for ``X-Forwarded-*`` rewriting.
+
+    Always includes loopback (Tailscale Serve / local reverse proxies). Extra
+    entries come only from ``AK5_TRUSTED_PROXIES``.
+    """
+    extra = os.environ.get("AK5_TRUSTED_PROXIES", "").strip()
+    if not extra:
+        return _DEFAULT_TRUSTED_PROXIES
+    extras = [part.strip() for part in extra.split(",") if part.strip()]
+    if not extras:
+        return _DEFAULT_TRUSTED_PROXIES
+    return ",".join([_DEFAULT_TRUSTED_PROXIES, *extras])
+
+
+def resolve_uvicorn_proxy_settings(
+    host: str,
+    *,
+    ui: bool,
+    is_ssl: bool,
+    tailscale_serve: bool,
+) -> tuple[bool, str | None]:
+    """Return ``(proxy_headers, forwarded_allow_ips)`` for ``uvicorn.run``.
+
+    Never uses ``forwarded_allow_ips="*"`` — that lets any client spoof
+    ``X-Forwarded-For`` and bypass IP-based web-auth lockouts.
+
+    - Loopback + (ui | ssl | tailscale): enable, trust loopback (+ env extras).
+    - Non-loopback direct (no ``AK5_TRUSTED_PROXIES``): disable proxy headers.
+    - Non-loopback with ``AK5_TRUSTED_PROXIES``: enable with the restricted list.
+    """
+    wants_proxy_features = ui or is_ssl or tailscale_serve
+    loopback = is_loopback_bind(host)
+    has_extra_trusted = bool(os.environ.get("AK5_TRUSTED_PROXIES", "").strip())
+
+    if loopback and wants_proxy_features:
+        return True, trusted_proxy_ips()
+    if not loopback and wants_proxy_features and has_extra_trusted:
+        return True, trusted_proxy_ips()
+    return False, None
 
 
 def default_daemon_command() -> list[str]:
@@ -75,16 +144,43 @@ def default_daemon_command() -> list[str]:
 
 def start_daemon_sibling(
     command: list[str] | None = None,
+    *,
+    early_exit_check_seconds: float = 1.0,
 ) -> subprocess.Popen[str]:
-    """Spawn daemon as a sibling process (events.md §4.5). Not in app lifespan."""
+    """Spawn daemon as a sibling process (events.md §4.5). Not in app lifespan.
+
+    stdout/stderr are appended to ``AK5_DATA_DIR/daemon/serve-daemon.log``. After
+    start, poll briefly so an immediate crash surfaces a warning instead of
+    silent failure.
+    """
+    from ak5.paths import get_app_data_dir
+
     argv = list(command) if command is not None else default_daemon_command()
+    log_dir = get_app_data_dir() / "daemon"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "serve-daemon.log"
+
     console.print(f"[cyan]▶ Starting sibling daemon:[/cyan] {' '.join(argv)}")
-    return subprocess.Popen(
-        argv,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    console.print(f"[dim]  daemon log: {log_path}[/dim]")
+
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        log_file.write(f"\n--- ak5 serve --daemon start pid-pending argv={argv!r} ---\n")
+        log_file.flush()
+        proc = subprocess.Popen(
+            argv,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    if early_exit_check_seconds > 0:
+        time.sleep(early_exit_check_seconds)
+    if proc.poll() is not None:
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] Sibling daemon exited early "
+            f"(code {proc.returncode}). See [cyan]{log_path}[/cyan]."
+        )
+    return proc
 
 
 def stop_daemon_sibling(
@@ -269,7 +365,7 @@ def run_serve(
 ) -> None:
     """Shared entry for ``ak5 serve`` and the deprecated ``ak5 web`` alias."""
     _load_dotenv_files()
-    assert_safe_bind(host, insecure=insecure)
+    assert_safe_bind(host, insecure=insecure, tailscale_serve=tailscale_serve)
     _prepare_database()
 
     if ui:
@@ -307,7 +403,9 @@ def run_serve(
         _print_api_banner(host, port)
 
     daemon_proc: subprocess.Popen[str] | None = None
-    use_proxy = ui or is_ssl or tailscale_serve
+    proxy_headers, forwarded_allow_ips = resolve_uvicorn_proxy_settings(
+        host, ui=ui, is_ssl=is_ssl, tailscale_serve=tailscale_serve
+    )
     try:
         if daemon:
             daemon_proc = start_daemon_sibling(daemon_command)
@@ -316,8 +414,8 @@ def run_serve(
             host=host,
             port=port,
             reload=reload,
-            proxy_headers=use_proxy,
-            forwarded_allow_ips="*" if use_proxy else None,
+            proxy_headers=proxy_headers,
+            forwarded_allow_ips=forwarded_allow_ips,
             ssl_keyfile=ssl_keyfile,
             ssl_certfile=ssl_certfile,
         )
@@ -351,7 +449,7 @@ def run_serve(
 @click.option(
     "--insecure",
     is_flag=True,
-    help="Allow non-loopback bind without auth (dangerous; not recommended)",
+    help="Allow non-loopback bind or --tailscale-serve without auth (dangerous)",
 )
 @click.option("--no-browser", is_flag=True, help="Do not open a browser tab (with --ui)")
 def serve_command(

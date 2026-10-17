@@ -14,13 +14,16 @@ from ak5.cli.commands.serve import (
     assert_safe_bind,
     auth_is_configured,
     is_loopback_bind,
+    resolve_uvicorn_proxy_settings,
     start_daemon_sibling,
     stop_daemon_sibling,
+    trusted_proxy_ips,
 )
 from ak5.cli.main import cli
 from ak5.main import app, create_app
 from click.testing import CliRunner
 from fastapi import FastAPI
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 
 @pytest.mark.parametrize(
@@ -46,7 +49,41 @@ def test_assert_safe_bind_allows_loopback_without_auth(monkeypatch: pytest.Monke
     monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
     monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
     monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
-    assert_safe_bind("127.0.0.1", insecure=False)
+    assert_safe_bind("127.0.0.1", insecure=False, tailscale_serve=False)
+
+
+def test_assert_safe_bind_rejects_tailscale_serve_on_loopback_without_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--tailscale-serve publishes to the tailnet even when bind is loopback."""
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
+    monkeypatch.delenv("IDENTIFY_SECRET", raising=False)
+    monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.WEB_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
+    assert not auth_is_configured()
+    with pytest.raises(SystemExit) as exc:
+        assert_safe_bind("127.0.0.1", insecure=False, tailscale_serve=True)
+    assert exc.value.code == 1
+
+
+def test_assert_safe_bind_allows_tailscale_serve_with_insecure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
+    monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
+    assert_safe_bind("127.0.0.1", insecure=True, tailscale_serve=True)
+
+
+def test_assert_safe_bind_allows_tailscale_serve_with_web_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret")
+    assert_safe_bind("127.0.0.1", insecure=False, tailscale_serve=True)
 
 
 def test_assert_safe_bind_rejects_non_loopback_without_auth(
@@ -112,6 +149,35 @@ def test_serve_cli_rejects_non_loopback_without_auth(
     run_mock.assert_not_called()
 
 
+def test_serve_cli_rejects_tailscale_serve_without_auth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loopback bind + --tailscale-serve must still require auth (or --insecure)."""
+    monkeypatch.setenv("AK5_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
+    monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.WEB_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
+
+    runner = CliRunner()
+    with (
+        patch("ak5.cli.commands.serve.uvicorn.run") as run_mock,
+        patch("ak5.cli.commands.serve._prepare_database") as prep_mock,
+        patch("ak5.cli.tailscale.enable_tailscale_serve") as ts_mock,
+    ):
+        result = runner.invoke(cli, ["serve", "--tailscale-serve", "--port", "18020"])
+
+    assert result.exit_code == 1, result.output
+    assert "authentication" in result.output.lower() or "Refusing" in result.output
+    assert "--insecure" in result.output
+    run_mock.assert_not_called()
+    prep_mock.assert_not_called()
+    ts_mock.assert_not_called()
+
+
 def test_serve_cli_insecure_allows_non_loopback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -148,15 +214,18 @@ def test_serve_cli_insecure_allows_non_loopback(
     assert kwargs["port"] == 18011
 
 
-def test_daemon_sibling_start_and_cleanup() -> None:
+def test_daemon_sibling_start_and_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Spawn a substitute long-lived process and ensure terminate cleans it up."""
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("AK5_DATA_DIR", str(data))
     child_script = (
         "import time, signal, sys\n"
         "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
         "time.sleep(60)\n"
     )
     cmd = [sys.executable, "-c", child_script]
-    proc = start_daemon_sibling(cmd)
+    proc = start_daemon_sibling(cmd, early_exit_check_seconds=0)
     try:
         assert proc.poll() is None
         # Give the child a moment to start
@@ -164,10 +233,30 @@ def test_daemon_sibling_start_and_cleanup() -> None:
         while time.monotonic() < deadline and proc.poll() is not None:
             time.sleep(0.05)
         assert proc.poll() is None, "substitute daemon exited immediately"
+        log_path = data / "daemon" / "serve-daemon.log"
+        assert log_path.is_file()
     finally:
         stop_daemon_sibling(proc, grace_seconds=2.0)
 
     assert proc.poll() is not None
+
+
+def test_daemon_sibling_warns_on_early_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("AK5_DATA_DIR", str(data))
+    cmd = [sys.executable, "-c", "import sys; sys.exit(7)"]
+    proc = start_daemon_sibling(cmd, early_exit_check_seconds=0.2)
+    assert proc.poll() == 7
+    captured = capsys.readouterr()
+    assert "exited early" in captured.out.lower() or "Warning" in captured.out
+    assert "serve-daemon.log" in captured.out
+    log_path = data / "daemon" / "serve-daemon.log"
+    assert log_path.is_file()
 
 
 def test_serve_daemon_flag_spawns_and_cleans_up(
@@ -188,7 +277,7 @@ def test_serve_daemon_flag_spawns_and_cleans_up(
     started: list[subprocess.Popen[str]] = []
 
     def fake_start(command: list[str] | None = None) -> subprocess.Popen[str]:
-        proc = start_daemon_sibling(substitute)
+        proc = start_daemon_sibling(substitute, early_exit_check_seconds=0)
         started.append(proc)
         return proc
 
@@ -216,6 +305,7 @@ def test_web_is_alias_for_serve_ui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
     runner = CliRunner()
     with (
         patch("ak5.cli.commands.serve._prepare_database"),
@@ -235,6 +325,8 @@ def test_web_is_alias_for_serve_ui(
     assert kwargs["host"] == "127.0.0.1"
     assert kwargs["port"] == 18013
     assert kwargs["proxy_headers"] is True
+    assert kwargs["forwarded_allow_ips"] == "127.0.0.1,::1"
+    assert kwargs["forwarded_allow_ips"] != "*"
 
 
 def test_serve_ui_flag_uses_ui_path(
@@ -242,6 +334,7 @@ def test_serve_ui_flag_uses_ui_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
     runner = CliRunner()
     with (
         patch("ak5.cli.commands.serve._prepare_database"),
@@ -255,6 +348,152 @@ def test_serve_ui_flag_uses_ui_path(
     banner_mock.assert_called_once()
     run_mock.assert_called_once()
     assert run_mock.call_args.kwargs["proxy_headers"] is True
+    assert run_mock.call_args.kwargs["forwarded_allow_ips"] == "127.0.0.1,::1"
+
+
+def test_resolve_proxy_settings_loopback_ui_restricts_trusted_ips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+    enabled, allow = resolve_uvicorn_proxy_settings(
+        "127.0.0.1", ui=True, is_ssl=False, tailscale_serve=False
+    )
+    assert enabled is True
+    assert allow == "127.0.0.1,::1"
+    assert allow != "*"
+
+
+def test_resolve_proxy_settings_non_loopback_disables_proxy_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+    enabled, allow = resolve_uvicorn_proxy_settings(
+        "0.0.0.0", ui=True, is_ssl=False, tailscale_serve=False
+    )
+    assert enabled is False
+    assert allow is None
+
+
+def test_resolve_proxy_settings_non_loopback_with_trusted_proxies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AK5_TRUSTED_PROXIES", "10.0.0.5")
+    enabled, allow = resolve_uvicorn_proxy_settings(
+        "0.0.0.0", ui=True, is_ssl=False, tailscale_serve=False
+    )
+    assert enabled is True
+    assert allow is not None
+    assert "10.0.0.5" in allow
+    assert "127.0.0.1" in allow
+    assert "*" not in allow.split(",")
+
+
+def test_trusted_proxy_ips_merges_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+    assert trusted_proxy_ips() == "127.0.0.1,::1"
+    monkeypatch.setenv("AK5_TRUSTED_PROXIES", "10.1.2.3, 10.1.2.4")
+    assert trusted_proxy_ips() == "127.0.0.1,::1,10.1.2.3,10.1.2.4"
+
+
+@pytest.mark.asyncio
+async def test_non_loopback_client_cannot_spoof_xff_as_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-loopback peer sending X-Forwarded-For must not rewrite request.client.host."""
+    from collections.abc import Awaitable, Callable, MutableMapping
+    from typing import Any
+
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+    proxy_headers, allow_ips = resolve_uvicorn_proxy_settings(
+        "0.0.0.0", ui=True, is_ssl=True, tailscale_serve=False
+    )
+    # Serve must not trust every client via forwarded_allow_ips="*".
+    assert proxy_headers is False or (allow_ips is not None and allow_ips != "*")
+
+    seen_client: tuple[str, int] | None = None
+
+    async def raw_app(
+        scope: MutableMapping[str, Any],
+        receive: Callable[[], Awaitable[MutableMapping[str, Any]]],
+        send: Callable[[MutableMapping[str, Any]], Awaitable[None]],
+    ) -> None:
+        nonlocal seen_client
+        if scope["type"] != "http":
+            return
+        client = scope.get("client")
+        if isinstance(client, tuple) and len(client) >= 2:
+            seen_client = (str(client[0]), int(client[1]))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    app_under_test: Callable[
+        [
+            MutableMapping[str, Any],
+            Callable[[], Awaitable[MutableMapping[str, Any]]],
+            Callable[[MutableMapping[str, Any]], Awaitable[None]],
+        ],
+        Awaitable[None],
+    ] = raw_app
+    if proxy_headers:
+        assert allow_ips is not None
+        app_under_test = ProxyHeadersMiddleware(raw_app, trusted_hosts=allow_ips)
+
+    peer = ("203.0.113.50", 54321)
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [(b"x-forwarded-for", b"127.0.0.1")],
+        "client": peer,
+        "server": ("0.0.0.0", 8000),
+    }
+
+    async def receive() -> MutableMapping[str, Any]:
+        return {"type": "http.request"}
+
+    async def send(_message: MutableMapping[str, Any]) -> None:
+        return None
+
+    await app_under_test(scope, receive, send)
+    assert seen_client is not None
+    assert seen_client[0] == "203.0.113.50"
+
+
+def test_serve_non_loopback_insecure_disables_proxy_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("AK5_DATA_DIR", str(data))
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
+    monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    with (
+        patch("ak5.cli.commands.serve._prepare_database"),
+        patch("ak5.cli.commands.serve.uvicorn.run") as run_mock,
+        patch("ak5.cli.commands.serve._print_ui_banner"),
+        patch("ak5.cli.commands.serve._open_browser_later"),
+    ):
+        result = runner.invoke(
+            cli,
+            ["serve", "--host", "0.0.0.0", "--ui", "--port", "18021", "--insecure", "--no-browser"],
+        )
+
+    assert result.exit_code == 0, result.output
+    kwargs = run_mock.call_args.kwargs
+    assert kwargs["proxy_headers"] is False
+    assert kwargs.get("forwarded_allow_ips") in (None, "")
 
 
 def test_cli_serve_help_lists_new_flags() -> None:
