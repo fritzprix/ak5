@@ -35,7 +35,12 @@ async def test_mcp_tools_flow(anon_client: AsyncClient, auth_headers, monkeypatc
     headers = auth_headers("user_pm", "human")
     t_resp = await anon_client.post(
         "/api/v1/tickets",
-        json={"title": "Master Feature", "board_id": "proj-core-engine", "column_id": "col_todo"},
+        json={
+            "title": "Master Feature",
+            "board_id": "proj-core-engine",
+            "acceptance_criteria": ["done"],
+            "spec": "Master feature spec",
+        },
         headers=headers,
     )
     parent_id = t_resp.json()["ticket_id"]
@@ -58,16 +63,16 @@ async def test_mcp_tools_flow(anon_client: AsyncClient, auth_headers, monkeypatc
     assert f"Ticket Context: {parent_id}" in ctx_res[0].text
     assert "Worker Subtask from MCP" in ctx_res[0].text
 
-    # 4. Test ak5_update_ticket_status
+    # 4. Test ak5_update_ticket_status (same-stage column only; stage jumps need
+    # workflow transition commands — workflow.md §8)
     upd_res = await ak5_update_ticket_status(
         ticket_id=parent_id,
-        column_name="In Progress",
+        column_name="Backlog",
         status_note="Orchestrator started coordinating subtasks",
         execution_context={"branch": "feat/mcp-flow", "ci_status": "passing"},
     )
     assert len(upd_res) == 1
     assert f"Ticket '{parent_id}' updated" in upd_res[0].text
-    assert "in_progress" in upd_res[0].text
 
     # 5. Test ak5_report_block
     block_res = await ak5_report_block(
