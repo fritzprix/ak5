@@ -122,7 +122,6 @@ def events_wait(
 ) -> None:
     """Wait for a local daemon event (client.md §4.4). Exit 6 on timeout."""
     import json
-    import sys
 
     from ak5.daemon.ipc import daemon_client, ensure_daemon
 

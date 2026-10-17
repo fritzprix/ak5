@@ -6,8 +6,8 @@ from rich.console import Console
 from ak5.cli.commands.agents import agents_command
 from ak5.cli.commands.board import board_command
 from ak5.cli.commands.boards import boards_command, claim_board_command, create_board_command
-from ak5.cli.commands.delegate import delegate_command
 from ak5.cli.commands.daemon import daemon_command
+from ak5.cli.commands.delegate import delegate_command
 from ak5.cli.commands.demo import demo_command
 from ak5.cli.commands.events import events_command, watch_command
 from ak5.cli.commands.login import login_command
