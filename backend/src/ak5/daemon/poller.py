@@ -49,13 +49,21 @@ def _tip_from_expired(body: dict[str, Any]) -> int:
     return 0
 
 
+# Strong refs so background tasks are not GC'd mid-flight (asyncio docs).
+# Overlapping dispatches are OK: each subscriber re-reads local_cursor under lock.
+_dispatch_tasks: set[asyncio.Task[None]] = set()
+
+
 def schedule_dispatch(state: DaemonState, profile: str) -> None:
     """Fan-out in the background so long-poll can continue immediately."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(dispatch_new_events(state, profile))
+
+    task = loop.create_task(dispatch_new_events(state, profile))
+    _dispatch_tasks.add(task)
+    task.add_done_callback(_dispatch_tasks.discard)
 
 
 async def _ack_server(

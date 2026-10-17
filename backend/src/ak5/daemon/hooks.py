@@ -207,17 +207,35 @@ async def _deliver_one(state: DaemonState, sub: LocalSubscriber, event: dict[str
 async def _process_subscriber(state: DaemonState, sub: LocalSubscriber) -> None:
     lock = _subscriber_locks.setdefault(sub.id, asyncio.Lock())
     async with lock:
+        # Re-read under the lock — overlapping dispatch tasks must not reuse a
+        # stale local_cursor snapshot (systematic duplicate hook runs).
+        current = state.get_subscriber(sub.id)
+        if current is None:
+            return
+        cursor = int(current.local_cursor)
         batch = state.events_since(
-            sub.profile,
-            sub.local_cursor,
+            current.profile,
+            cursor,
             limit=100,
-            event_types=sub.events or None,
+            event_types=current.events or None,
         )
         for event in batch:
-            if sub.board_id and event.get("board_id") and event["board_id"] != sub.board_id:
-                state.set_local_cursor(sub.id, int(event["seq"]))
+            seq = int(event["seq"])
+            if seq <= cursor:
                 continue
-            await _deliver_one(state, sub, event)
+            if (
+                current.board_id
+                and event.get("board_id")
+                and event["board_id"] != current.board_id
+            ):
+                state.set_local_cursor(current.id, seq)
+                cursor = seq
+                continue
+            await _deliver_one(state, current, event)
+            refreshed = state.get_subscriber(current.id)
+            if refreshed is None:
+                return
+            cursor = int(refreshed.local_cursor)
 
 
 async def dispatch_new_events(state: DaemonState, profile: str) -> None:

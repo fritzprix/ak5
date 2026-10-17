@@ -363,3 +363,51 @@ def test_subscribe_add_is_local_only():
     assert help_r.exit_code == 0
     assert "local daemon subscriber" in help_r.output.lower() or "Never creates" in help_r.output
     assert "--local/--server" not in help_r.output
+
+
+def test_overlapping_dispatch_runs_each_seq_once(daemon_home, monkeypatch):
+    """Overlapping dispatch tasks must not re-run already-advanced seqs."""
+    import asyncio
+
+    from ak5.daemon.hooks import dispatch_new_events
+    from ak5.daemon.state import DaemonState
+
+    monkeypatch.setenv("AK5_HOOK_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("AK5_HOOK_RETRY_BASE", "0")
+    home: Path = daemon_home["home"]
+    log = home / "hook-seq.log"
+    state = DaemonState(home / "overlap.db")
+    try:
+        state.add_subscriber(
+            profile="worker-1",
+            events=["WORK_AVAILABLE"],
+            # Slow enough that a second dispatch starts mid-flight
+            exec_command=(
+                f'echo "$AK5_TICKET_ID" >> {log}; sleep 0.4'
+            ),
+        )
+        state.append_spool(
+            profile="worker-1",
+            event_type="WORK_AVAILABLE",
+            payload={"event_id": "evt_a"},
+            ticket_id="TK-A",
+        )
+        state.append_spool(
+            profile="worker-1",
+            event_type="WORK_AVAILABLE",
+            payload={"event_id": "evt_b"},
+            ticket_id="TK-B",
+        )
+
+        async def _overlap() -> None:
+            t1 = asyncio.create_task(dispatch_new_events(state, "worker-1"))
+            await asyncio.sleep(0.15)  # mid-flight on first (slow) event
+            t2 = asyncio.create_task(dispatch_new_events(state, "worker-1"))
+            await asyncio.gather(t1, t2)
+
+        asyncio.run(_overlap())
+        lines = [ln.strip() for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert lines.count("TK-A") == 1, lines
+        assert lines.count("TK-B") == 1, lines
+    finally:
+        state.close()
