@@ -24,6 +24,34 @@ def _api_base(server: str) -> str:
     return f"{s}/api/v1"
 
 
+def _tip_from_expired(body: dict[str, Any]) -> int:
+    """CURSOR_EXPIRED tip from error envelope (events.md)."""
+    err = body.get("error") if isinstance(body.get("error"), dict) else {}
+    details = err.get("details") if isinstance(err.get("details"), dict) else {}
+    for key in ("cursor", "oldest_seq", "tip"):
+        raw = details.get(key)
+        if raw is not None:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                pass
+    for key in ("cursor", "next_cursor"):
+        raw = body.get(key)
+        if raw is not None:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                pass
+    return 0
+
+
+async def _ack_server(
+    client: httpx.AsyncClient, sub_id: str, cursor: int
+) -> None:
+    with contextlib.suppress(httpx.HTTPError):
+        await client.post(f"/subscriptions/{sub_id}/ack", json={"cursor": cursor})
+
+
 async def _ensure_subscription(
     client: httpx.AsyncClient, profile: Profile, state: DaemonState
 ) -> str:
@@ -33,7 +61,12 @@ async def _ensure_subscription(
     # Broad filter — local subscribers refine (client.md §4.2)
     resp = await client.post(
         "/subscriptions",
-        json={"filter": {"events": ["WORK_AVAILABLE", "HUMAN_ACTION_REQUIRED", "TICKET_TRANSITIONED"]}},
+        json={
+            "filter": {
+                "events": ["WORK_AVAILABLE", "HUMAN_ACTION_REQUIRED", "TICKET_TRANSITIONED"]
+            },
+            "start": "now",
+        },
     )
     if resp.status_code not in (200, 201):
         resp.raise_for_status()
@@ -41,7 +74,8 @@ async def _ensure_subscription(
     sid = str(body.get("subscription_id") or body.get("id") or "")
     if not sid:
         raise RuntimeError("subscription create returned no id")
-    state.set_server_cursor(profile.name, subscription_id=sid, ack_cursor=0)
+    ack = int(body.get("ack_cursor") or 0)
+    state.set_server_cursor(profile.name, subscription_id=sid, ack_cursor=ack)
     return sid
 
 
@@ -57,7 +91,10 @@ async def poll_profile_once(
     if cred is None or not cred.access_token or cred.status == "revoked":
         return 0
     base = _api_base(profile.server)
-    headers = {"Authorization": f"Bearer {cred.access_token}", "X-AK5-Consumer": f"daemon-{profile.name}"}
+    headers = {
+        "Authorization": f"Bearer {cred.access_token}",
+        "X-AK5-Consumer": f"daemon-{profile.name}",
+    }
     written = 0
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=wait + 10) as client:
         try:
@@ -80,14 +117,21 @@ async def poll_profile_once(
             mark_revoked(profile.name)
             return 0
         if resp.status_code == 410:
-            # CURSOR_EXPIRED → RESYNC marker
+            body: dict[str, Any] = {}
+            if resp.headers.get("content-type", "").startswith("application/json"):
+                with contextlib.suppress(Exception):
+                    parsed = resp.json()
+                    if isinstance(parsed, dict):
+                        body = parsed
+            tip = _tip_from_expired(body)
             state.append_spool(
                 profile=profile.name,
                 event_type="RESYNC",
-                payload={"reason": "CURSOR_EXPIRED"},
+                payload={"reason": "CURSOR_EXPIRED", "tip": tip},
             )
-            tip = int(resp.json().get("cursor") or 0) if resp.headers.get("content-type", "").startswith("application/json") else 0
             state.set_server_cursor(profile.name, subscription_id=sub_id, ack_cursor=tip)
+            await _ack_server(client, sub_id, tip)
+            await dispatch_new_events(state, profile.name)
             if wake:
                 wake(profile.name)
             return 1
@@ -95,7 +139,7 @@ async def poll_profile_once(
             return 0
         body = resp.json()
         events = body.get("events") or []
-        next_cursor = int(body.get("next_cursor") or cursor)
+        next_cursor = int(body.get("next_cursor") if body.get("next_cursor") is not None else cursor)
         for ev in events:
             et = str(ev.get("type") or "")
             state.append_spool(
@@ -106,9 +150,14 @@ async def poll_profile_once(
                 board_id=ev.get("board_id") if isinstance(ev, dict) else None,
             )
             written += 1
+        # Always persist + ack next_cursor (even when the batch is empty)
+        if next_cursor != cursor or events:
+            state.set_server_cursor(
+                profile.name, subscription_id=sub_id, ack_cursor=next_cursor
+            )
+            await _ack_server(client, sub_id, next_cursor)
         if events:
-            state.set_server_cursor(profile.name, subscription_id=sub_id, ack_cursor=next_cursor)
-            dispatch_new_events(state, profile.name)
+            await dispatch_new_events(state, profile.name)
             if wake:
                 wake(profile.name)
     return written
@@ -127,6 +176,5 @@ async def poll_loop(state: DaemonState, *, wake: Any | None = None, stop: asynci
             for p in profiles
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
-        # brief pause if all empty
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=0.5)

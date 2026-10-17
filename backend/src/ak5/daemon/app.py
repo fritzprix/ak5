@@ -257,7 +257,7 @@ def create_daemon_app(state: DaemonState | None = None) -> FastAPI:
         )
         from ak5.daemon.hooks import dispatch_new_events
 
-        dispatch_new_events(_state(), profile)
+        await dispatch_new_events(_state(), profile)
         _wake(profile)
         return {"seq": seq}
 

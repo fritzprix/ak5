@@ -73,3 +73,23 @@ def ensure_socket_parent(path: Path) -> None:
 def chmod_socket(path: Path) -> None:
     with contextlib.suppress(OSError):
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+
+
+def dead_letter_path() -> Path:
+    return daemon_state_dir() / "dead-letter.jsonl"
+
+
+# Linux AF_UNIX sun_path is typically 108 bytes including NUL.
+_AF_UNIX_MAX = 104
+
+
+def validate_socket_path(path: Path | None = None) -> Path:
+    """Raise ValueError if the UDS path is too long for AF_UNIX."""
+    target = path or socket_path()
+    encoded = str(target).encode("utf-8")
+    if len(encoded) > _AF_UNIX_MAX:
+        raise ValueError(
+            f"daemon socket path too long for AF_UNIX ({len(encoded)} > {_AF_UNIX_MAX}): {target}. "
+            "Set XDG_RUNTIME_DIR to a short path or AK5_DAEMON_SOCK=/tmp/ak5.sock"
+        )
+    return target

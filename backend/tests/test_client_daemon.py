@@ -29,6 +29,8 @@ def daemon_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("AK5_DAEMON_SOCK", str(sock))
     monkeypatch.setenv("AK5_DAEMON_AUTOSTART", "0")
+    monkeypatch.setenv("AK5_HOOK_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("AK5_HOOK_RETRY_BASE", "0")
     monkeypatch.delenv("AK5_TOKEN", raising=False)
     monkeypatch.delenv("AK5_ACTOR_TOKEN", raising=False)
     monkeypatch.delenv("AK5_PROFILE", raising=False)
@@ -128,7 +130,7 @@ def test_daemon_status_token_subscribers_and_waiters(daemon_home):
             json={
                 "profile": "worker-1",
                 "events": ["WORK_AVAILABLE"],
-                "exec_command": "exit 42",
+                "exec_command": "sh -c 'exit 42'",
             },
         ).json()["id"]
         client.post(
@@ -208,3 +210,80 @@ def test_next_wait_option_registered():
     help_r = runner.invoke(cli, ["next", "--help"])
     assert help_r.exit_code == 0
     assert "--wait" in help_r.output
+
+
+def test_slow_hook_does_not_block_token(daemon_home, monkeypatch):
+    """client.md §4.3: one slow subscriber must not stall IPC (High review finding)."""
+    import threading
+
+    sock: Path = daemon_home["sock"]
+    monkeypatch.setenv("AK5_HOOK_TIMEOUT", "4")
+    upsert_profile(Profile(name="worker-1", server="http://127.0.0.1:9/api/v1", role="worker"))
+    save_credential(
+        "worker-1",
+        ProfileCredential(access_token="tok-abc", actor_id="agent_w1", status="active"),
+    )
+    start_daemon_background(sock=sock)
+    fast_ok = daemon_home["home"] / "fast.ok"
+    with _uds_client(sock) as client:
+        assert (
+            client.post(
+                "/v1/subscribers",
+                json={
+                    "profile": "worker-1",
+                    "events": ["WORK_AVAILABLE"],
+                    "exec_command": "sleep 8",
+                },
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/subscribers",
+                json={
+                    "profile": "worker-1",
+                    "events": ["WORK_AVAILABLE"],
+                    "exec_command": f"touch {fast_ok}",
+                },
+            ).status_code
+            == 200
+        )
+
+    results: dict[str, object] = {}
+
+    def _spool() -> None:
+        with _uds_client(sock) as c:
+            results["spool"] = c.post(
+                "/v1/spool",
+                json={"profile": "worker-1", "type": "WORK_AVAILABLE", "data": {}},
+                timeout=30.0,
+            ).status_code
+
+    t = threading.Thread(target=_spool)
+    t.start()
+    time.sleep(0.4)
+    with _uds_client(sock) as client:
+        tok = client.post("/v1/token", json={"profile": "worker-1"}, timeout=2.0)
+        assert tok.status_code == 200
+        assert tok.json()["access_token"] == "tok-abc"
+    t.join(timeout=20)
+    assert results.get("spool") == 200
+    assert fast_ok.is_file()
+
+
+def test_cursor_expired_tip_parser():
+    from ak5.daemon.poller import _tip_from_expired
+
+    assert (
+        _tip_from_expired({"error": {"details": {"cursor": 42}}})
+        == 42
+    )
+    assert _tip_from_expired({"error": {"details": {"oldest_seq": 7}}}) == 7
+
+
+def test_subscribe_add_is_local_only():
+    runner = CliRunner()
+    help_r = runner.invoke(cli, ["subscribe", "add", "--help"])
+    assert help_r.exit_code == 0
+    assert "local daemon subscriber" in help_r.output.lower() or "Never creates" in help_r.output
+    assert "--local/--server" not in help_r.output

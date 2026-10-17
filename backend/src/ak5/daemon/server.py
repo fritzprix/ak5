@@ -100,7 +100,13 @@ def _install_peercred_guard() -> None:
 
 def run_daemon(*, sock: Path | None = None) -> None:
     """Blocking foreground run (``ak5 daemon run``)."""
+    from ak5.daemon.paths import validate_socket_path
+
     path = sock or socket_path()
+    try:
+        validate_socket_path(path)
+    except ValueError as exc:
+        raise SystemExit(f"ak5 daemon: {exc}") from exc
     ensure_socket_parent(path)
     if path.exists():
         path.unlink()

@@ -75,28 +75,64 @@ def daemon_status(ctx: click.Context) -> None:
 
 
 @daemon_command.command("install")
-def daemon_install() -> None:
-    """Install a user service unit (stub — prints unit path guidance)."""
-    console.print(
-        "[yellow]install[/yellow]: write a systemd user unit / launchd plist that runs "
-        "`ak5 daemon run`. Not auto-installed in this build; use `ak5 daemon start`."
+@click.option("--enable", is_flag=True, help="systemctl --user enable --now after writing the unit")
+def daemon_install(enable: bool) -> None:
+    """Write a systemd user unit (Linux) that runs ``ak5 daemon run``."""
+    import shutil
+    import sys
+    from pathlib import Path
+
+    if sys.platform != "linux":
+        console.print(
+            "[yellow]install[/yellow]: non-Linux — write a launchd plist manually that runs "
+            "`ak5 daemon run`, or use `ak5 daemon start`."
+        )
+        return
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    unit = unit_dir / "ak5-daemon.service"
+    exe = shutil.which("ak5") or sys.executable
+    exec_start = f"{exe} daemon run" if shutil.which("ak5") else f"{sys.executable} -m ak5.cli.main daemon run"
+    unit.write_text(
+        "\n".join(
+            [
+                "[Unit]",
+                "Description=AK5 client daemon",
+                "[Service]",
+                "Type=simple",
+                f"ExecStart={exec_start}",
+                "Restart=on-failure",
+                "[Install]",
+                "WantedBy=default.target",
+                "",
+            ]
+        ),
+        encoding="utf-8",
     )
+    console.print(f"[green]wrote[/green] {unit}")
+    if enable:
+        import subprocess
+
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        subprocess.run(["systemctl", "--user", "enable", "--now", "ak5-daemon.service"], check=False)
+        console.print("[green]enabled[/green] ak5-daemon.service")
 
 
 @daemon_command.command("logs")
-@click.option("--dead-letter", is_flag=True, help="Show subscriber dead-letter entries")
-def daemon_logs(dead_letter: bool) -> None:
+@click.option("--dead-letter", is_flag=True, help="Show dead-letter.jsonl entries")
+@click.option("--tail", default=40, type=int, help="Lines to show from dead-letter.jsonl")
+def daemon_logs(dead_letter: bool, tail: int) -> None:
     log = pid_path().parent / "daemon.log"
     if dead_letter:
-        from ak5.daemon.state import DaemonState
+        from ak5.daemon.paths import dead_letter_path
 
-        state = DaemonState()
-        try:
-            for s in state.list_subscribers():
-                if s.dead_letter:
-                    console.print(f"{s.id}: {s.dead_letter}")
-        finally:
-            state.close()
+        path = dead_letter_path()
+        if not path.is_file():
+            console.print(f"[dim]no dead-letter yet[/dim] ({path})")
+            return
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines[-max(1, tail) :]:
+            console.print(line)
         return
     if log.is_file():
         console.print(log.read_text(encoding="utf-8")[-8000:])
@@ -106,8 +142,47 @@ def daemon_logs(dead_letter: bool) -> None:
 
 @daemon_command.command("replay")
 @click.argument("event_id")
-def daemon_replay(event_id: str) -> None:
-    console.print(f"[yellow]replay[/yellow] of {event_id} is not implemented yet")
+@click.option("--profile", default=None, help="Profile whose subscribers should re-run the event")
+def daemon_replay(event_id: str, profile: str | None) -> None:
+    """Re-dispatch a dead-lettered (or spool) event to local subscribers."""
+    import json
+
+    from ak5.daemon.hooks import dispatch_new_events
+    from ak5.daemon.paths import dead_letter_path
+    from ak5.daemon.profiles import resolve_profile_name
+    from ak5.daemon.state import DaemonState
+
+    path = dead_letter_path()
+    target: dict | None = None
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if str(row.get("event_id")) == event_id or str(row.get("seq")) == event_id:
+                target = row.get("event") if isinstance(row.get("event"), dict) else row
+                profile = profile or row.get("profile")
+                break
+    if target is None:
+        console.print(f"[red]event not found in dead-letter:[/red] {event_id}")
+        raise SystemExit(1)
+    name = resolve_profile_name(profile) or "default"
+    state = DaemonState()
+    try:
+        state.append_spool(
+            profile=name,
+            event_type=str(target.get("type") or "WORK_AVAILABLE"),
+            payload=target.get("data") if isinstance(target.get("data"), dict) else dict(target),
+            ticket_id=target.get("ticket_id"),
+            board_id=target.get("board_id"),
+        )
+        import asyncio
+
+        asyncio.run(dispatch_new_events(state, name))
+        console.print(f"[green]replayed[/green] {event_id} → profile={name}")
+    finally:
+        state.close()
 
 
 @daemon_command.command("import-legacy")
