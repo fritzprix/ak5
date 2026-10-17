@@ -1,13 +1,16 @@
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.config import settings
-from ak5.contracts.errors import HTTP_STATUS, error_body
+from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
 from ak5.database import engine, run_sqlite_schema_migrations
 from ak5.mcp.tools import server as mcp_server
@@ -103,6 +106,22 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=HTTP_STATUS[exc.code],
             content=error_body(exc.code, exc.message, details=exc.details),
+        )
+
+    @application.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Map FastAPI/Pydantic 422 into the contracts error envelope (cli.md §3)."""
+        # jsonable_encoder: pydantic validators may put Exception in ctx.error
+        errors: list[Any] = jsonable_encoder(list(exc.errors()))
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.PAYLOAD_INVALID],
+            content=error_body(
+                ErrorCode.PAYLOAD_INVALID,
+                "Request validation failed",
+                details={"errors": errors},
+            ),
         )
 
     application.add_middleware(

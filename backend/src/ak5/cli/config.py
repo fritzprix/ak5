@@ -521,15 +521,18 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
 
 
 def require_auth_headers(api_url: str | None = None) -> dict[str, str]:
-    """Return Authorization headers or exit with clear identity guidance (no opaque 401)."""
+    """Return Authorization headers or exit 8 (cli.md §3.1 auth required)."""
     from rich.console import Console
+
+    # Exit 8 = authentication required / expired (cli.md §3.1)
+    _AUTH_EXIT = 8
 
     console = Console(stderr=True)
     resolved = resolve_session()
 
     if resolved.ambiguous:
         print_identity_hints(resolved, err=True)
-        raise SystemExit(1)
+        raise SystemExit(_AUTH_EXIT)
 
     token = _resolved_token(resolved)
     if not token and resolved.source in _BOUND_NO_FALLBACK:
@@ -540,7 +543,7 @@ def require_auth_headers(api_url: str | None = None) -> dict[str, str]:
         console.print(
             f"[dim]Re-authenticate:[/dim] ak5 login --id {actor_id} --role \"...\" --caps \"...\""
         )
-        raise SystemExit(1)
+        raise SystemExit(_AUTH_EXIT)
 
     headers = get_auth_headers(api_url)
     if not headers.get("Authorization"):
@@ -549,8 +552,15 @@ def require_auth_headers(api_url: str | None = None) -> dict[str, str]:
         console.print(
             "[dim]Run [bold cyan]ak5 login --id <actor_id> --role <role>[/bold cyan] first.[/dim]"
         )
-        raise SystemExit(1)
+        raise SystemExit(_AUTH_EXIT)
     return headers
+
+
+def wants_json_output(*, flag: bool | None = None) -> bool:
+    """True when ``--json`` or ``AK5_OUTPUT=json`` (cli.md §3)."""
+    from ak5.client.output import is_json_mode
+
+    return is_json_mode(flag=flag)
 
 
 # Back-compat alias used by older docs/tests
