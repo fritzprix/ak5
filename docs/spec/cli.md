@@ -48,8 +48,8 @@ ak5.server      FastAPI app, DB, 상태 머신       (contracts만 import)
 | 0 | 성공 | — |
 | 1 | 기타 오류 (네트워크 등) | — |
 | 2 | 사용법 오류 | `PAYLOAD_INVALID` |
-| 3 | 경합 | `CLAIM_CONFLICT`, `STALE_CLAIM`, `CONSUMER_CONFLICT` |
-| 4 | 전이 / 권한 거부 | `INVALID_TRANSITION`, `ROLE_FORBIDDEN`, `SEPARATION_OF_DUTIES`, `SYSTEM_BOARD`, `WIP_LIMIT` |
+| 3 | 경합 · 일시적 용량 부족 (재시도 가능) | `CLAIM_CONFLICT`, `STALE_CLAIM`, `CONSUMER_CONFLICT`, `WIP_LIMIT` |
+| 4 | 전이 / 권한 거부 / 없음 | `INVALID_TRANSITION`, `ROLE_FORBIDDEN`, `SEPARATION_OF_DUTIES`, `SYSTEM_BOARD`, `NOT_FOUND` |
 | 5 | blocked | `TICKET_BLOCKED` |
 | 6 | 할 일 없음 | `next` 결과 없음 |
 | 7 | 버전 불일치 | `VERSION_MISMATCH` |

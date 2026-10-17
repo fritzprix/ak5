@@ -169,6 +169,9 @@ status   : API 하위호환용 파생 필드 (저장하지 않음)
 | `WIP_LIMIT` | 409 | 대상 컬럼 WIP 초과 |
 | `PAYLOAD_INVALID` | 422 | payload 스키마 위반 |
 | `SYSTEM_BOARD` | 403 | inbox board 삭제·수정 또는 inbox로의 잘못된 이동 |
+| `NOT_FOUND` | 404 | ticket / board가 존재하지 않음 (CLI exit 4) |
+
+claim 경합: 이미 유효한 claim이 있는 티켓에 대한 claim은 stage와 무관하게 `CLAIM_CONFLICT`(CLI exit 3)다 — 외부 루프는 이를 "다음 티켓으로"로 처리한다.
 
 모든 쓰기 명령은 `Idempotency-Key` 헤더를 받는다.
 
