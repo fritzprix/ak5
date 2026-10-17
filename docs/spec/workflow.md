@@ -40,9 +40,9 @@ status   : API 하위호환용 파생 필드 (저장하지 않음)
 
 `status` 파생 규칙: `done` → `done`, blocked → `blocked`, claimed → `in_progress`, 그 외 → `open`.
 
-### 2.1 Global Inbox Board
+### 2.1 Inbox Board (workspace당 1개)
 
-- 시스템 board 하나: `board_id = "inbox"`, `kind = "inbox"`. seed에서 생성하며 삭제 / 이름 변경 불가.
+- **workspace마다** 시스템 board 하나: `kind = "inbox"`, API 별칭 `inbox`. workspace 생성 시 함께 만들며 삭제 / 이름 변경 불가 ([identity.md](identity.md) §7). 단일 workspace(local) 모드에서는 `board_id = "inbox"`.
 - **`unclassified` stage는 inbox에만 존재한다.** 일반 board에는 `unclassified` 컬럼이 없다.
 - inbox에는 `unclassified` 이외의 stage 컬럼을 두지 않는다.
 - inbox로 들어오는 경로: T1 `create`, T10 `bounce`, T14 `reject(misrouted)`, T21 `reroute`.
