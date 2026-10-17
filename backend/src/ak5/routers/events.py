@@ -94,13 +94,20 @@ async def sse_event_stream(
     board_id: Annotated[
         str | None, Query(description="Limit stream to one board (Web UI / observation)")
     ] = None,
-    last_event_id: int | None = Header(None, alias="Last-Event-ID"),
+    last_event_id_header: Annotated[int | None, Header(alias="Last-Event-ID")] = None,
+    last_event_id: Annotated[
+        int | None,
+        Query(
+            description="Resume cursor when EventSource reconnects without Last-Event-ID header"
+        ),
+    ] = None,
 ) -> EventSourceResponse:
     """SSE observation stream sourced from the persistent event log (events.md §6)."""
     await _actor_from_bearer_or_query(db, credentials, access_token)
 
-    # Without Last-Event-ID, start at the current tip — do not replay retention history.
+    # Without Last-Event-ID / last_event_id, start at tip — do not replay retention history.
     tip_seq = await subscription_service.max_event_seq(db)
+    resume_seq = last_event_id_header if last_event_id_header is not None else last_event_id
 
     async def event_generator() -> AsyncGenerator[dict]:
         yield {
@@ -114,7 +121,7 @@ async def sse_event_stream(
             ),
         }
 
-        last_seq = int(last_event_id) if last_event_id is not None else tip_seq
+        last_seq = int(resume_seq) if resume_seq is not None else tip_seq
 
         try:
             while True:

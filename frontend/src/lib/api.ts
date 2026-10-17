@@ -360,32 +360,21 @@ export function subscribeToBoardEvents(
   let cancelled = false;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const namedEvents = [
-    "CONNECTED",
-    "RESYNC",
-    "TICKET_CREATED",
-    "TICKET_MOVED",
-    "TICKET_DELEGATED",
-    "TICKET_UPDATED",
-    "TICKET_TRANSITIONED",
-    "TICKET_BLOCKED",
-    "TICKET_UNBLOCKED",
-    "HUMAN_ACTION_REQUIRED",
-    "WORK_AVAILABLE",
-    "COMMENT_ADDED",
-    "ATTACHMENT_ADDED",
-    "ATTACHMENT_DELETED",
-  ];
+  let lastEventId: string | null = null;
 
   const attach = async () => {
     if (cancelled) return;
-    const { buildBoardStreamUrl, eventMatchesBoard, nextSseBackoffMs, reduceSseBoardEvent } =
-      await import("./sseBoardEvents");
+    const {
+      BOARD_SSE_NAMED_EVENTS,
+      buildBoardStreamUrl,
+      eventMatchesBoard,
+      nextSseBackoffMs,
+      reduceSseBoardEvent,
+    } = await import("./sseBoardEvents");
     const token = await getAuthToken();
     if (cancelled) return;
 
-    const url = buildBoardStreamUrl(API_BASE, boardId, token);
+    const url = buildBoardStreamUrl(API_BASE, boardId, token, lastEventId);
     eventSource = new EventSource(url);
 
     eventSource.onopen = () => {
@@ -405,8 +394,11 @@ export function subscribeToBoardEvents(
       }, delay);
     };
 
-    namedEvents.forEach((evt) => {
+    BOARD_SSE_NAMED_EVENTS.forEach((evt) => {
       eventSource?.addEventListener(evt, (e: MessageEvent) => {
+        if (e.lastEventId) {
+          lastEventId = e.lastEventId;
+        }
         let parsed: unknown = e.data;
         try {
           parsed = JSON.parse(e.data);

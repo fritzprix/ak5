@@ -42,6 +42,13 @@ describe("buildBoardStreamUrl", () => {
       /access_token=tok/
     );
   });
+
+  it("includes last_event_id for reconnect resume", () => {
+    assert.match(
+      buildBoardStreamUrl("http://x/api/v1", "board-a", "tok", "42"),
+      /last_event_id=42/
+    );
+  });
 });
 
 describe("eventMatchesBoard", () => {

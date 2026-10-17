@@ -858,3 +858,150 @@ async def test_sse_stream_filters_by_board_id(
     assert "TK-board-a" in body
     assert "TK-board-b" not in body
     assert "board-other-sse" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["route", "bounce", "reroute"])
+async def test_board_move_transition_visible_on_origin_board_sse(
+    op: str, client: AsyncClient, auth_headers, test_db: AsyncSession, monkeypatch
+):
+    """Board moves dual-emit TICKET_TRANSITIONED so the origin board SSE sees the leave (#31)."""
+    import json
+
+    from ak5.models.actor import Actor
+    from ak5.routers.auth import create_access_token
+    from helpers_workflow import board_ticket, inbox_ticket
+
+    for actor_id, role, atype in (
+        ("agent_triage_sse", "triage", "agent"),
+        ("agent_worker_sse", "worker", "agent"),
+    ):
+        if await test_db.get(Actor, actor_id) is None:
+            test_db.add(
+                Actor(
+                    actor_id=actor_id,
+                    actor_type=atype,
+                    name=actor_id,
+                    role=role,
+                    capabilities=json.dumps([]),
+                    status="idle",
+                )
+            )
+    await test_db.commit()
+
+    human = auth_headers("user_pm", "human")
+    triage = auth_headers("agent_triage_sse", "agent")
+    worker = auth_headers("agent_worker_sse", "agent")
+
+    tip_before = int((await test_db.execute(select(func.max(Event.seq)))).scalar_one() or 0)
+
+    if op == "route":
+        tid = (
+            await client.post(
+                "/api/v1/tickets",
+                json=inbox_ticket("sse route leave"),
+                headers=human,
+            )
+        ).json()["ticket_id"]
+        token = (await client.post(f"/api/v1/tickets/{tid}/claim", headers=triage)).json()[
+            "claim_token"
+        ]
+        origin = "inbox"
+        moved = await client.post(
+            f"/api/v1/tickets/{tid}/route",
+            json={
+                "claim_token": token,
+                "plan": {
+                    "refined_title": "routed",
+                    "refined_spec": "spec",
+                    "acceptance_criteria": ["c"],
+                    "target": {"board_id": "proj-core-engine"},
+                    "confidence": 0.9,
+                },
+            },
+            headers=triage,
+        )
+        assert moved.status_code == 200, moved.text
+    elif op == "bounce":
+        tid = (
+            await client.post(
+                "/api/v1/tickets",
+                json=board_ticket("sse bounce leave"),
+                headers=human,
+            )
+        ).json()["ticket_id"]
+        claim = await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)
+        assert claim.status_code == 200, claim.text
+        tip_before = int((await test_db.execute(select(func.max(Event.seq)))).scalar_one() or 0)
+        origin = "proj-core-engine"
+        bounced = await client.post(
+            f"/api/v1/tickets/{tid}/bounce",
+            json={"claim_token": claim.json()["claim_token"], "reason": "wrong board"},
+            headers=worker,
+        )
+        assert bounced.status_code == 200, bounced.text
+    else:
+        tid = (
+            await client.post(
+                "/api/v1/tickets",
+                json=board_ticket("sse reroute leave"),
+                headers=human,
+            )
+        ).json()["ticket_id"]
+        tip_before = int((await test_db.execute(select(func.max(Event.seq)))).scalar_one() or 0)
+        origin = "proj-core-engine"
+        rerouted = await client.post(
+            f"/api/v1/tickets/{tid}/reroute",
+            json={"reason": "send home", "to_inbox": True},
+            headers=human,
+        )
+        assert rerouted.status_code == 200, rerouted.text
+
+    async def _cancel_wait(_timeout: float = 0) -> bool:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+
+    token = create_access_token("user_pm", "human")
+    resp = await client.get(
+        "/api/v1/events/stream",
+        params={"board_id": origin, "last_event_id": tip_before},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=5.0,
+    )
+    assert resp.status_code == 200, resp.text
+    assert "TICKET_TRANSITIONED" in resp.text
+    assert tid in resp.text
+    assert "from_board_id" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_sse_last_event_id_query_param_resumes(
+    client: AsyncClient, auth_headers, test_db: AsyncSession, monkeypatch
+):
+    """Reconnect via last_event_id= query (EventSource cannot set Last-Event-ID header)."""
+    from ak5.routers.auth import create_access_token
+
+    e = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-query-resume",
+        actor_id="user_pm",
+        data={},
+    )
+    await test_db.commit()
+
+    async def _cancel_wait(_timeout: float = 0) -> bool:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    token = create_access_token("user_pm", "human")
+    resp = await client.get(
+        "/api/v1/events/stream",
+        params={"board_id": "proj-core-engine", "last_event_id": e.seq - 1 if e.seq > 0 else 0},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=5.0,
+    )
+    assert resp.status_code == 200
+    assert "TK-query-resume" in resp.text
