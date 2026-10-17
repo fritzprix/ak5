@@ -116,7 +116,6 @@ def _to_ticket_out(t: Ticket, subtask_stats: dict[str, tuple[int, int]]) -> Tick
         stage=_ticket_stage(t),
         attempt=t.attempt,
         max_attempts=t.max_attempts,
-        claim_token=t.claim_token,
         claimed_by=t.claimed_by,
         lease_expires_at=t.lease_expires_at,
         lease_expirations=t.lease_expirations,
