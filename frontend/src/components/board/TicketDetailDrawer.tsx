@@ -629,15 +629,25 @@ export function TicketDetailDrawer({
               </div>
               {detail.subtasks && detail.subtasks.length > 0 ? (
                 <ul className="mt-3 space-y-1.5">
-                  {detail.subtasks.map((st) => (
-                    <li
-                      key={st.ticket_id}
-                      className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-xs"
-                    >
-                      <span className="truncate">{st.title}</span>
-                      <span className="shrink-0 font-mono text-[var(--muted)]">{st.status}</span>
-                    </li>
-                  ))}
+                  {detail.subtasks.map((st) => {
+                    let statusLabel = st.stage ?? "—";
+                    if ("status" in st && st.status) {
+                      statusLabel = st.status;
+                    } else if ("blocked" in st && st.blocked) {
+                      statusLabel = "blocked";
+                    } else if ("claimed" in st && st.claimed) {
+                      statusLabel = "claimed";
+                    }
+                    return (
+                      <li
+                        key={st.ticket_id}
+                        className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-xs"
+                      >
+                        <span className="truncate">{st.title}</span>
+                        <span className="shrink-0 font-mono text-[var(--muted)]">{statusLabel}</span>
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : null}
             </section>
