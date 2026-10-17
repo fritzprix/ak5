@@ -58,7 +58,7 @@ EXIT_CODE: dict[ErrorCode, int] = {
     ErrorCode.ROLE_FORBIDDEN: 4,
     ErrorCode.SEPARATION_OF_DUTIES: 4,
     ErrorCode.SYSTEM_BOARD: 4,
-    ErrorCode.WIP_LIMIT: 4,
+    ErrorCode.WIP_LIMIT: 3,  # cli.md §3.1 — retryable contention / capacity
     ErrorCode.NOT_FOUND: 4,
     ErrorCode.TICKET_BLOCKED: 5,
     ErrorCode.VERSION_MISMATCH: 7,

@@ -112,10 +112,10 @@ class TicketOut(TicketBase):
     updated_at: datetime
 
     # Workflow overlays (workflow.md §2 / §9)
+    # claim_token is intentionally omitted — only returned on POST .../claim (#47).
     stage: str | None = None
     attempt: int = 0
     max_attempts: int = 3
-    claim_token: str | None = None
     claimed_by: str | None = None
     lease_expires_at: datetime | None = None
     lease_expirations: int = 0
@@ -130,6 +130,17 @@ class TicketOut(TicketBase):
     subtask_done_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SubtaskSummaryOut(BaseModel):
+    """Compact child ticket for board listing (workflow.md board accordion)."""
+
+    ticket_id: str
+    title: str
+    stage: str | None = None
+    board_id: str
+    blocked: bool = False
+    claimed: bool = False
 
 
 class TicketAttachmentOut(BaseModel):
