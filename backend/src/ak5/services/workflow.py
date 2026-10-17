@@ -540,22 +540,35 @@ async def _emit_transitioned(
     op: str,
     from_stage: str | None,
     to_stage: str,
+    from_board_id: str | None = None,
 ) -> None:
+    """Emit TICKET_TRANSITIONED on the destination board; dual-emit for board moves (#31)."""
+    data = {
+        "op": op,
+        "from_stage": from_stage,
+        "to_stage": to_stage,
+        "attempt": ticket.attempt,
+        "board_id": ticket.board_id,
+        "ticket_id": ticket.ticket_id,
+        "from_board_id": from_board_id,
+    }
     await record_event(
         db,
         EventType.TICKET_TRANSITIONED,
         board_id=ticket.board_id,
         ticket_id=ticket.ticket_id,
         actor_id=actor_id,
-        data={
-            "op": op,
-            "from_stage": from_stage,
-            "to_stage": to_stage,
-            "attempt": ticket.attempt,
-            "board_id": ticket.board_id,
-            "ticket_id": ticket.ticket_id,
-        },
+        data=data,
     )
+    if from_board_id and from_board_id != ticket.board_id:
+        await record_event(
+            db,
+            EventType.TICKET_TRANSITIONED,
+            board_id=from_board_id,
+            ticket_id=ticket.ticket_id,
+            actor_id=actor_id,
+            data=data,
+        )
 
 
 async def _emit_work_available(db: AsyncSession, ticket: Ticket, *, actor_id: str | None) -> None:
@@ -617,6 +630,7 @@ async def _finish_transition(
     human_action: bool = False,
     human_reason: str | None = None,
     extra_audit: dict[str, Any] | None = None,
+    from_board_id: str | None = None,
 ) -> Ticket:
     _sync_status(ticket)
     await _write_audit(
@@ -637,6 +651,7 @@ async def _finish_transition(
         op=op,
         from_stage=from_stage.value if from_stage else None,
         to_stage=to_stage.value,
+        from_board_id=from_board_id,
     )
     if work_available:
         await _emit_work_available(db, ticket, actor_id=actor.actor_id)
@@ -1353,7 +1368,8 @@ async def bounce(
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "bounce requires in_progress stage")
     _require_own_claim(ticket, actor, claim_token)
     _clear_claim(ticket)
-    board_id = ticket.board_id
+    from_board_id = ticket.board_id
+    board_id = from_board_id
     await _move_ticket(db, ticket, board_id=INBOX_BOARD_ID, stage=Stage.UNCLASSIFIED)
     result = await _finish_transition(
         db,
@@ -1364,6 +1380,7 @@ async def bounce(
         to_stage=Stage.UNCLASSIFIED,
         reason=reason,
         work_available=True,
+        from_board_id=from_board_id,
     )
     await _emit_backlog_after_in_progress_freed(db, board_id, actor_id=actor.actor_id)
     return result
@@ -1460,6 +1477,7 @@ async def route_ticket(
     ticket.title = plan.refined_title
     ticket.description = plan.refined_spec
     _clear_claim(ticket)
+    from_board_id = ticket.board_id
     await _move_ticket(db, ticket, board_id=target_board_id, stage=Stage.BACKLOG)
 
     revision = TicketRevision(
@@ -1482,6 +1500,7 @@ async def route_ticket(
         to_stage=Stage.BACKLOG,
         work_available=True,
         extra_audit={"revision_id": revision.revision_id, "target_board_id": target_board_id},
+        from_board_id=from_board_id,
     )
 
 
@@ -1560,6 +1579,7 @@ async def verdict(
             review.findings = [f.model_dump(mode="json", by_alias=True) for f in body.findings]
             db.add(review)
             _clear_claim(ticket)
+            from_board_id = ticket.board_id
             await _move_ticket(db, ticket, board_id=INBOX_BOARD_ID, stage=Stage.UNCLASSIFIED)
             return await _finish_transition(
                 db,
@@ -1570,6 +1590,7 @@ async def verdict(
                 to_stage=Stage.UNCLASSIFIED,
                 reason=body.reason or "misrouted",
                 work_available=True,
+                from_board_id=from_board_id,
             )
 
         if not any(not f.pass_ for f in body.findings):
@@ -1819,6 +1840,7 @@ async def reroute(
     if is_claim_valid(ticket):
         _clear_claim(ticket)
 
+    from_board_id = ticket.board_id
     if to_inbox:
         await _move_ticket(db, ticket, board_id=INBOX_BOARD_ID, stage=Stage.UNCLASSIFIED)
         to_stage = Stage.UNCLASSIFIED
@@ -1844,6 +1866,7 @@ async def reroute(
         to_stage=to_stage,
         reason=reason,
         work_available=True,
+        from_board_id=from_board_id,
     )
 
 

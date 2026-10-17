@@ -223,12 +223,18 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     fetchBoardMembers(boardId).then(setActors).catch(console.error);
 
     const cleanup = subscribeToBoardEvents(
+      boardId,
       () => {
         scheduleLiveRefresh();
       },
       {
+        onConnected: () => setIsConnectedSSE(true),
         onOpen: () => setIsConnectedSSE(true),
         onError: () => setIsConnectedSSE(false),
+        onResync: () => {
+          // Full board reload after cursor expiry (events.md RESYNC).
+          void reloadBoard({ silent: true });
+        },
       }
     );
 
