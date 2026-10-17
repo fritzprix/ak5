@@ -227,6 +227,9 @@ def demo_command() -> None:
         asyncio.run(run_collaboration_simulation(api_url))
     except httpx.ConnectError:
         console.print(f"[bold red]✗ Cannot connect to AK5 Gateway at {api_url}[/bold red]")
-        console.print("Please start the backend server in another terminal:\n  [yellow]uv run uvicorn ak5.main:app[/yellow]")
+        console.print(
+            "Please start the backend server in another terminal:\n"
+            "  [yellow]uv run uvicorn ak5.server.app:app[/yellow]"
+        )
     except Exception as e:
         console.print(f"[bold red]✗ Simulation failed:[/bold red] {e}")

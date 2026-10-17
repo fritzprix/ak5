@@ -1,35 +1,18 @@
-from ak5.models.actor import Actor
-from ak5.models.audit import AuditLog
-from ak5.models.base import Base
-from ak5.models.board import Board
-from ak5.models.board_member import BoardMember
-from ak5.models.column import Column
-from ak5.models.device_code import DeviceCode
-from ak5.models.event import Event
-from ak5.models.event_log_meta import EventLogMeta
-from ak5.models.idempotency import IdempotencyKey
-from ak5.models.subscription import Subscription
-from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
-from ak5.models.ticket_postmortem import TicketPostmortem
-from ak5.models.ticket_review import TicketReview
-from ak5.models.ticket_revision import TicketRevision
+"""Compatibility shim — prefer ``ak5.server.models``."""
+from __future__ import annotations
 
-__all__ = [
-    "Actor",
-    "AuditLog",
-    "Base",
-    "Board",
-    "BoardMember",
-    "Column",
-    "DeviceCode",
-    "Event",
-    "EventLogMeta",
-    "IdempotencyKey",
-    "Subscription",
-    "Ticket",
-    "TicketAttachment",
-    "TicketComment",
-    "TicketPostmortem",
-    "TicketReview",
-    "TicketRevision",
-]
+import pkgutil
+import sys
+from importlib import import_module
+
+_server = import_module("ak5.server.models")
+sys.modules[__name__] = _server
+
+# Ensure ``import ak5.models.X`` resolves to the already-loaded server submodule
+# (avoids re-executing model modules and duplicating SQLAlchemy tables).
+_prefix = "ak5.server.models."
+_alias = "ak5.models."
+if getattr(_server, "__path__", None) is not None:
+    for info in pkgutil.walk_packages(_server.__path__, _prefix):
+        mod = import_module(info.name)
+        sys.modules[_alias + info.name[len(_prefix) :]] = mod

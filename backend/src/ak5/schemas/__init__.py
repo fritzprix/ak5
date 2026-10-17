@@ -1,77 +1,18 @@
-from ak5.schemas.actor import (
-    ActorBase,
-    ActorIdentifyRequest,
-    ActorOut,
-    ActorUpdate,
-    TokenResponse,
-)
-from ak5.schemas.audit import AuditLogOut
-from ak5.schemas.board import (
-    BoardBase,
-    BoardClaimOut,
-    BoardCreate,
-    BoardDetailOut,
-    BoardOut,
-    ColumnWithTicketsOut,
-)
-from ak5.schemas.column import ColumnBase, ColumnCreate, ColumnOut
-from ak5.schemas.event import EventOut, EventsPollOut, SSEEventOut
-from ak5.schemas.subscription import (
-    LongPollEventsOut,
-    SubscriptionAckIn,
-    SubscriptionAckOut,
-    SubscriptionCreate,
-    SubscriptionFilter,
-    SubscriptionOut,
-)
-from ak5.schemas.ticket import (
-    TicketAttachmentOut,
-    TicketBase,
-    TicketCommentBase,
-    TicketCommentCreate,
-    TicketCommentOut,
-    TicketCreate,
-    TicketDelegateRequest,
-    TicketDetailOut,
-    TicketMoveRequest,
-    TicketOut,
-    TicketUpdate,
-)
+"""Compatibility shim — prefer ``ak5.server.schemas``."""
+from __future__ import annotations
 
-__all__ = [
-    "ActorBase",
-    "ActorIdentifyRequest",
-    "ActorOut",
-    "ActorUpdate",
-    "AuditLogOut",
-    "BoardBase",
-    "BoardClaimOut",
-    "BoardCreate",
-    "BoardDetailOut",
-    "BoardOut",
-    "ColumnBase",
-    "ColumnCreate",
-    "ColumnOut",
-    "ColumnWithTicketsOut",
-    "EventOut",
-    "EventsPollOut",
-    "LongPollEventsOut",
-    "SSEEventOut",
-    "SubscriptionAckIn",
-    "SubscriptionAckOut",
-    "SubscriptionCreate",
-    "SubscriptionFilter",
-    "SubscriptionOut",
-    "TicketAttachmentOut",
-    "TicketBase",
-    "TicketCommentBase",
-    "TicketCommentCreate",
-    "TicketCommentOut",
-    "TicketCreate",
-    "TicketDelegateRequest",
-    "TicketDetailOut",
-    "TicketMoveRequest",
-    "TicketOut",
-    "TicketUpdate",
-    "TokenResponse",
-]
+import pkgutil
+import sys
+from importlib import import_module
+
+_server = import_module("ak5.server.schemas")
+sys.modules[__name__] = _server
+
+# Ensure ``import ak5.schemas.X`` resolves to the already-loaded server submodule
+# (avoids re-executing model modules and duplicating SQLAlchemy tables).
+_prefix = "ak5.server.schemas."
+_alias = "ak5.schemas."
+if getattr(_server, "__path__", None) is not None:
+    for info in pkgutil.walk_packages(_server.__path__, _prefix):
+        mod = import_module(info.name)
+        sys.modules[_alias + info.name[len(_prefix) :]] = mod

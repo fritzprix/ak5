@@ -77,7 +77,7 @@ def live_server(tmp_path: Path):
             sys.executable,
             "-m",
             "uvicorn",
-            "ak5.main:app",
+            "ak5.server.app:app",
             "--host",
             "127.0.0.1",
             "--port",

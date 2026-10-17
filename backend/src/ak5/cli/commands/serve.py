@@ -41,7 +41,7 @@ def is_loopback_bind(host: str) -> bool:
 def auth_is_configured() -> bool:
     """True when web auth and/or identify secret gates are active."""
     from ak5.security import get_identify_secret
-    from ak5.web_auth import get_web_auth_config
+    from ak5.server.web_auth import get_web_auth_config
 
     return get_web_auth_config().enabled or bool(get_identify_secret())
 
@@ -251,8 +251,8 @@ def _load_dotenv_files() -> None:
 
 
 def _print_api_banner(host: str, port: int) -> None:
-    from ak5.config import settings
-    from ak5.web_ui_static import web_ui_available
+    from ak5.server.config import settings
+    from ak5.server.web_ui_static import web_ui_available
 
     console.print(f"[bold cyan]Starting AK5 Gateway on http://{host}:{port}...[/bold cyan]")
     console.print(f"  - Database:           [cyan]{settings.DATABASE_URL}[/cyan]")
@@ -280,9 +280,9 @@ def _print_api_banner(host: str, port: int) -> None:
 
 def _print_ui_banner(host: str, port: int, *, is_ssl: bool) -> None:
     from ak5.cli.tailscale import detect_tailscale
-    from ak5.config import settings
     from ak5.security import get_identify_secret
-    from ak5.web_auth import get_web_auth_config
+    from ak5.server.config import settings
+    from ak5.server.web_auth import get_web_auth_config
 
     ts = detect_tailscale(port=port)
     cfg = get_web_auth_config()
@@ -341,9 +341,9 @@ def _open_browser_later(url: str, delay: float = 1.2) -> None:
 
 
 def _prepare_database() -> None:
-    from ak5.config import settings
     from ak5.paths import DatabaseConflictError, check_legacy_cwd_db
-    from ak5.services.db_safety import DatabaseWipeError, prepare_database_for_use
+    from ak5.server.config import settings
+    from ak5.server.services.db_safety import DatabaseWipeError, prepare_database_for_use
 
     try:
         prepare_database_for_use(settings.DATABASE_URL)
@@ -373,17 +373,20 @@ def run_serve(
     daemon_command: list[str] | None = None,
 ) -> None:
     """Shared entry for ``ak5 serve`` and the deprecated ``ak5 web`` alias."""
+    from ak5.cli.server_extra import require_server_extra
+
+    require_server_extra()
     _load_dotenv_files()
     assert_safe_bind(host, insecure=insecure, tailscale_serve=tailscale_serve)
     _prepare_database()
 
     if ui:
-        from ak5.web_ui_static import web_ui_available
+        from ak5.server.web_ui_static import web_ui_available
 
         if not web_ui_available():
             console.print(
                 "[bold yellow]Warning:[/bold yellow] Embedded web UI assets not found "
-                "([cyan]ak5/web_ui/index.html[/cyan])."
+                "([cyan]ak5/server/web_ui/index.html[/cyan])."
             )
             console.print(
                 "Build them with [bold cyan]scripts/build_web_ui.sh[/bold cyan] "
@@ -419,7 +422,7 @@ def run_serve(
         if daemon:
             daemon_proc = start_daemon_sibling(daemon_command)
         uvicorn.run(
-            "ak5.main:app",
+            "ak5.server.app:app",
             host=host,
             port=port,
             reload=reload,

@@ -35,11 +35,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync --all-packages
+          uv sync --all-packages --all-extras
 
       - name: Run Pytest (exclude live_server)
         run: |
           uv run pytest -m "not live_server"
+
+      - name: Import boundary contracts (contracts/client/daemon ↛ server)
+        run: |
+          uv run pytest backend/tests/test_import_boundaries.py -v
 
       - name: Run Ruff Lint
         run: |
@@ -73,7 +77,7 @@ jobs:
           node-version: "20"
 
       - name: Install Python deps
-        run: uv sync --all-packages
+        run: uv sync --all-packages --all-extras
 
       - name: Build SDK
         working-directory: ./packages/sdk

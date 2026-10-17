@@ -72,7 +72,7 @@ tmp/
 
 # Embedded dashboard build artifacts (CI builds via scripts/build_web_ui.sh)
 frontend/out/
-backend/src/ak5/web_ui/**
-!backend/src/ak5/web_ui/.keep
-!backend/src/ak5/web_ui/index.html
+backend/src/ak5/server/web_ui/**
+!backend/src/ak5/server/web_ui/.keep
+!backend/src/ak5/server/web_ui/index.html
 
