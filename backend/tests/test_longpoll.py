@@ -807,3 +807,54 @@ async def test_purge_throttled_per_process(test_db: AsyncSession, monkeypatch):
     assert second == 0
     still = await test_db.get(Event, e2.seq)
     assert still is not None
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_filters_by_board_id(
+    client: AsyncClient, auth_headers, test_db: AsyncSession, monkeypatch
+):
+    """Board A stream must not include board B events (#31)."""
+    import asyncio
+
+    from ak5.routers.auth import create_access_token
+    from ak5.services.subscription_service import subscription_service
+
+    tip_before = await subscription_service.max_event_seq(test_db)
+
+    await record_event(
+        test_db,
+        EventType.TICKET_TRANSITIONED,
+        board_id="proj-core-engine",
+        ticket_id="TK-board-a",
+        actor_id="user_pm",
+        data={"board_id": "proj-core-engine"},
+    )
+    await record_event(
+        test_db,
+        EventType.TICKET_TRANSITIONED,
+        board_id="board-other-sse",
+        ticket_id="TK-board-b",
+        actor_id="user_pm",
+        data={"board_id": "board-other-sse"},
+    )
+    await test_db.commit()
+
+    async def _cancel_wait(_timeout: float = 0) -> bool:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    token = create_access_token("user_pm", "human")
+    resp = await client.get(
+        "/api/v1/events/stream?board_id=proj-core-engine",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Last-Event-ID": str(tip_before),
+        },
+        timeout=5.0,
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "CONNECTED" in body
+    assert "TK-board-a" in body
+    assert "TK-board-b" not in body
+    assert "board-other-sse" not in body

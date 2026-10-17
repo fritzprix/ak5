@@ -91,6 +91,9 @@ async def sse_event_stream(
     db: Annotated[AsyncSession, Depends(get_db)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_security)],
     access_token: Annotated[str | None, Query(description="JWT for EventSource clients")] = None,
+    board_id: Annotated[
+        str | None, Query(description="Limit stream to one board (Web UI / observation)")
+    ] = None,
     last_event_id: int | None = Header(None, alias="Last-Event-ID"),
 ) -> EventSourceResponse:
     """SSE observation stream sourced from the persistent event log (events.md §6)."""
@@ -102,7 +105,13 @@ async def sse_event_stream(
     async def event_generator() -> AsyncGenerator[dict]:
         yield {
             "event": "CONNECTED",
-            "data": json.dumps({"status": "connected", "message": "AK5 Event Stream Active"}),
+            "data": json.dumps(
+                {
+                    "status": "connected",
+                    "message": "AK5 Event Stream Active",
+                    "board_id": board_id,
+                }
+            ),
         }
 
         last_seq = int(last_event_id) if last_event_id is not None else tip_seq
@@ -116,7 +125,7 @@ async def sse_event_stream(
                     try:
                         rows, next_cursor = await subscription_service.poll_events(
                             session,
-                            board_id=None,
+                            board_id=board_id,
                             since=last_seq,
                             limit=100,
                         )

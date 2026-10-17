@@ -347,61 +347,97 @@ export async function deleteAttachment(
 }
 
 export function subscribeToBoardEvents(
+  boardId: string,
   onEvent: (eventType: string, data: unknown) => void,
   options?: {
     onOpen?: () => void;
     onError?: () => void;
+    onConnected?: () => void;
+    onResync?: (payload: unknown) => void;
   }
 ): () => void {
   let eventSource: EventSource | null = null;
   let cancelled = false;
+  let reconnectAttempt = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  void (async () => {
+  const namedEvents = [
+    "CONNECTED",
+    "RESYNC",
+    "TICKET_CREATED",
+    "TICKET_MOVED",
+    "TICKET_DELEGATED",
+    "TICKET_UPDATED",
+    "TICKET_TRANSITIONED",
+    "TICKET_BLOCKED",
+    "TICKET_UNBLOCKED",
+    "HUMAN_ACTION_REQUIRED",
+    "WORK_AVAILABLE",
+    "COMMENT_ADDED",
+    "ATTACHMENT_ADDED",
+    "ATTACHMENT_DELETED",
+  ];
+
+  const attach = async () => {
+    if (cancelled) return;
+    const { buildBoardStreamUrl, eventMatchesBoard, nextSseBackoffMs, reduceSseBoardEvent } =
+      await import("./sseBoardEvents");
     const token = await getAuthToken();
     if (cancelled) return;
-    const url = token
-      ? `${API_BASE}/events/stream?access_token=${encodeURIComponent(token)}`
-      : `${API_BASE}/events/stream`;
+
+    const url = buildBoardStreamUrl(API_BASE, boardId, token);
     eventSource = new EventSource(url);
 
-    const events = [
-      "TICKET_CREATED",
-      "TICKET_MOVED",
-      "TICKET_DELEGATED",
-      "TICKET_UPDATED",
-      "TICKET_TRANSITIONED",
-      "TICKET_BLOCKED",
-      "TICKET_UNBLOCKED",
-      "HUMAN_ACTION_REQUIRED",
-      "WORK_AVAILABLE",
-      "COMMENT_ADDED",
-      "ATTACHMENT_ADDED",
-      "ATTACHMENT_DELETED",
-    ];
-
     eventSource.onopen = () => {
+      reconnectAttempt = 0;
       options?.onOpen?.();
     };
 
     eventSource.onerror = () => {
       options?.onError?.();
+      eventSource?.close();
+      eventSource = null;
+      if (cancelled) return;
+      const delay = nextSseBackoffMs(reconnectAttempt);
+      reconnectAttempt += 1;
+      reconnectTimer = setTimeout(() => {
+        void attach();
+      }, delay);
     };
 
-    events.forEach((evt) => {
+    namedEvents.forEach((evt) => {
       eventSource?.addEventListener(evt, (e: MessageEvent) => {
+        let parsed: unknown = e.data;
         try {
-          const parsed: unknown = JSON.parse(e.data);
+          parsed = JSON.parse(e.data);
+        } catch {
+          // CONNECTED/RESYNC may still be JSON; keep raw string on failure
+        }
+        if (!eventMatchesBoard(parsed, boardId)) return;
+        const action = reduceSseBoardEvent(evt);
+        if (action === "connected") {
+          options?.onConnected?.();
+          options?.onOpen?.();
+          return;
+        }
+        if (action === "resync") {
+          options?.onResync?.(parsed);
+          return;
+        }
+        if (action === "refresh") {
           onEvent(evt, parsed);
-        } catch (err) {
-          console.error("Failed to parse SSE event:", err);
         }
       });
     });
-  })();
+  };
+
+  void attach();
 
   return () => {
     cancelled = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     eventSource?.close();
+    eventSource = null;
   };
 }
 
