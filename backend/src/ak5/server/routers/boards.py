@@ -32,7 +32,11 @@ from ak5.server.schemas.device_auth import BoardMemberCreate, BoardMemberOut
 from ak5.server.schemas.ticket import SubtaskSummaryOut, TicketOut
 from ak5.server.seed import INBOX_BOARD_ID
 from ak5.server.services import workflow as wf
-from ak5.server.services.templates import get_template, template_column_dicts
+from ak5.server.services.templates import (
+    BoardTemplate,
+    get_template,
+    template_column_dicts,
+)
 from ak5.server.services.workflow import WorkflowError
 
 _STANDARD_STAGE_VALUES = frozenset(s.value for s in STANDARD_STAGES)
@@ -295,10 +299,7 @@ async def create_board(
     try:
         tmpl = get_template(req.template)
     except KeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
+        return _payload_invalid_response(str(exc), details={"template": req.template})
 
     existing = await db.get(Board, board_id)
     if existing:
@@ -370,6 +371,35 @@ async def create_board(
     return _to_board_out(board)
 
 
+async def _apply_template_columns(
+    db: AsyncSession, board: Board, tmpl: BoardTemplate
+) -> None:
+    """Add missing template stage columns; never delete existing columns."""
+    cols = (
+        await db.execute(select(Column).where(Column.board_id == board.board_id))
+    ).scalars().all()
+    present_stages = {c.stage for c in cols}
+    for spec in tmpl.columns:
+        if spec.stage in present_stages:
+            continue
+        col_id = f"{board.board_id}_{spec.stage}"
+        existing = await db.get(Column, col_id)
+        if existing is not None:
+            col_id = f"{board.board_id}_{spec.stage}_{uuid.uuid4().hex[:6]}"
+        db.add(
+            Column(
+                column_id=col_id,
+                board_id=board.board_id,
+                name=spec.name,
+                stage=spec.stage,
+                position=spec.position,
+                wip_limit=spec.wip_limit,
+            )
+        )
+        present_stages.add(spec.stage)
+    board.template = tmpl.name
+
+
 @router.patch("/{board_id}", response_model=None)
 async def update_board(
     board_id: str,
@@ -377,7 +407,7 @@ async def update_board(
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> BoardOut | JSONResponse:
-    """Update board name/description. Inbox is immutable (SYSTEM_BOARD)."""
+    """Update board name/description/template. Inbox is immutable (SYSTEM_BOARD)."""
     board = await db.get(Board, board_id)
     if not board:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
@@ -390,6 +420,14 @@ async def update_board(
         board.name = req.name
     if req.description is not None:
         board.description = req.description
+    if req.template is not None:
+        if req.template == "inbox":
+            return _system_board_response("Cannot apply the inbox template to a standard board")
+        try:
+            tmpl = get_template(req.template)
+        except KeyError as exc:
+            return _payload_invalid_response(str(exc), details={"template": req.template})
+        await _apply_template_columns(db, board, tmpl)
 
     await db.commit()
     await db.refresh(board)

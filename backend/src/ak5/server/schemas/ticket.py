@@ -229,6 +229,14 @@ class TicketClaimOut(BaseModel):
     revision: TicketRevisionOut | None = None
     postmortems: list[TicketPostmortemOut] = Field(default_factory=list)
     reviews: list[TicketReviewOut] = Field(default_factory=list)
+    review_checklist: list[str] = Field(
+        default_factory=list,
+        description="Gatekeeper review checklist from the board template",
+    )
+    acceptance_criteria_defaults: list[str] = Field(
+        default_factory=list,
+        description="Worker default acceptance criteria from the board template",
+    )
 
 
 class ClaimRequest(BaseModel):

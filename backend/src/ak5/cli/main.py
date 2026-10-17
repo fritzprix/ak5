@@ -19,6 +19,7 @@ from ak5.cli.commands.profile import profile_command
 from ak5.cli.commands.reset import reset_command
 from ak5.cli.commands.serve import serve_command
 from ak5.cli.commands.subscribe import subscribe_command
+from ak5.cli.commands.template import template_group
 from ak5.cli.commands.ticket import (
     comment_shortcut,
     move_shortcut,
@@ -94,6 +95,7 @@ cli.add_command(events_command)
 cli.add_command(watch_command)  # alias → events watch (human terminal only)
 cli.add_command(daemon_command)
 cli.add_command(profile_command)
+cli.add_command(template_group)
 cli.add_command(reset_command)
 
 

@@ -33,6 +33,10 @@ class BoardCreate(BoardBase):
 class BoardUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = None
+    template: str | None = Field(
+        default=None,
+        description="Switch board template; missing stage columns are added (never deleted)",
+    )
 
 
 class BoardOut(BoardBase):
