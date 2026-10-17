@@ -282,7 +282,9 @@ def test_daemon_sibling_warns_on_early_exit(
     assert proc.poll() == 7
     captured = capsys.readouterr()
     assert "exited early" in captured.out.lower() or "Warning" in captured.out
-    assert "serve-daemon.log" in captured.out
+    # Rich may soft-wrap long paths (serve-\ndaemon.log); compare collapsed text.
+    out_flat = "".join(captured.out.split())
+    assert "serve-daemon.log" in out_flat
     log_path = data / "daemon" / "serve-daemon.log"
     assert log_path.is_file()
 

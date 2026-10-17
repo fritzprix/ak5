@@ -17,7 +17,10 @@ members = ["backend"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["backend/tests"]
-pythonpath = ["backend/src"]
+pythonpath = ["backend/src", "backend/tests", "backend/tests/regression"]
+markers = [
+    "live_server: starts a real uvicorn subprocess (isolated HOME/DATA_DIR)",
+]
 
 [tool.ruff]
 line-length = 120
