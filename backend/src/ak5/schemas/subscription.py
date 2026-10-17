@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +22,8 @@ class SubscriptionConsumer(BaseModel):
 class SubscriptionCreate(BaseModel):
     subscription_id: str | None = Field(default=None, max_length=128)
     filter: SubscriptionFilter = Field(default_factory=SubscriptionFilter)
+    # "now" = start at current max(seq) (skip retention history); "earliest" = replay.
+    start: Literal["now", "earliest"] = "now"
 
 
 class SubscriptionAckIn(BaseModel):

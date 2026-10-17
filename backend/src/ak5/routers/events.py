@@ -96,13 +96,16 @@ async def sse_event_stream(
     """SSE observation stream sourced from the persistent event log (events.md §6)."""
     await _actor_from_bearer_or_query(db, credentials, access_token)
 
+    # Without Last-Event-ID, start at the current tip — do not replay retention history.
+    tip_seq = await subscription_service.max_event_seq(db)
+
     async def event_generator() -> AsyncGenerator[dict]:
         yield {
             "event": "CONNECTED",
             "data": json.dumps({"status": "connected", "message": "AK5 Event Stream Active"}),
         }
 
-        last_seq = int(last_event_id) if last_event_id is not None else 0
+        last_seq = int(last_event_id) if last_event_id is not None else tip_seq
 
         try:
             while True:
@@ -111,7 +114,7 @@ async def sse_event_stream(
 
                 async with subscription_service.session_factory() as session:
                     try:
-                        rows, _ = await subscription_service.poll_events(
+                        rows, next_cursor = await subscription_service.poll_events(
                             session,
                             board_id=None,
                             since=last_seq,
@@ -120,7 +123,25 @@ async def sse_event_stream(
                         await session.commit()
                     except SubscriptionServiceError as exc:
                         if exc.code == ErrorCode.CURSOR_EXPIRED:
-                            last_seq = 0
+                            tip = await subscription_service.max_event_seq(session)
+                            last_seq = tip
+                            await session.commit()
+                            yield {
+                                "event": "RESYNC",
+                                "data": json.dumps(
+                                    {
+                                        "reason": "CURSOR_EXPIRED",
+                                        "cursor": tip,
+                                    }
+                                ),
+                            }
+                            # Wait for new events at the tip; do not tight-loop RESYNC.
+                            timeout = (
+                                settings.LONG_POLL_DB_POLL_INTERVAL
+                                if not settings.LONG_POLL_USE_INPROCESS_NOTIFY
+                                else max(settings.LONG_POLL_DB_POLL_INTERVAL, 15.0)
+                            )
+                            await event_bus.wait_for_notify(timeout)
                             continue
                         raise
 
@@ -133,6 +154,10 @@ async def sse_event_stream(
                             "data": json.dumps(row),
                         }
                     continue
+
+                # Advance even when empty so visibility ceilings / gaps do not stall.
+                if next_cursor > last_seq:
+                    last_seq = next_cursor
 
                 timeout = (
                     settings.LONG_POLL_DB_POLL_INTERVAL

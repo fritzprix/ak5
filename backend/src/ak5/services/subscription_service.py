@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ak5.config import settings
@@ -28,6 +28,17 @@ from ak5.services.event_context import (
 )
 
 logger = logging.getLogger("ak5.subscription_service")
+
+# Process-local throttle for lazy event purge (avoids SQLite write lock storms).
+_last_purge_mono: float = 0.0
+
+_META_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS event_log_meta (
+    key VARCHAR(64) NOT NULL PRIMARY KEY,
+    value INTEGER NOT NULL
+)
+"""
+_PURGED_THROUGH_KEY = "purged_through_seq"
 
 
 class EventVisibilityPolicy(Protocol):
@@ -76,6 +87,12 @@ def build_visibility_policy(
     return NoOpVisibilityPolicy()
 
 
+def reset_purge_throttle_for_tests() -> None:
+    """Allow the next purge to run immediately (test helper)."""
+    global _last_purge_mono
+    _last_purge_mono = 0.0
+
+
 class SubscriptionServiceError(Exception):
     """Domain error with a stable :class:`ErrorCode`."""
 
@@ -103,31 +120,94 @@ class SubscriptionService:
         """No-op counterpart to :meth:`start`."""
         return
 
+    async def max_event_seq(self, session: AsyncSession) -> int:
+        """Current ``max(events.seq)``, or ``0`` when the log is empty."""
+        result = await session.execute(select(func.max(Event.seq)))
+        return int(result.scalar_one_or_none() or 0)
+
+    async def _ensure_meta_table(self, session: AsyncSession) -> None:
+        await session.execute(text(_META_TABLE_DDL))
+
+    async def get_purged_through_seq(self, session: AsyncSession) -> int:
+        """Highest seq known to have been removed by retention purge."""
+        await self._ensure_meta_table(session)
+        result = await session.execute(
+            text("SELECT value FROM event_log_meta WHERE key = :k"),
+            {"k": _PURGED_THROUGH_KEY},
+        )
+        raw = result.scalar_one_or_none()
+        return int(raw or 0)
+
+    async def _set_purged_through_seq(self, session: AsyncSession, through: int) -> None:
+        if through <= 0:
+            return
+        await self._ensure_meta_table(session)
+        current = await self.get_purged_through_seq(session)
+        if through <= current:
+            return
+        # Upsert without dialect-specific ON CONFLICT for broader backend support.
+        existing = (
+            await session.execute(
+                text("SELECT 1 FROM event_log_meta WHERE key = :k"),
+                {"k": _PURGED_THROUGH_KEY},
+            )
+        ).scalar_one_or_none()
+        if existing:
+            await session.execute(
+                text("UPDATE event_log_meta SET value = :v WHERE key = :k"),
+                {"k": _PURGED_THROUGH_KEY, "v": through},
+            )
+        else:
+            await session.execute(
+                text("INSERT INTO event_log_meta (key, value) VALUES (:k, :v)"),
+                {"k": _PURGED_THROUGH_KEY, "v": through},
+            )
+
     async def purge_expired_events(self, session: AsyncSession) -> int:
-        """Lazy purge of events older than ``EVENT_RETENTION_DAYS``. Returns deleted count."""
+        """Lazy purge of events older than ``EVENT_RETENTION_DAYS``. Returns deleted count.
+
+        Throttled per-process to avoid SQLite write-lock contention under many daemons.
+        """
+        global _last_purge_mono
         days = settings.EVENT_RETENTION_DAYS
         if days <= 0:
             return 0
+
+        interval = max(0.0, float(settings.EVENT_PURGE_MIN_INTERVAL_SECONDS))
+        now_mono = time.monotonic()
+        if interval > 0 and (now_mono - _last_purge_mono) < interval:
+            return 0
+
         cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+        max_purged = (
+            await session.execute(
+                select(func.max(Event.seq)).where(Event.created_at < cutoff)
+            )
+        ).scalar_one_or_none()
+
         result = await session.execute(delete(Event).where(Event.created_at < cutoff))
-        return int(result.rowcount or 0)
+        deleted = int(result.rowcount or 0)
+        if deleted and max_purged is not None:
+            await self._set_purged_through_seq(session, int(max_purged))
+
+        _last_purge_mono = now_mono
+        return deleted
 
     async def ensure_cursor_valid(self, session: AsyncSession, cursor: int) -> None:
-        """Raise ``CURSOR_EXPIRED`` when ``cursor`` falls into a purged gap."""
+        """Raise ``CURSOR_EXPIRED`` when ``cursor`` falls into a purged range.
+
+        Uses persisted ``purged_through_seq`` so Postgres sequence holes are not
+        mistaken for retention gaps.
+        """
         if cursor <= 0:
             return
-        min_seq = (
-            await session.execute(select(func.min(Event.seq)))
-        ).scalar_one_or_none()
-        if min_seq is None:
-            return
-        # Next expected seq after cursor is cursor+1; a gap means retention purged it.
-        if min_seq > cursor + 1:
+        purged_through = await self.get_purged_through_seq(session)
+        if cursor < purged_through:
             raise SubscriptionServiceError(
                 ErrorCode.CURSOR_EXPIRED,
                 f"Cursor {cursor} is older than the event retention window "
-                f"(oldest available seq={min_seq})",
-                details={"cursor": cursor, "oldest_seq": min_seq},
+                f"(purged through seq={purged_through})",
+                details={"cursor": cursor, "purged_through_seq": purged_through},
             )
 
     def event_matches_filter(self, sub: Subscription, event: Event) -> bool:
@@ -191,8 +271,16 @@ class SubscriptionService:
         limit: int,
         board_id: str | None = None,
         sub: Subscription | None = None,
-    ) -> list[Event]:
-        """Load events with ``seq > cursor``, applying visibility + optional filter."""
+    ) -> tuple[list[Event], int]:
+        """Load events with ``seq > cursor``, applying visibility + optional filter.
+
+        Returns ``(matched_events, next_cursor)``.
+
+        When a subscription filter rejects rows, ``next_cursor`` still advances to
+        the last *scanned* seq so clients cannot starve behind a wall of
+        non-matching events. Cursor stops at the last matched seq only when
+        ``limit`` matches were collected.
+        """
         ceiling = await self.visibility.max_visible_seq(session)
         # Over-fetch when a subscription filter may reject rows.
         fetch_limit = max(limit * 4, limit) if sub is not None else limit
@@ -205,16 +293,23 @@ class SubscriptionService:
             stmt = stmt.where(Event.board_id == filter_board)
 
         rows = list((await session.execute(stmt)).scalars().all())
+        if not rows:
+            return [], cursor
+
         if sub is None:
-            return rows[:limit]
+            return rows[:limit], rows[min(limit, len(rows)) - 1].seq
 
         matched: list[Event] = []
+        last_scanned_seq = cursor
         for ev in rows:
+            last_scanned_seq = ev.seq
             if self.event_matches_filter(sub, ev):
                 matched.append(ev)
                 if len(matched) >= limit:
-                    break
-        return matched
+                    return matched, ev.seq
+
+        # Partial or empty match: advance past everything we scanned.
+        return matched, last_scanned_seq
 
     async def acquire_consumer_lease(
         self,
@@ -222,8 +317,8 @@ class SubscriptionService:
         sub: Subscription,
         consumer_id: str,
     ) -> None:
-        """Bind or renew consumer lease; raise ``CONSUMER_CONFLICT`` on clash."""
-        clean = (consumer_id or "").strip()
+        """Bind or renew consumer lease atomically; raise ``CONSUMER_CONFLICT`` on clash."""
+        clean = normalize_actor_id((consumer_id or "").strip()) or (consumer_id or "").strip()
         if not clean:
             raise SubscriptionServiceError(
                 ErrorCode.PAYLOAD_INVALID,
@@ -231,24 +326,49 @@ class SubscriptionService:
             )
 
         now = datetime.now(UTC).replace(tzinfo=None)
-        if sub.consumer_id and sub.consumer_lease_expires_at:
-            expires = sub.consumer_lease_expires_at
-            if expires.tzinfo is not None:
-                expires = expires.replace(tzinfo=None)
-            if expires > now and normalize_actor_id(sub.consumer_id) != normalize_actor_id(clean):
-                raise SubscriptionServiceError(
-                    ErrorCode.CONSUMER_CONFLICT,
-                    f"Subscription is leased by consumer '{sub.consumer_id}'",
-                    details={
-                        "consumer_id": sub.consumer_id,
-                        "lease_expires_at": sub.consumer_lease_expires_at.isoformat(),
-                    },
-                )
+        expires = now + timedelta(seconds=settings.CONSUMER_LEASE_SECONDS)
 
-        sub.consumer_id = clean
-        sub.consumer_lease_expires_at = now + timedelta(seconds=settings.CONSUMER_LEASE_SECONDS)
+        result = await session.execute(
+            update(Subscription)
+            .where(
+                Subscription.subscription_id == sub.subscription_id,
+                or_(
+                    Subscription.consumer_id.is_(None),
+                    Subscription.consumer_id == clean,
+                    Subscription.consumer_lease_expires_at.is_(None),
+                    Subscription.consumer_lease_expires_at <= now,
+                ),
+            )
+            .values(consumer_id=clean, consumer_lease_expires_at=expires)
+        )
+        if int(result.rowcount or 0) == 0:
+            await session.refresh(sub)
+            holder = sub.consumer_id or "unknown"
+            lease_iso = (
+                sub.consumer_lease_expires_at.isoformat()
+                if sub.consumer_lease_expires_at is not None
+                else None
+            )
+            raise SubscriptionServiceError(
+                ErrorCode.CONSUMER_CONFLICT,
+                f"Subscription is leased by consumer '{holder}'",
+                details={
+                    "consumer_id": holder,
+                    "lease_expires_at": lease_iso,
+                },
+            )
+
         await session.commit()
         await session.refresh(sub)
+
+    def _lease_is_active(self, sub: Subscription, *, now: datetime | None = None) -> bool:
+        if not sub.consumer_id or sub.consumer_lease_expires_at is None:
+            return False
+        now = now or datetime.now(UTC).replace(tzinfo=None)
+        expires = sub.consumer_lease_expires_at
+        if expires.tzinfo is not None:
+            expires = expires.replace(tzinfo=None)
+        return expires > now
 
     async def ack_cursor(
         self,
@@ -258,13 +378,48 @@ class SubscriptionService:
         *,
         consumer_id: str | None = None,
     ) -> int:
-        """Monotonic ack: only advance ``ack_cursor`` (events.md §3.2)."""
-        if consumer_id is not None:
+        """Monotonic ack via conditional UPDATE (events.md §3.2).
+
+        While a consumer lease is active, ``consumer_id`` is required and must
+        match the lease holder.
+        """
+        now = datetime.now(UTC).replace(tzinfo=None)
+        if self._lease_is_active(sub, now=now):
+            clean = (consumer_id or "").strip()
+            if not clean:
+                raise SubscriptionServiceError(
+                    ErrorCode.CONSUMER_CONFLICT,
+                    "X-AK5-Consumer header is required while a consumer lease is active",
+                    details={"consumer_id": sub.consumer_id},
+                )
+            if normalize_actor_id(clean) != normalize_actor_id(sub.consumer_id or ""):
+                raise SubscriptionServiceError(
+                    ErrorCode.CONSUMER_CONFLICT,
+                    f"Subscription is leased by consumer '{sub.consumer_id}'",
+                    details={
+                        "consumer_id": sub.consumer_id,
+                        "lease_expires_at": (
+                            sub.consumer_lease_expires_at.isoformat()
+                            if sub.consumer_lease_expires_at
+                            else None
+                        ),
+                    },
+                )
+            await self.acquire_consumer_lease(session, sub, clean)
+        elif consumer_id is not None and consumer_id.strip():
             await self.acquire_consumer_lease(session, sub, consumer_id)
-        if cursor > sub.ack_cursor:
-            sub.ack_cursor = cursor
+
+        result = await session.execute(
+            update(Subscription)
+            .where(
+                Subscription.subscription_id == sub.subscription_id,
+                Subscription.ack_cursor < cursor,
+            )
+            .values(ack_cursor=cursor)
+        )
+        if int(result.rowcount or 0) > 0:
             await session.commit()
-            await session.refresh(sub)
+        await session.refresh(sub)
         return sub.ack_cursor
 
     async def long_poll_events(
@@ -278,7 +433,8 @@ class SubscriptionService:
     ) -> tuple[list[dict[str, Any]], int]:
         """Long-poll for subscription events (events.md §3).
 
-        Returns ``(events, next_cursor)``.
+        Returns ``(events, next_cursor)``. ``next_cursor`` advances through
+        scanned non-matching events so filter walls cannot starve the client.
         """
         wait = max(0, min(int(wait), settings.LONG_POLL_MAX_WAIT))
         limit = max(1, min(int(limit), 100))
@@ -298,12 +454,17 @@ class SubscriptionService:
             effective_cursor = db_sub.ack_cursor if cursor is None else cursor
             await self.ensure_cursor_valid(session, effective_cursor)
 
-            matched = await self.fetch_events_since(
-                session, cursor=effective_cursor, limit=limit, sub=db_sub
-            )
-            if matched:
-                next_cursor = matched[-1].seq
-                return [self.event_to_dict(e) for e in matched], next_cursor
+            # Drain filter-mismatch batches immediately so a wall of non-matching
+            # events cannot pin next_cursor forever within a single request.
+            while True:
+                matched, next_cursor = await self.fetch_events_since(
+                    session, cursor=effective_cursor, limit=limit, sub=db_sub
+                )
+                if matched:
+                    return [self.event_to_dict(e) for e in matched], next_cursor
+                if next_cursor <= effective_cursor:
+                    break
+                effective_cursor = next_cursor
 
         if wait <= 0:
             return [], effective_cursor
@@ -330,12 +491,15 @@ class SubscriptionService:
                     )
                 # Renew lease while waiting
                 await self.acquire_consumer_lease(session, db_sub, consumer_id)
-                matched = await self.fetch_events_since(
-                    session, cursor=effective_cursor, limit=limit, sub=db_sub
-                )
-                if matched:
-                    next_cursor = matched[-1].seq
-                    return [self.event_to_dict(e) for e in matched], next_cursor
+                while True:
+                    matched, next_cursor = await self.fetch_events_since(
+                        session, cursor=effective_cursor, limit=limit, sub=db_sub
+                    )
+                    if matched:
+                        return [self.event_to_dict(e) for e in matched], next_cursor
+                    if next_cursor <= effective_cursor:
+                        break
+                    effective_cursor = next_cursor
 
         return [], effective_cursor
 
@@ -352,12 +516,12 @@ class SubscriptionService:
         since = max(0, int(since))
         await self.purge_expired_events(session)
         await self.ensure_cursor_valid(session, since)
-        rows = await self.fetch_events_since(
+        rows, next_cursor = await self.fetch_events_since(
             session, cursor=since, limit=limit, board_id=board_id
         )
         if not rows:
-            return [], since
-        return [self.event_to_dict(e) for e in rows], rows[-1].seq
+            return [], next_cursor
+        return [self.event_to_dict(e) for e in rows], next_cursor
 
 
 # Global singleton instance

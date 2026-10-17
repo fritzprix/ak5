@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.authz import is_admin, is_admin_or_owner
@@ -12,6 +12,7 @@ from ak5.config import settings
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.database import get_db
 from ak5.models.actor import Actor
+from ak5.models.event import Event
 from ak5.models.subscription import Subscription
 from ak5.routers.auth import get_current_actor
 from ak5.schemas.subscription import (
@@ -118,6 +119,13 @@ async def create_subscription(
     if filt.capabilities:
         caps_json = json.dumps([str(c) for c in filt.capabilities])
 
+    # Default start="now": ack at current tip so daemons do not replay retention history.
+    if sub_in.start == "earliest":
+        ack_cursor = 0
+    else:
+        max_seq = (await db.execute(select(func.max(Event.seq)))).scalar_one_or_none()
+        ack_cursor = int(max_seq or 0)
+
     subscription = Subscription(
         subscription_id=sub_id,
         board_id=filt.board_id,
@@ -126,6 +134,7 @@ async def create_subscription(
         capabilities=caps_json,
         for_agent=normalize_actor_id(filt.for_actor) if filt.for_actor else None,
         created_by=current_actor.actor_id,
+        ack_cursor=ack_cursor,
     )
     db.add(subscription)
     await db.commit()

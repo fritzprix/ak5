@@ -1,6 +1,8 @@
+import json
 import logging
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import event, text
 from sqlalchemy.engine import Connection, make_url
@@ -12,8 +14,19 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from ak5.config import settings
+from ak5.paths import get_app_data_dir
 
 logger = logging.getLogger(__name__)
+
+# Fixed export shape for #13 daemon.toml import (do not rename keys).
+LEGACY_SUBSCRIPTIONS_EXPORT_KEYS = (
+    "subscription_id",
+    "board_id",
+    "events",
+    "for_agent",
+    "exec_command",
+    "created_by",
+)
 
 # Do NOT call prepare_database_for_use here. Importing ak5.database (via CLI
 # reset → seed) must not refuse dual-DB before `ak5 migrate-legacy` can run.
@@ -246,10 +259,60 @@ def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
     migrate_sqlite_subscription_filter_only(sync_conn)
 
 
+def export_legacy_subscriptions_json(
+    sync_conn: Connection,
+    src_cols: set[str],
+    *,
+    export_path: Path | None = None,
+) -> Path | None:
+    """Export v1 exec subscriptions before dropping ``exec_command``.
+
+    Writes ``AK5_DATA_DIR/legacy_subscriptions.json`` with a fixed key set so
+    issue #13's daemon can import hooks into ``daemon.toml``.
+    """
+    if "exec_command" not in src_cols:
+        return None
+
+    def _col(name: str) -> str:
+        return name if name in src_cols else f"NULL AS {name}"
+
+    rows = sync_conn.execute(
+        text(
+            f"""
+            SELECT
+                subscription_id,
+                {_col("board_id")},
+                {_col("events")},
+                {_col("for_agent")},
+                exec_command,
+                {_col("created_by")}
+            FROM subscriptions
+            """
+        )
+    ).mappings().all()
+
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        payload.append({k: row.get(k) for k in LEGACY_SUBSCRIPTIONS_EXPORT_KEYS})
+
+    path = export_path or (get_app_data_dir() / "legacy_subscriptions.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    logger.warning(
+        "Exported %d v1 exec subscription(s) to %s before dropping exec_command "
+        "(import into daemon.toml via #13)",
+        len(payload),
+        path,
+    )
+    return path
+
+
 def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
     """Rebuild subscriptions as filter-only: drop server exec_command (events.md §2).
 
     Caller must disable foreign_keys outside any transaction before DROP/rebuild.
+    Before dropping ``exec_command``, exports hooks to ``legacy_subscriptions.json``.
+    Migrated rows get ``ack_cursor = max(events.seq)`` to avoid wake storms.
     """
     exists = sync_conn.execute(
         text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='subscriptions'")
@@ -267,6 +330,19 @@ def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
     )
     if not needs_rebuild:
         return
+
+    export_legacy_subscriptions_json(sync_conn, src_cols)
+
+    # Tip of the event log — skip retention history for migrated subscriptions.
+    events_exist = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'")
+    ).scalar()
+    if events_exist:
+        max_seq = int(
+            sync_conn.execute(text("SELECT COALESCE(MAX(seq), 0) FROM events")).scalar() or 0
+        )
+    else:
+        max_seq = 0
 
     sync_conn.execute(
         text(
@@ -291,7 +367,8 @@ def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
     select_role = "role" if "role" in src_cols else "NULL AS role"
     select_caps = "capabilities" if "capabilities" in src_cols else "NULL AS capabilities"
     select_for = "for_agent" if "for_agent" in src_cols else "NULL AS for_agent"
-    select_ack = "ack_cursor" if "ack_cursor" in src_cols else "0 AS ack_cursor"
+    # Always start migrated subscriptions at the current tip (not historical 0).
+    select_ack = f"{max_seq} AS ack_cursor"
     select_consumer = "consumer_id" if "consumer_id" in src_cols else "NULL AS consumer_id"
     select_lease = (
         "consumer_lease_expires_at"

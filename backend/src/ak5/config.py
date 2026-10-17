@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     # Serverless / multi-worker: set False to rely on DB polling only.
     LONG_POLL_USE_INPROCESS_NOTIFY: bool = True
     EVENT_RETENTION_DAYS: int = 7
+    # Min seconds between lazy retention purges in one process (SQLite write lock).
+    EVENT_PURGE_MIN_INTERVAL_SECONDS: float = 60.0
     CONSUMER_LEASE_SECONDS: int = 60
     # Postgres commit-order ≠ seq-order guard (issue #11 orchestrator note).
     # 0 = no-op (SQLite). >0 holds back events newer than this many seconds.

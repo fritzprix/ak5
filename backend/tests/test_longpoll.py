@@ -7,16 +7,21 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from ak5.config import settings
+from ak5.contracts.errors import ErrorCode
 from ak5.contracts.events import EventType
 from ak5.models.event import Event
+from ak5.models.subscription import Subscription
 from ak5.services.event_log import record_event
 from ak5.services.subscription_service import (
     CommitLagVisibilityPolicy,
     NoOpVisibilityPolicy,
     SubscriptionService,
+    SubscriptionServiceError,
     build_visibility_policy,
+    reset_purge_throttle_for_tests,
 )
 from httpx import AsyncClient
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -256,6 +261,8 @@ async def test_cursor_expired_after_retention_purge(
     headers = auth_headers("user_pm", "human")
     sub_id = await _create_sub(client, headers)
     monkeypatch.setattr(settings, "EVENT_RETENTION_DAYS", 7)
+    monkeypatch.setattr(settings, "EVENT_PURGE_MIN_INTERVAL_SECONDS", 0.0)
+    reset_purge_throttle_for_tests()
 
     old_a = await record_event(
         test_db,
@@ -394,7 +401,7 @@ async def test_visibility_policy_injection_point(test_db: AsyncSession):
     assert ceiling == e1.seq
 
     svc = SubscriptionService(visibility=lag)
-    visible = await svc.fetch_events_since(test_db, cursor=0, limit=10)
+    visible, _ = await svc.fetch_events_since(test_db, cursor=0, limit=10)
     assert [e.seq for e in visible] == [e1.seq]
     assert e2.seq not in [e.seq for e in visible]
 
@@ -410,3 +417,393 @@ async def test_missing_consumer_header_rejected(client: AsyncClient, auth_header
     )
     assert res.status_code == 422
     assert res.json()["error"]["code"] == "PAYLOAD_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_cursor_advances_past_filter_mismatch_wall(
+    client: AsyncClient, auth_headers, test_db: AsyncSession
+):
+    """High: non-matching events must not pin next_cursor (cursor starvation).
+
+    500 TICKET_TRANSITIONED + 1 WORK_AVAILABLE behind a WORK_AVAILABLE filter
+    must be reachable in a finite number of polls.
+    """
+    headers = auth_headers("user_pm", "human")
+    res = await client.post(
+        "/api/v1/subscriptions",
+        json={
+            "filter": {"board_id": "inbox", "events": ["WORK_AVAILABLE"]},
+            "start": "earliest",
+        },
+        headers=headers,
+    )
+    assert res.status_code == 201, res.text
+    sub_id = res.json()["subscription_id"]
+
+    for i in range(500):
+        await record_event(
+            test_db,
+            EventType.TICKET_TRANSITIONED,
+            board_id="inbox",
+            ticket_id=f"TK-t-{i}",
+            actor_id="user_pm",
+            data={"n": i},
+        )
+    match = await record_event(
+        test_db,
+        EventType.WORK_AVAILABLE,
+        board_id="inbox",
+        ticket_id=None,
+        actor_id="system",
+        data={
+            "board_id": "inbox",
+            "stage": "unclassified",
+            "required_role": "triage",
+            "capabilities": [],
+        },
+    )
+    await test_db.commit()
+
+    cursor = 0
+    found = False
+    for _ in range(20):  # finite polls; old code looped forever with next_cursor stuck
+        poll = await client.get(
+            f"/api/v1/subscriptions/{sub_id}/events",
+            params={"wait": 0, "limit": 50, "cursor": cursor},
+            headers={**headers, "X-AK5-Consumer": "daemon-starvation"},
+        )
+        assert poll.status_code == 200, poll.text
+        body = poll.json()
+        assert body["next_cursor"] >= cursor
+        if body["events"]:
+            assert any(e["seq"] == match.seq for e in body["events"])
+            found = True
+            break
+        # Empty batch must still advance past the mismatch wall.
+        assert body["next_cursor"] > cursor
+        cursor = body["next_cursor"]
+
+    assert found, "WORK_AVAILABLE behind 500 mismatches was never reached"
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_start_now_skips_history(
+    client: AsyncClient, auth_headers, test_db: AsyncSession
+):
+    """Medium: default start=now sets ack_cursor to max(seq), not 0."""
+    headers = auth_headers("user_pm", "human")
+    for i in range(5):
+        await record_event(
+            test_db,
+            EventType.TICKET_CREATED,
+            board_id="proj-core-engine",
+            ticket_id=f"TK-hist-{i}",
+            actor_id="user_pm",
+            data={"n": i},
+        )
+    await test_db.commit()
+
+    tip = (await test_db.execute(select(func.max(Event.seq)))).scalar_one()
+
+    res = await client.post(
+        "/api/v1/subscriptions",
+        json={"filter": {"board_id": "proj-core-engine", "events": ["TICKET_CREATED"]}},
+        headers=headers,
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["ack_cursor"] == tip
+
+    poll = await client.get(
+        f"/api/v1/subscriptions/{res.json()['subscription_id']}/events",
+        params={"wait": 0},
+        headers={**headers, "X-AK5-Consumer": "daemon-a"},
+    )
+    assert poll.status_code == 200
+    assert poll.json()["events"] == []
+
+    earliest = await client.post(
+        "/api/v1/subscriptions",
+        json={
+            "filter": {"board_id": "proj-core-engine", "events": ["TICKET_CREATED"]},
+            "start": "earliest",
+        },
+        headers=headers,
+    )
+    assert earliest.status_code == 201
+    assert earliest.json()["ack_cursor"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ack_requires_consumer_when_lease_active(client: AsyncClient, auth_headers):
+    """Medium: ack without X-AK5-Consumer is rejected while lease is held."""
+    headers = auth_headers("user_pm", "human")
+    sub_id = await _create_sub(client, headers)
+
+    ok = await client.get(
+        f"/api/v1/subscriptions/{sub_id}/events",
+        params={"wait": 0},
+        headers={**headers, "X-AK5-Consumer": "daemon-a"},
+    )
+    assert ok.status_code == 200
+
+    no_hdr = await client.post(
+        f"/api/v1/subscriptions/{sub_id}/ack",
+        json={"cursor": 1},
+        headers=headers,
+    )
+    assert no_hdr.status_code == 409
+    assert no_hdr.json()["error"]["code"] == "CONSUMER_CONFLICT"
+
+    wrong = await client.post(
+        f"/api/v1/subscriptions/{sub_id}/ack",
+        json={"cursor": 1},
+        headers={**headers, "X-AK5-Consumer": "daemon-b"},
+    )
+    assert wrong.status_code == 409
+    assert wrong.json()["error"]["code"] == "CONSUMER_CONFLICT"
+
+    good = await client.post(
+        f"/api/v1/subscriptions/{sub_id}/ack",
+        json={"cursor": 1},
+        headers={**headers, "X-AK5-Consumer": "daemon-a"},
+    )
+    assert good.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_acquire_consumer_lease_is_atomic(test_db: AsyncSession, monkeypatch):
+    """Medium: conditional UPDATE prevents two consumers claiming an empty lease."""
+    monkeypatch.setattr(settings, "CONSUMER_LEASE_SECONDS", 60)
+    sub = Subscription(
+        subscription_id="sub-atomic-lease",
+        board_id="proj-core-engine",
+        events="TICKET_CREATED",
+        created_by="user_pm",
+        ack_cursor=0,
+    )
+    test_db.add(sub)
+    await test_db.commit()
+
+    svc = SubscriptionService()
+    await svc.acquire_consumer_lease(test_db, sub, "daemon-a")
+
+    sub_b = await test_db.get(Subscription, "sub-atomic-lease")
+    assert sub_b is not None
+    with pytest.raises(SubscriptionServiceError) as exc_info:
+        await svc.acquire_consumer_lease(test_db, sub_b, "daemon-b")
+    assert exc_info.value.code == ErrorCode.CONSUMER_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_sse_starts_at_tip_without_last_event_id(
+    client: AsyncClient, auth_headers, test_db: AsyncSession, monkeypatch
+):
+    """Medium: SSE without Last-Event-ID must not replay the full retention log."""
+    import asyncio
+
+    from ak5.routers.auth import create_access_token
+
+    headers = auth_headers("user_pm", "human")
+    _ = headers
+    for i in range(10):
+        await record_event(
+            test_db,
+            EventType.TICKET_CREATED,
+            board_id="proj-core-engine",
+            ticket_id=f"TK-sse-{i}",
+            actor_id="user_pm",
+            data={"n": i},
+        )
+    await test_db.commit()
+
+    async def _cancel_wait(_timeout: float = 0) -> bool:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    token = create_access_token("user_pm", "human")
+    resp = await client.get(
+        "/api/v1/events/stream",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=5.0,
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "CONNECTED" in body or "connected" in body.lower()
+    # Historical TICKET_CREATED rows must not be replayed on connect.
+    assert "TK-sse-0" not in body
+    assert "TICKET_CREATED" not in body or body.count("TICKET_CREATED") == 0
+
+
+@pytest.mark.asyncio
+async def test_sse_resync_on_cursor_expired(
+    client: AsyncClient, auth_headers, test_db: AsyncSession, monkeypatch
+):
+    """Medium: CURSOR_EXPIRED on SSE resets to max(seq) and emits RESYNC."""
+    import asyncio
+
+    from ak5.routers.auth import create_access_token
+    from ak5.services.subscription_service import subscription_service
+
+    monkeypatch.setattr(settings, "EVENT_PURGE_MIN_INTERVAL_SECONDS", 0.0)
+    reset_purge_throttle_for_tests()
+
+    e1 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-resync-1",
+        actor_id="user_pm",
+        data={},
+    )
+    await test_db.commit()
+    tip = e1.seq
+
+    calls = {"n": 0}
+
+    async def _poll_then_expire(session, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SubscriptionServiceError(ErrorCode.CURSOR_EXPIRED, "expired", details={})
+        return [], int(kwargs.get("since", 0) or 0)
+
+    async def _cancel_wait(_timeout: float = 0) -> bool:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(subscription_service, "poll_events", _poll_then_expire)
+    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+
+    token = create_access_token("user_pm", "human")
+    resp = await client.get(
+        "/api/v1/events/stream",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Last-Event-ID": "1",
+        },
+        timeout=5.0,
+    )
+    assert resp.status_code == 200
+    assert "RESYNC" in resp.text
+    assert "CURSOR_EXPIRED" in resp.text
+    assert str(tip) in resp.text
+
+
+@pytest.mark.asyncio
+async def test_cursor_expired_uses_purged_through_not_seq_holes(
+    test_db: AsyncSession, monkeypatch
+):
+    """Low: seq holes alone must not raise CURSOR_EXPIRED; only purged_through does."""
+    from sqlalchemy import delete
+
+    monkeypatch.setattr(settings, "EVENT_RETENTION_DAYS", 7)
+    monkeypatch.setattr(settings, "EVENT_PURGE_MIN_INTERVAL_SECONDS", 0.0)
+    reset_purge_throttle_for_tests()
+
+    svc = SubscriptionService()
+    e1 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-hole-1",
+        actor_id="user_pm",
+        data={},
+    )
+    e2 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-hole-2",
+        actor_id="user_pm",
+        data={},
+    )
+    e3 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-hole-3",
+        actor_id="user_pm",
+        data={},
+    )
+    await test_db.commit()
+
+    # Raw delete creates a min(seq) gap without recording purged_through —
+    # old min_seq > cursor+1 logic would false-positive CURSOR_EXPIRED here.
+    await test_db.execute(delete(Event).where(Event.seq.in_([e1.seq, e2.seq])))
+    await test_db.commit()
+    await svc.ensure_cursor_valid(test_db, cursor=e1.seq)
+
+    # Real retention purge must expire cursors below purged_through_seq.
+    row = await test_db.get(Event, e3.seq)
+    assert row is not None
+    row.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8)
+    await test_db.commit()
+
+    newer = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-after-purge",
+        actor_id="user_pm",
+        data={},
+    )
+    await test_db.commit()
+
+    deleted = await svc.purge_expired_events(test_db)
+    await test_db.commit()
+    assert deleted >= 1
+    purged_through = await svc.get_purged_through_seq(test_db)
+    assert purged_through >= e3.seq
+
+    stale = max(1, purged_through - 1)
+    with pytest.raises(SubscriptionServiceError) as ei:
+        await svc.ensure_cursor_valid(test_db, cursor=stale)
+    assert ei.value.code == ErrorCode.CURSOR_EXPIRED
+
+    await svc.ensure_cursor_valid(test_db, cursor=purged_through)
+    assert newer.seq > purged_through
+
+
+@pytest.mark.asyncio
+async def test_purge_throttled_per_process(test_db: AsyncSession, monkeypatch):
+    """Low: purge runs at most once per EVENT_PURGE_MIN_INTERVAL_SECONDS."""
+    monkeypatch.setattr(settings, "EVENT_RETENTION_DAYS", 7)
+    monkeypatch.setattr(settings, "EVENT_PURGE_MIN_INTERVAL_SECONDS", 60.0)
+    reset_purge_throttle_for_tests()
+
+    e = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-throttle",
+        actor_id="user_pm",
+        data={},
+    )
+    await test_db.commit()
+    row = await test_db.get(Event, e.seq)
+    assert row is not None
+    row.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8)
+    await test_db.commit()
+
+    svc = SubscriptionService()
+    first = await svc.purge_expired_events(test_db)
+    await test_db.commit()
+    assert first >= 1
+
+    # Re-insert an expired row; throttle should skip the second purge.
+    e2 = await record_event(
+        test_db,
+        EventType.TICKET_CREATED,
+        board_id="proj-core-engine",
+        ticket_id="TK-throttle-2",
+        actor_id="user_pm",
+        data={},
+    )
+    await test_db.commit()
+    row2 = await test_db.get(Event, e2.seq)
+    assert row2 is not None
+    row2.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8)
+    await test_db.commit()
+
+    second = await svc.purge_expired_events(test_db)
+    assert second == 0
+    still = await test_db.get(Event, e2.seq)
+    assert still is not None
