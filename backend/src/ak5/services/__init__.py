@@ -1,6 +1,6 @@
 """Lazy compatibility shim — prefer ``ak5.server.services``.
 
-``event_context`` is a real client-safe submodule (contracts re-export).
+``event_context`` and ``templates`` are real client-safe submodules.
 """
 
 from __future__ import annotations

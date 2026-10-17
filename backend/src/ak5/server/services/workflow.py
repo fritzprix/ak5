@@ -8,6 +8,7 @@ revision/review/postmortem, audit, event log).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import uuid
@@ -43,7 +44,11 @@ from ak5.server.models.ticket_revision import TicketRevision
 from ak5.server.seed import INBOX_BOARD_ID, SYSTEM_ACTOR_ID
 from ak5.server.services.event_log import record_event
 from ak5.server.services.lexorank import rank_between
-from ak5.server.services.templates import get_template, template_column_dicts
+from ak5.server.services.templates import (
+    claim_fields_for_template,
+    get_template,
+    template_column_dicts,
+)
 from ak5.server.services.ticket_status import derive_status
 
 # ---------------------------------------------------------------------------
@@ -1243,6 +1248,14 @@ async def claim_ticket(
 
     # Final reload so callers can format without touching expired attrs.
     ticket = await _load_ticket(db, ticket_id)
+    board = ticket.board or await db.get(Board, ticket.board_id)
+    claim_extras: dict[str, list[str]] = {
+        "review_checklist": [],
+        "acceptance_criteria_defaults": [],
+    }
+    if board and board.template:
+        with contextlib.suppress(KeyError):
+            claim_extras = claim_fields_for_template(get_template(board.template))
     return {
         "ticket": ticket,
         "claim_token": token,
@@ -1250,6 +1263,7 @@ async def claim_ticket(
         "revision": revision,
         "postmortems": postmortems,
         "reviews": reviews,
+        **claim_extras,
     }
 
 

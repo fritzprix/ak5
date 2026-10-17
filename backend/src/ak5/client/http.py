@@ -434,6 +434,9 @@ class AK5Client:
     def create_board(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/boards", json=payload)
 
+    def update_board(self, board_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.patch(f"/boards/{board_id}", json=payload)
+
     def adopt_board(self, board_id: str) -> dict[str, Any]:
         return self.post(f"/boards/{board_id}/claim")
 

@@ -1056,6 +1056,10 @@ async def claim_ticket_endpoint(
             revision=_revision_out(result["revision"]) if result["revision"] else None,
             postmortems=[_postmortem_out(p) for p in result["postmortems"]],
             reviews=[_review_out(r) for r in result["reviews"]],
+            review_checklist=list(result.get("review_checklist") or []),
+            acceptance_criteria_defaults=list(
+                result.get("acceptance_criteria_defaults") or []
+            ),
         )
 
     try:
