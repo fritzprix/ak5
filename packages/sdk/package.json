@@ -1,7 +1,7 @@
 {
   "name": "@ak5/sdk",
-  "version": "1.0.26",
-  "description": "Official TypeScript & JavaScript SDK for AK5 (Agent-Orchestrated Kanban)",
+  "version": "2.0.0",
+  "description": "Official TypeScript & JavaScript SDK for AK5 (Agent-Orchestrated Kanban) v2 API",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -19,6 +19,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts --clean",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
