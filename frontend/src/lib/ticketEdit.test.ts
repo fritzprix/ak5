@@ -42,7 +42,6 @@ describe("ticketToEditFields", () => {
       })
     );
     assert.equal(fields.description, "");
-    assert.equal(fields.assigned_to, "");
     assert.equal(fields.blocked, true);
     assert.equal(fields.blocked_by, "waiting on design");
   });
@@ -80,16 +79,14 @@ describe("buildTicketUpdatePayload", () => {
     });
   });
 
-  it("clears assignee and description with null", () => {
+  it("clears description with null", () => {
     const ticket = baseTicket();
     const edit: TicketEditFields = {
       ...ticketToEditFields(ticket),
-      assigned_to: "",
       description: "",
     };
     assert.deepEqual(buildTicketUpdatePayload(ticket, edit, "backlog"), {
       description: null,
-      assigned_to: null,
     });
   });
 

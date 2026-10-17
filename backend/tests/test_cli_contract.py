@@ -468,6 +468,18 @@ async def test_create_defaults_to_inbox(cli_asgi, monkeypatch: pytest.MonkeyPatc
     assert body["stage"] == "unclassified"
 
 
+def test_ticket_create_has_no_assign_option():
+    """Assignee is claim-derived — create must not expose --assign (#45 follow-up)."""
+    runner = CliRunner()
+    help_r = runner.invoke(cli, ["ticket", "create", "--help"])
+    assert help_r.exit_code == 0, help_r.output
+    assert "--assign" not in help_r.output
+    bad = runner.invoke(cli, ["ticket", "create", "x", "--assign", "someone"])
+    assert bad.exit_code == 2
+    combined = ((bad.output or "") + (bad.stderr or "")).lower()
+    assert "no such option" in combined
+
+
 def _assert_payload_invalid_cli(result) -> dict:
     """Assert --json ClientError contract: exit 2, PAYLOAD_INVALID, no traceback."""
     combined = (result.stdout or "") + (result.stderr or "") + (result.output or "")

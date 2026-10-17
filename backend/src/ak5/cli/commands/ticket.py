@@ -93,7 +93,6 @@ def ticket_group() -> None:
     type=click.Choice(["low", "medium", "high", "urgent"]),
     default="medium",
 )
-@click.option("--assign", "-a", "assigned_to", default=None, help="Assignee Actor ID")
 @click.option("--labels", "-l", default="", help="Comma-separated labels")
 @click.option("--due", default=None, help="Due date (ISO)")
 @click.option("--column", "-c", "column_name", default=None, help="Ignored (compat); stage via workflow")
@@ -107,12 +106,14 @@ def create_ticket_cmd(
     spec: str | None,
     criteria_raw: str | None,
     priority: str,
-    assigned_to: str | None,
     labels: str,
     due: str | None,
     column_name: str | None,
 ) -> None:
-    """Create a ticket. Default destination is inbox (T1); ``--board`` → T2."""
+    """Create a ticket. Default destination is inbox (T1); ``--board`` → T2.
+
+    Assignee is claim-derived only (no create-time assignee flag).
+    """
     _ = column_name
     json_mode = _jm(ctx)
     resolved_title = title_opt or title
@@ -129,8 +130,6 @@ def create_ticket_cmd(
         payload["description"] = description
     if due:
         payload["due_date"] = due
-    if assigned_to:
-        payload["assigned_to"] = assigned_to
 
     if board_id:
         payload["board_id"] = board_id
@@ -841,7 +840,6 @@ def execute_comment_ticket(
 @click.option("--title", default=None, help="New title")
 @click.option("--desc", "description", default=None, help="New description")
 @click.option("--priority", type=click.Choice(["low", "medium", "high", "urgent"]), default=None)
-@click.option("--assign", "assigned_to", default=None, help="New assignee Actor ID")
 @click.option("--status", type=click.Choice(["open", "in_progress", "done", "blocked"]), default=None)
 @click.pass_context
 def update_ticket_cmd(
@@ -850,10 +848,9 @@ def update_ticket_cmd(
     title: str | None,
     description: str | None,
     priority: str | None,
-    assigned_to: str | None,
     status: str | None,
 ) -> None:
-    """Update ticket title, description, priority, or assignee."""
+    """Update ticket title, description, or priority (assignee is claim-derived)."""
     json_mode = _jm(ctx)
     payload: dict[str, Any] = {}
     if title is not None:
@@ -862,8 +859,6 @@ def update_ticket_cmd(
         payload["description"] = description
     if priority is not None:
         payload["priority"] = priority
-    if assigned_to is not None:
-        payload["assigned_to"] = assigned_to
     if status is not None:
         payload["status"] = status
     if not payload:

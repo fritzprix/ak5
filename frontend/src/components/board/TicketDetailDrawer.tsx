@@ -97,7 +97,6 @@ export function TicketDetailDrawer({
   const titleFieldId = useId();
   const descFieldId = useId();
   const priorityFieldId = useId();
-  const assigneeFieldId = useId();
   const blockedFieldId = useId();
   const blockedByFieldId = useId();
   const panelRef = useRef<HTMLElement | null>(null);
@@ -520,29 +519,16 @@ export function TicketDetailDrawer({
                 </select>
               </div>
               <div>
-                <label
-                  htmlFor={assigneeFieldId}
-                  className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
-                >
-                  Assignee
-                </label>
-                <select
-                  id={assigneeFieldId}
-                  className="ak-input"
-                  value={edit.assigned_to}
-                  onChange={(e) => patchEdit("assigned_to", e.target.value)}
-                  disabled={saving}
-                >
-                  <option value="">Unassigned</option>
-                  {edit.assigned_to && !actors.some((a) => a.actor_id === edit.assigned_to) ? (
-                    <option value={edit.assigned_to}>@{edit.assigned_to}</option>
-                  ) : null}
-                  {actors.map((a) => (
-                    <option key={a.actor_id} value={a.actor_id}>
-                      {a.name} ({a.role})
-                    </option>
-                  ))}
-                </select>
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                  Assignee (claim holder)
+                </span>
+                <p className="ak-input flex items-center bg-[var(--background)] text-[var(--muted)]">
+                  {detail.assigned_to ? (
+                    <ActorBadge actorId={detail.assigned_to} />
+                  ) : (
+                    <span>Unassigned — set by claim</span>
+                  )}
+                </p>
               </div>
             </div>
 

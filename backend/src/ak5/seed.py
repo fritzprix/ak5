@@ -324,9 +324,13 @@ async def seed_initial_data() -> None:
         await backfill_standard_board_stages(db)
         await repair_claimless_in_progress_tickets(db)
         # Recompute derived status for migrated tickets (orchestrator note on #10).
-        from ak5.services.workflow import recompute_all_ticket_statuses
+        from ak5.services.workflow import (
+            clear_assignees_without_claim,
+            recompute_all_ticket_statuses,
+        )
 
         await recompute_all_ticket_statuses(db)
+        await clear_assignees_without_claim(db)
 
         await db.commit()
 

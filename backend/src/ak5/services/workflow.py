@@ -475,18 +475,11 @@ async def _generate_ticket_id(db: AsyncSession) -> str:
 
 
 def _clear_claim(ticket: Ticket) -> None:
+    """Drop claim fields and assignee — assigned_to means current claim holder only (#30)."""
     ticket.claim_token = None
     ticket.claimed_by = None
     ticket.lease_expires_at = None
-
-
-def _issue_claim(ticket: Ticket, actor: Actor, *, now: datetime | None = None) -> str:
-    token = f"clm_{uuid.uuid4().hex}"
-    ref = now or _now()
-    ticket.claim_token = token
-    ticket.claimed_by = actor.actor_id
-    ticket.lease_expires_at = _naive(ref + timedelta(seconds=settings.CLAIM_LEASE_TTL_SECONDS))
-    return token
+    ticket.assigned_to = None
 
 
 async def _move_ticket(
@@ -819,6 +812,51 @@ async def recompute_all_ticket_statuses(db: AsyncSession) -> int:
         if ticket.status != new_status:
             ticket.status = new_status
             changed += 1
+    if changed:
+        await db.flush()
+    return changed
+
+
+async def clear_assignees_without_claim(db: AsyncSession) -> int:
+    """Startup repair (#30): assigned_to only when a claim is valid; audit prior values."""
+    now = _naive(_now())
+    # Candidates only: has assignee but missing/mismatched/expired claim.
+    stmt = (
+        select(Ticket)
+        .options(selectinload(Ticket.column))
+        .where(
+            Ticket.assigned_to.is_not(None),
+            or_(
+                Ticket.claim_token.is_(None),
+                Ticket.claimed_by.is_distinct_from(Ticket.assigned_to),
+                Ticket.lease_expires_at.is_not(None) & (Ticket.lease_expires_at <= now),
+            ),
+        )
+    )
+    tickets = (await db.execute(stmt)).scalars().all()
+    changed = 0
+    for ticket in tickets:
+        if is_claim_valid(ticket) and ticket.claimed_by == ticket.assigned_to:
+            continue
+        prev = ticket.assigned_to
+        stage_val: str | None = None
+        try:
+            stage_val = ticket_stage(ticket).value
+        except WorkflowError:
+            stage_val = None
+        await _write_audit(
+            db,
+            actor_id=SYSTEM_ACTOR_ID,
+            ticket_id=ticket.ticket_id,
+            op="clear_stale_assignee",
+            from_stage=stage_val,
+            to_stage=stage_val,
+            reason="assigned_to cleared; no matching valid claim",
+            attempt=ticket.attempt,
+            extra={"previous_assigned_to": prev},
+        )
+        ticket.assigned_to = None
+        changed += 1
     if changed:
         await db.flush()
     return changed
