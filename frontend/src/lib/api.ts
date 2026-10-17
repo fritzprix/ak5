@@ -1,5 +1,16 @@
 import type { TicketUpdatePayload } from "./ticketEdit";
-import { Board, BoardSummary, Ticket, TicketAttachment, TicketComment, Actor } from "./types";
+import type { ReviewDecision } from "./reviewDecision";
+import {
+  Board,
+  BoardSummary,
+  Ticket,
+  TicketAttachment,
+  TicketComment,
+  TicketHistory,
+  Actor,
+  BlockedKind,
+  ApiErrorBody,
+} from "./types";
 
 /** Same-origin by default so embedded FastAPI (`ak5 web`) needs no CORS/port split. */
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
@@ -50,7 +61,7 @@ export async function getAuthToken(): Promise<string> {
         actor_id: DASHBOARD_ACTOR_ID,
         actor_type: "human",
         name: "David (Lead PM)",
-        role: "PM",
+        role: "human",
         capabilities: ["planning", "review"],
       }),
     });
@@ -115,9 +126,18 @@ export async function fetchActors(): Promise<Actor[]> {
 async function readErrorDetail(res: Response): Promise<string> {
   try {
     const body: unknown = await res.json();
-    if (typeof body === "object" && body !== null && "detail" in body) {
-      const detail = Reflect.get(body, "detail");
-      if (typeof detail === "string") return detail;
+    if (typeof body === "object" && body !== null) {
+      // v2 contract: { error: { code, message, details } }
+      if ("error" in body) {
+        const err = (body as ApiErrorBody).error;
+        if (err && typeof err.message === "string") {
+          return err.code ? `${err.code}: ${err.message}` : err.message;
+        }
+      }
+      if ("detail" in body) {
+        const detail = Reflect.get(body, "detail");
+        if (typeof detail === "string") return detail;
+      }
     }
   } catch {
     // fall through
@@ -129,20 +149,25 @@ export async function moveTicket(
   ticketId: string,
   targetColumnId: string,
   previousTicketId?: string | null,
-  nextTicketId?: string | null
+  nextTicketId?: string | null,
+  reason?: string | null
 ): Promise<Ticket> {
   const token = await getAuthToken();
+  const body: Record<string, unknown> = {
+    target_column_id: targetColumnId,
+    previous_ticket_id: previousTicketId ?? null,
+    next_ticket_id: nextTicketId ?? null,
+  };
+  if (reason != null && reason.trim().length > 0) {
+    body.reason = reason.trim();
+  }
   const res = await fetch(`${API_BASE}/tickets/${ticketId}/move`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
       Authorization: token ? `Bearer ${token}` : "",
     },
-    body: JSON.stringify({
-      target_column_id: targetColumnId,
-      previous_ticket_id: previousTicketId,
-      next_ticket_id: nextTicketId,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     throw new Error(await readErrorDetail(res));
@@ -150,30 +175,54 @@ export async function moveTicket(
   return res.json();
 }
 
+export type CreateTicketOptions = {
+  /** When true (or boardId is "inbox"), creates via T1 into global inbox. */
+  toInbox?: boolean;
+  /** T2 acceptance criteria; defaults to a single criterion from the description. */
+  acceptanceCriteria?: string[];
+};
+
 export async function createTicket(
   boardId: string,
   columnId: string,
   title: string,
   description?: string,
   priority: string = "medium",
-  assignedTo?: string | null
+  assignedTo?: string | null,
+  options?: CreateTicketOptions
 ): Promise<Ticket> {
   const token = await getAuthToken();
+  const toInbox = Boolean(options?.toInbox) || boardId === "inbox";
+
+  const payload: Record<string, unknown> = {
+    title,
+    description: description || undefined,
+    priority,
+    labels: ["manual"],
+  };
+
+  if (toInbox) {
+    // T1 — omit board_id; land on unclassified @inbox
+    payload.original_request = description?.trim() || title;
+  } else {
+    // T2 — create_direct onto board backlog
+    payload.board_id = boardId;
+    payload.column_id = columnId; // ignored by server; kept for compat
+    payload.spec = description?.trim() || title;
+    payload.acceptance_criteria =
+      options?.acceptanceCriteria && options.acceptanceCriteria.length > 0
+        ? options.acceptanceCriteria
+        : ["Ticket accepted when deliverable meets the description"];
+    if (assignedTo) payload.assigned_to = assignedTo;
+  }
+
   const res = await fetch(`${API_BASE}/tickets`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: token ? `Bearer ${token}` : "",
     },
-    body: JSON.stringify({
-      board_id: boardId,
-      column_id: columnId,
-      title,
-      description,
-      priority,
-      assigned_to: assignedTo || null,
-      labels: ["manual"],
-    }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     throw new Error(await readErrorDetail(res));
@@ -320,6 +369,11 @@ export function subscribeToBoardEvents(
       "TICKET_MOVED",
       "TICKET_DELEGATED",
       "TICKET_UPDATED",
+      "TICKET_TRANSITIONED",
+      "TICKET_BLOCKED",
+      "TICKET_UNBLOCKED",
+      "HUMAN_ACTION_REQUIRED",
+      "WORK_AVAILABLE",
       "COMMENT_ADDED",
       "ATTACHMENT_ADDED",
       "ATTACHMENT_DELETED",
@@ -364,7 +418,7 @@ export async function addBoardMember(
   boardId: string,
   actorId: string,
   role: string = "member"
-): Promise<any> {
+): Promise<unknown> {
   const token = await getAuthToken();
   const res = await fetch(`${API_BASE}/boards/${boardId}/members`, {
     method: "POST",
@@ -448,7 +502,7 @@ export async function approveDeviceRequest(
   userCode: string,
   approved: boolean,
   boardIds: string[] = []
-): Promise<any> {
+): Promise<unknown> {
   const token = await getAuthToken();
   const res = await fetch(`${API_BASE}/auth/device/approve`, {
     method: "POST",
@@ -461,6 +515,115 @@ export async function approveDeviceRequest(
   if (!res.ok) {
     const detail = await readErrorDetail(res);
     throw new Error(detail);
+  }
+  return res.json();
+}
+
+/** POST /tickets/{id}/verdict — human T15/T16 or gatekeeper T12–T14. */
+export async function submitVerdict(
+  ticketId: string,
+  decision: ReviewDecision,
+  reason: string = "",
+  options?: { claimToken?: string | null; misrouted?: boolean }
+): Promise<Ticket> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/verdict`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify({
+      claim_token: options?.claimToken ?? null,
+      verdict: {
+        decision,
+        reason: reason.trim(),
+        misrouted: Boolean(options?.misrouted),
+        findings: [],
+      },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+/** POST /tickets/{id}/reopen — T17 done → postmortem_pending. */
+export async function reopenTicket(ticketId: string, reason: string): Promise<Ticket> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/reopen`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify({ reason: reason.trim() }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+/** POST /tickets/{id}/block — B1. */
+export async function blockTicket(
+  ticketId: string,
+  kind: BlockedKind,
+  reason: string,
+  claimToken?: string | null
+): Promise<Ticket> {
+  const token = await getAuthToken();
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/block`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify({
+      kind,
+      reason: reason.trim(),
+      claim_token: claimToken ?? null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+/** POST /tickets/{id}/unblock — B2/B3 (resolution required for needs_human / escalation). */
+export async function unblockTicket(
+  ticketId: string,
+  resolution?: string | null
+): Promise<Ticket> {
+  const token = await getAuthToken();
+  const body: Record<string, unknown> = {};
+  if (resolution != null && resolution.trim().length > 0) {
+    body.resolution = resolution.trim();
+  }
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/unblock`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+/** GET /tickets/{id}/history — revisions · reviews · postmortems · audit. */
+export async function fetchTicketHistory(ticketId: string): Promise<TicketHistory> {
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/history`, {
+    cache: "no-store",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
   }
   return res.json();
 }

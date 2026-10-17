@@ -49,8 +49,11 @@ describe("ticketToEditFields", () => {
 });
 
 describe("statusForColumnStage", () => {
-  it("maps review to in_progress like move sync", () => {
-    assert.equal(statusForColumnStage("review"), "in_progress");
+  it("maps v2 stages to derived status", () => {
+    assert.equal(statusForColumnStage("human_review"), "in_progress");
+    assert.equal(statusForColumnStage("agent_review"), "in_progress");
+    assert.equal(statusForColumnStage("backlog"), "open");
+    assert.equal(statusForColumnStage("unclassified"), "open");
     assert.equal(statusForColumnStage("done"), "done");
     assert.equal(statusForColumnStage(null), "open");
   });
@@ -60,7 +63,7 @@ describe("buildTicketUpdatePayload", () => {
   it("returns null when unchanged", () => {
     const ticket = baseTicket();
     const edit = ticketToEditFields(ticket);
-    assert.equal(buildTicketUpdatePayload(ticket, edit, "open"), null);
+    assert.equal(buildTicketUpdatePayload(ticket, edit, "backlog"), null);
     assert.equal(isTicketEditDirty(ticket, edit), false);
   });
 
@@ -71,7 +74,7 @@ describe("buildTicketUpdatePayload", () => {
       title: "  New title  ",
       priority: "high",
     };
-    assert.deepEqual(buildTicketUpdatePayload(ticket, edit, "open"), {
+    assert.deepEqual(buildTicketUpdatePayload(ticket, edit, "backlog"), {
       title: "New title",
       priority: "high",
     });
@@ -84,7 +87,7 @@ describe("buildTicketUpdatePayload", () => {
       assigned_to: "",
       description: "",
     };
-    assert.deepEqual(buildTicketUpdatePayload(ticket, edit, "open"), {
+    assert.deepEqual(buildTicketUpdatePayload(ticket, edit, "backlog"), {
       description: null,
       assigned_to: null,
     });
@@ -107,17 +110,25 @@ describe("buildTicketUpdatePayload", () => {
     const ticket = baseTicket({
       status: "blocked",
       blocked_by: "needs API key",
-      column_id: "col_review",
+      column_id: "col_human",
     });
     const edit: TicketEditFields = {
       ...ticketToEditFields(ticket),
       blocked: false,
       blocked_by: "",
     };
-    assert.deepEqual(buildTicketUpdatePayload(ticket, edit, "review"), {
+    assert.deepEqual(buildTicketUpdatePayload(ticket, edit, "human_review"), {
       status: "in_progress",
       blocked_by: null,
     });
+  });
+
+  it("treats blocked_kind as blocked in edit fields", () => {
+    const fields = ticketToEditFields(
+      baseTicket({ status: "open", blocked_kind: "needs_human", blocked_by: "ask PM" })
+    );
+    assert.equal(fields.blocked, true);
+    assert.equal(fields.blocked_by, "ask PM");
   });
 
   it("ignores whitespace-only title (keeps original)", () => {
@@ -126,6 +137,6 @@ describe("buildTicketUpdatePayload", () => {
       ...ticketToEditFields(ticket),
       title: "   ",
     };
-    assert.equal(buildTicketUpdatePayload(ticket, edit, "open"), null);
+    assert.equal(buildTicketUpdatePayload(ticket, edit, "backlog"), null);
   });
 });

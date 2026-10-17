@@ -96,30 +96,12 @@ POST /subscriptions/{id}/ack   { "cursor": <seq> }
 
 ## 4. Daemon
 
-### 4.1 설정 (`~/.ak5/daemon.toml`)
+> daemon의 구조(profile, credential broker, 1:N fan-out, local IPC)는 [client.md](client.md)가 정본이다. 이 절은 hook 계약과 실패 정책만 정의한다.
 
-```toml
-[[subscription]]
-id = "sub_123"
-hook = { exec = 'agent -p "$AK5_SUMMARY"' }   # 또는 { http = "http://localhost:7777/hook" }
-concurrency = 1                               # 기본 순차
-retry = { max = 3, backoff = "exp" }
-```
+- daemon은 **profile당 서버 subscription 1개**를 consumer로 long-poll하고(1:1), 수신 이벤트를 spool에 기록한 뒤 서버에 `next_cursor`를 ack한다. 로컬 구독자 N개로의 전달은 daemon이 책임진다 (client.md §4).
+- hook 바인딩은 클라이언트에만 존재한다 (daemon 상태). 서버에는 셸 명령을 저장하지 않는다.
 
-hook 바인딩은 클라이언트에만 존재한다.
-
-### 4.2 처리 루프
-
-```
-loop:
-  batch = long_poll(sub, cursor=server_ack_cursor, wait=25)
-  for event in batch:
-      run hook (재시도 정책 적용)
-      if 최종 실패: dead-letter 기록
-      ack(event.seq)
-```
-
-### 4.3 Hook 계약
+### 4.1 Hook 계약
 
 환경 변수 (기존 계약 유지 + 추가):
 
@@ -133,15 +115,15 @@ loop:
 | `AK5_EVENT_ID` *(신규)* | 중복 제거용 |
 | `AK5_CURSOR` *(신규)* | 이벤트 seq |
 
-stdin: `{"event": "...", "data": {...}}`. `http` hook은 같은 JSON을 POST body로 받는다.
+stdin: `{"event": "...", "data": {...}}`. HTTP로 전달하려면 exec hook에서 `curl -d @-`를 쓴다 (hook 타입은 exec 하나, client.md §4.3).
 
-### 4.4 실패 정책
+### 4.2 실패 정책
 
 - 재시도 소진 후 **dead-letter에 기록하고 ack하여 진행한다.** 실패한 hook 하나가 큐 전체를 막지 않는다.
 - dead-letter: `~/.ak5/daemon/dead-letter.jsonl` (이벤트 원문, hook, 종료 코드, stderr 일부, 시각).
 - 재처리: `ak5 daemon replay <event_id>`.
 
-### 4.5 프로세스 모델
+### 4.3 프로세스 모델
 
 - daemon은 서버 앱 lifespan 안에서 실행하지 않는다 (uvicorn worker 수만큼 중복되는 문제).
 - `ak5 serve --daemon`은 launcher 프로세스가 daemon을 **sibling 프로세스**로 실행한다.
@@ -158,5 +140,5 @@ stdin: `{"event": "...", "data": {...}}`. `http` hook은 같은 JSON을 POST bod
 ## 6. 기존 구현에서의 이행
 
 - 서버의 `--exec` 실행 코드(`subscription_service`의 실행 경로, CLI `run_subscription_loop`, `execute_subscriber_command`)는 daemon 패키지로 이동한다.
-- 기존 `subscribe create --exec`는 `subscribe add --hook-exec`로 대체: 서버에는 필터를, 로컬 `daemon.toml`에는 hook을 저장한다.
+- 기존 `subscribe create --exec`는 `subscribe add --exec`로 대체: 서버에는 profile당 subscription 1개(필터)만, exec hook은 daemon 로컬 구독자로 저장한다 (client.md §4).
 - SSE(`events watch`)는 사람 터미널용 관찰 기능으로만 유지한다.
