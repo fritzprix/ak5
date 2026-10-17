@@ -1,5 +1,5 @@
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 
 from sqlalchemy import event, text
@@ -73,6 +73,9 @@ def migrate_sqlite_blocked_by_to_text(sync_conn: Connection) -> None:
 
     Older schemas treated blocked_by as a dependency ticket id. The product uses it
     as a human/agent block reason, so the FK must not remain.
+
+    Caller must disable foreign_keys outside any transaction before DROP/rebuild
+    (see ``_run_sqlite_table_rebuild``).
     """
     exists = sync_conn.execute(
         text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tickets'")
@@ -82,7 +85,6 @@ def migrate_sqlite_blocked_by_to_text(sync_conn: Connection) -> None:
     if not _sqlite_blocked_by_has_ticket_fk(sync_conn):
         return
 
-    sync_conn.execute(text("PRAGMA foreign_keys=OFF"))
     sync_conn.execute(
         text(
             """
@@ -152,7 +154,6 @@ def migrate_sqlite_blocked_by_to_text(sync_conn: Connection) -> None:
     sync_conn.execute(
         text("CREATE INDEX IF NOT EXISTS idx_tickets_parent ON tickets (parent_ticket_id)")
     )
-    sync_conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
 def migrate_sqlite_archive_fields(sync_conn: Connection) -> None:
@@ -171,13 +172,280 @@ def migrate_sqlite_archive_fields(sync_conn: Connection) -> None:
         sync_conn.execute(text("ALTER TABLE tickets ADD COLUMN archived_at DATETIME"))
 
 
+def _table_column_names(sync_conn: Connection, table: str) -> set[str]:
+    rows = sync_conn.execute(text(f"PRAGMA table_info({table})")).mappings().all()
+    return {row["name"] for row in rows}
+
+
+def _add_column_if_missing(
+    sync_conn: Connection,
+    table: str,
+    column: str,
+    ddl_type: str,
+) -> None:
+    cols = _table_column_names(sync_conn, table)
+    if column not in cols:
+        sync_conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+
+
+def migrate_sqlite_board_workflow_fields(sync_conn: Connection) -> None:
+    """Add boards.kind / template / auto_created (workflow.md §9)."""
+    exists = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='boards'")
+    ).scalar()
+    if not exists:
+        return
+    _add_column_if_missing(sync_conn, "boards", "kind", "VARCHAR(16) NOT NULL DEFAULT 'standard'")
+    _add_column_if_missing(sync_conn, "boards", "template", "VARCHAR(64)")
+    _add_column_if_missing(sync_conn, "boards", "auto_created", "BOOLEAN NOT NULL DEFAULT 0")
+    # Ensure inbox board kind if already present (seed may run later).
+    sync_conn.execute(
+        text("UPDATE boards SET kind = 'inbox' WHERE board_id = 'inbox' AND (kind IS NULL OR kind = '')")
+    )
+
+
+def migrate_sqlite_ticket_workflow_fields(sync_conn: Connection) -> None:
+    """Add ticket claim / blocked / attempt columns (workflow.md §9)."""
+    exists = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tickets'")
+    ).scalar()
+    if not exists:
+        return
+    _add_column_if_missing(sync_conn, "tickets", "original_request", "TEXT")
+    _add_column_if_missing(sync_conn, "tickets", "attempt", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(sync_conn, "tickets", "max_attempts", "INTEGER NOT NULL DEFAULT 3")
+    _add_column_if_missing(sync_conn, "tickets", "claim_token", "VARCHAR(128)")
+    _add_column_if_missing(sync_conn, "tickets", "claimed_by", "VARCHAR(128)")
+    _add_column_if_missing(sync_conn, "tickets", "lease_expires_at", "DATETIME")
+    _add_column_if_missing(sync_conn, "tickets", "lease_expirations", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(sync_conn, "tickets", "submitted_by", "VARCHAR(128)")
+    _add_column_if_missing(sync_conn, "tickets", "blocked_kind", "VARCHAR(32)")
+    _add_column_if_missing(sync_conn, "tickets", "blocked_since", "DATETIME")
+    _add_column_if_missing(sync_conn, "tickets", "blocked_actor", "VARCHAR(128)")
+
+
+def migrate_sqlite_subscription_add_fields(sync_conn: Connection) -> None:
+    """Add subscription ack/consumer columns (events.md §2). Non-destructive."""
+    exists = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+    ).scalar()
+    if not exists:
+        return
+
+    _add_column_if_missing(sync_conn, "subscriptions", "ack_cursor", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(sync_conn, "subscriptions", "consumer_id", "VARCHAR(128)")
+    _add_column_if_missing(
+        sync_conn, "subscriptions", "consumer_lease_expires_at", "DATETIME"
+    )
+
+
+def migrate_sqlite_subscription_nullable_exec(sync_conn: Connection) -> None:
+    """Rebuild subscriptions so exec_command is nullable (events.md §2).
+
+    Caller must disable foreign_keys outside any transaction before DROP/rebuild.
+    """
+    exists = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+    ).scalar()
+    if not exists:
+        return
+
+    exec_info = sync_conn.execute(text("PRAGMA table_info(subscriptions)")).mappings().all()
+    exec_row = next((r for r in exec_info if r["name"] == "exec_command"), None)
+    if exec_row is None or exec_row["notnull"] == 0:
+        return
+
+    sync_conn.execute(
+        text(
+            """
+            CREATE TABLE subscriptions__mig (
+                subscription_id VARCHAR(128) NOT NULL PRIMARY KEY,
+                board_id VARCHAR(128),
+                exec_command TEXT,
+                events TEXT,
+                for_agent VARCHAR(128),
+                ignore_actor VARCHAR(128),
+                debounce_seconds FLOAT NOT NULL DEFAULT 0.0,
+                created_by VARCHAR(128) NOT NULL DEFAULT 'system',
+                created_at DATETIME NOT NULL,
+                ack_cursor INTEGER NOT NULL DEFAULT 0,
+                consumer_id VARCHAR(128),
+                consumer_lease_expires_at DATETIME
+            )
+            """
+        )
+    )
+    # Preserve whatever columns exist.
+    src_cols = _table_column_names(sync_conn, "subscriptions")
+    select_ack = "ack_cursor" if "ack_cursor" in src_cols else "0 AS ack_cursor"
+    select_consumer = "consumer_id" if "consumer_id" in src_cols else "NULL AS consumer_id"
+    select_lease = (
+        "consumer_lease_expires_at"
+        if "consumer_lease_expires_at" in src_cols
+        else "NULL AS consumer_lease_expires_at"
+    )
+    sync_conn.execute(
+        text(
+            f"""
+            INSERT INTO subscriptions__mig (
+                subscription_id, board_id, exec_command, events, for_agent, ignore_actor,
+                debounce_seconds, created_by, created_at,
+                ack_cursor, consumer_id, consumer_lease_expires_at
+            )
+            SELECT
+                subscription_id, board_id, exec_command, events, for_agent, ignore_actor,
+                debounce_seconds, created_by, created_at,
+                {select_ack}, {select_consumer}, {select_lease}
+            FROM subscriptions
+            """
+        )
+    )
+    sync_conn.execute(text("DROP TABLE subscriptions"))
+    sync_conn.execute(text("ALTER TABLE subscriptions__mig RENAME TO subscriptions"))
+    sync_conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_subscriptions_board_id ON subscriptions (board_id)")
+    )
+
+
+def migrate_sqlite_subscription_workflow_fields(sync_conn: Connection) -> None:
+    """Add subscription ack/consumer fields; allow nullable exec_command (events.md §2).
+
+    When used inside ``engine.begin()``, the rebuild half is a no-op for FK
+    enforcement — prefer ``run_sqlite_schema_migrations`` which splits ADD vs rebuild.
+    """
+    migrate_sqlite_subscription_add_fields(sync_conn)
+    migrate_sqlite_subscription_nullable_exec(sync_conn)
+
+
+def _column_stage_check_sql(sync_conn: Connection) -> str | None:
+    """Return the SQL of check_column_stage if present."""
+    rows = sync_conn.execute(
+        text("SELECT sql FROM sqlite_master WHERE type='table' AND name='columns'")
+    ).fetchall()
+    if not rows or not rows[0][0]:
+        return None
+    return str(rows[0][0])
+
+
+def migrate_sqlite_column_stages(sync_conn: Connection) -> None:
+    """Expand column stage CHECK to 7 stages; map review→agent_review, open→backlog.
+
+    Caller must disable foreign_keys outside any transaction before DROP/rebuild
+    (see ``_run_sqlite_table_rebuild``).
+    """
+    exists = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='columns'")
+    ).scalar()
+    if not exists:
+        return
+
+    table_sql = _column_stage_check_sql(sync_conn) or ""
+    needs_rebuild = (
+        "agent_review" not in table_sql
+        or "unclassified" not in table_sql
+        or "'open'" in table_sql
+        or "'review'" in table_sql
+    )
+
+    # Remap only when the new CHECK already allows the target values.
+    if not needs_rebuild:
+        sync_conn.execute(text("UPDATE columns SET stage = 'agent_review' WHERE stage = 'review'"))
+        sync_conn.execute(text("UPDATE columns SET stage = 'backlog' WHERE stage = 'open'"))
+        return
+
+    # Rebuild with remapping in the INSERT — old CHECK rejects in-place UPDATEs.
+    sync_conn.execute(
+        text(
+            """
+            CREATE TABLE columns__mig_stages (
+                column_id VARCHAR(128) NOT NULL PRIMARY KEY,
+                board_id VARCHAR(128) NOT NULL,
+                name VARCHAR(128) NOT NULL,
+                stage VARCHAR(32) NOT NULL,
+                position INTEGER NOT NULL,
+                wip_limit INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(board_id) REFERENCES boards (board_id) ON DELETE CASCADE,
+                CONSTRAINT check_column_stage CHECK (
+                    stage IN (
+                        'unclassified', 'backlog', 'in_progress', 'agent_review',
+                        'postmortem_pending', 'human_review', 'done'
+                    )
+                )
+            )
+            """
+        )
+    )
+    # columns may lack updated_at depending on vintage.
+    col_names = _table_column_names(sync_conn, "columns")
+    created = "created_at" if "created_at" in col_names else "CURRENT_TIMESTAMP AS created_at"
+    sync_conn.execute(
+        text(
+            f"""
+            INSERT INTO columns__mig_stages (
+                column_id, board_id, name, stage, position, wip_limit, created_at
+            )
+            SELECT
+                column_id,
+                board_id,
+                name,
+                CASE stage
+                    WHEN 'review' THEN 'agent_review'
+                    WHEN 'open' THEN 'backlog'
+                    ELSE stage
+                END,
+                position,
+                wip_limit,
+                {created}
+            FROM columns
+            """
+        )
+    )
+    sync_conn.execute(text("DROP TABLE columns"))
+    sync_conn.execute(text("ALTER TABLE columns__mig_stages RENAME TO columns"))
+
+
+async def _run_sqlite_table_rebuild(
+    async_engine: AsyncEngine,
+    migrate_fn: Callable[[Connection], None],
+) -> None:
+    """Run a DROP/rebuild migration with FK enforcement disabled.
+
+    SQLite ignores ``PRAGMA foreign_keys`` inside an open transaction, so
+    ``engine.begin()`` makes OFF a no-op and ``DROP TABLE columns`` fails when
+    tickets still reference it. Disable FK on the connection, commit that
+    pragma change, then BEGIN the rebuild and verify with foreign_key_check.
+    """
+    async with async_engine.connect() as conn:
+        await conn.execute(text("PRAGMA foreign_keys=OFF"))
+        await conn.commit()
+        async with conn.begin():
+            await conn.run_sync(migrate_fn)
+            bad = (await conn.execute(text("PRAGMA foreign_key_check"))).fetchall()
+            if bad:
+                raise RuntimeError(
+                    f"SQLite foreign_key_check failed after {migrate_fn.__name__}: {bad}"
+                )
+        await conn.execute(text("PRAGMA foreign_keys=ON"))
+        await conn.commit()
+
+
 async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> None:
     """Apply SQLite-only schema fixes that create_all cannot express."""
     if "sqlite" not in str(async_engine.url):
         return
+
+    # Table rebuilds must run with FK off outside a surrounding transaction.
+    await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_blocked_by_to_text)
+
     async with async_engine.begin() as conn:
-        await conn.run_sync(migrate_sqlite_blocked_by_to_text)
         await conn.run_sync(migrate_sqlite_archive_fields)
+        await conn.run_sync(migrate_sqlite_board_workflow_fields)
+        await conn.run_sync(migrate_sqlite_ticket_workflow_fields)
+        await conn.run_sync(migrate_sqlite_subscription_add_fields)
+
+    await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_subscription_nullable_exec)
+    await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_column_stages)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:

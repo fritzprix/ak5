@@ -93,6 +93,9 @@ def _to_subscription_out(s: Subscription) -> SubscriptionOut:
         debounce_seconds=s.debounce_seconds,
         created_by=s.created_by,
         created_at=s.created_at,
+        ack_cursor=s.ack_cursor,
+        consumer_id=s.consumer_id,
+        consumer_lease_expires_at=s.consumer_lease_expires_at,
     )
 
 

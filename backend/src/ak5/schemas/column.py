@@ -3,10 +3,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+StageLiteral = Literal[
+    "unclassified",
+    "backlog",
+    "in_progress",
+    "agent_review",
+    "postmortem_pending",
+    "human_review",
+    "done",
+]
+
 
 class ColumnBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
-    stage: Literal["open", "in_progress", "review", "done"] = "open"
+    stage: StageLiteral = "backlog"
     position: int = Field(default=1, ge=1)
     wip_limit: int = Field(default=0, ge=0)
 

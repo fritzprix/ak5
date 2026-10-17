@@ -10,14 +10,19 @@ if TYPE_CHECKING:
     from ak5.models.board import Board
     from ak5.models.ticket import Ticket
 
+# Seven workflow stages (workflow.md §2). Legacy "open"/"review" are migrated away.
+_STAGE_CHECK = (
+    "stage IN ("
+    "'unclassified', 'backlog', 'in_progress', 'agent_review', "
+    "'postmortem_pending', 'human_review', 'done'"
+    ")"
+)
+
 
 class Column(Base):
     __tablename__ = "columns"
     __table_args__ = (
-        CheckConstraint(
-            "stage IN ('open', 'in_progress', 'review', 'done')",
-            name="check_column_stage",
-        ),
+        CheckConstraint(_STAGE_CHECK, name="check_column_stage"),
     )
 
     column_id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -27,7 +32,7 @@ class Column(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    stage: Mapped[str] = mapped_column(String(32), nullable=False, default="open")  # open, in_progress, review, done
+    stage: Mapped[str] = mapped_column(String(32), nullable=False, default="backlog")
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     wip_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(

@@ -341,7 +341,7 @@ async def test_review_comment_from_human_pm(client: AsyncClient, auth_headers):
     board = await client.get("/api/v1/boards/proj-core-engine", headers=headers)
     assert board.status_code == 200
     review_col = next(
-        (c for c in board.json()["columns"] if c.get("stage") == "review"),
+        (c for c in board.json()["columns"] if c.get("stage") in ("agent_review", "review")),
         None,
     )
     if review_col:

@@ -2,10 +2,13 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.contracts.stages import STANDARD_STAGES, Stage
 from ak5.database import get_db
 from ak5.models.actor import Actor
 from ak5.models.board import Board
@@ -20,29 +23,52 @@ from ak5.schemas.board import (
     BoardCreate,
     BoardDetailOut,
     BoardOut,
+    BoardUpdate,
     ColumnWithTicketsOut,
 )
 from ak5.schemas.column import ColumnCreate, ColumnOut
 from ak5.schemas.device_auth import BoardMemberCreate, BoardMemberOut
 from ak5.schemas.ticket import TicketOut
+from ak5.seed import INBOX_BOARD_ID
+from ak5.services.templates import get_template, template_column_dicts
+
+_STANDARD_STAGE_VALUES = frozenset(s.value for s in STANDARD_STAGES)
 
 router = APIRouter(prefix="/boards", tags=["boards"])
 
-DEFAULT_COLUMNS = [
-    {"name": "To Do", "stage": "open", "position": 1, "wip_limit": 0},
-    {"name": "In Progress", "stage": "in_progress", "position": 2, "wip_limit": 3},
-    {"name": "Review", "stage": "review", "position": 3, "wip_limit": 3},
-    {"name": "Done", "stage": "done", "position": 4, "wip_limit": 0},
-]
+
+def _system_board_response(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=HTTP_STATUS[ErrorCode.SYSTEM_BOARD],
+        content=error_body(ErrorCode.SYSTEM_BOARD, message),
+    )
+
+
+def _payload_invalid_response(message: str, *, details: dict | None = None) -> JSONResponse:
+    return JSONResponse(
+        status_code=HTTP_STATUS[ErrorCode.PAYLOAD_INVALID],
+        content=error_body(ErrorCode.PAYLOAD_INVALID, message, details=details or {}),
+    )
+
+
+def _is_inbox(board: Board | str) -> bool:
+    board_id = board if isinstance(board, str) else board.board_id
+    if board_id == INBOX_BOARD_ID:
+        return True
+    return isinstance(board, Board) and board.kind == "inbox"
 
 
 def _to_board_out(board: Board) -> BoardOut:
+    kind = board.kind if board.kind in ("inbox", "standard") else "standard"
     return BoardOut(
         board_id=board.board_id,
         name=board.name,
         description=board.description,
         created_by=board.created_by,
         created_at=board.created_at,
+        kind=kind,
+        template=board.template,
+        auto_created=board.auto_created,
     )
 
 
@@ -153,29 +179,46 @@ async def get_board(
             )
         )
 
+    kind = board.kind if board.kind in ("inbox", "standard") else "standard"
     return BoardDetailOut(
         board_id=board.board_id,
         name=board.name,
         description=board.description,
         created_by=board.created_by,
         created_at=board.created_at,
+        kind=kind,
+        template=board.template,
+        auto_created=board.auto_created,
         columns=columns_out,
         has_human_admin=await _board_has_human_admin(board, db),
     )
 
 
-@router.post("", response_model=BoardOut)
+@router.post("", response_model=None)
 async def create_board(
     req: BoardCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> BoardOut:
-    """Create a new board and seed standard columns.
+) -> BoardOut | JSONResponse:
+    """Create a new board and seed columns from the requested template.
 
     Optionally enroll human owners as board admins via ``owner_actor_ids`` so
     agents can hand admin to humans at creation time (preferred over claim).
     """
     board_id = req.board_id or f"board_{uuid.uuid4().hex[:8]}"
+
+    if board_id == INBOX_BOARD_ID or req.template == "inbox":
+        return _system_board_response(
+            "Cannot create or recreate the system inbox board via the API"
+        )
+
+    try:
+        tmpl = get_template(req.template)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
     existing = await db.get(Board, board_id)
     if existing:
@@ -203,11 +246,13 @@ async def create_board(
         name=req.name,
         description=req.description,
         created_by=current_actor.actor_id,
+        kind="standard",
+        template=tmpl.name,
+        auto_created=False,
     )
     db.add(board)
 
-    # Seed default columns
-    for def_col in DEFAULT_COLUMNS:
+    for def_col in template_column_dicts(tmpl):
         col_id = f"{board_id}_{def_col['stage']}"
         col = Column(
             column_id=col_id,
@@ -245,17 +290,53 @@ async def create_board(
     return _to_board_out(board)
 
 
-@router.post("/{board_id}/columns", response_model=ColumnOut)
+@router.patch("/{board_id}", response_model=None)
+async def update_board(
+    board_id: str,
+    req: BoardUpdate,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BoardOut | JSONResponse:
+    """Update board name/description. Inbox is immutable (SYSTEM_BOARD)."""
+    board = await db.get(Board, board_id)
+    if not board:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    if _is_inbox(board):
+        return _system_board_response("Cannot modify the system inbox board")
+
+    await _assert_board_admin(board, current_actor, db)
+
+    if req.name is not None:
+        board.name = req.name
+    if req.description is not None:
+        board.description = req.description
+
+    await db.commit()
+    await db.refresh(board)
+    return _to_board_out(board)
+
+
+@router.post("/{board_id}/columns", response_model=None)
 async def add_column(
     board_id: str,
     req: ColumnCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> ColumnOut:
-    """Add a custom column to an existing board."""
+) -> ColumnOut | JSONResponse:
+    """Add a custom column to an existing board. Inbox rejects (SYSTEM_BOARD)."""
+    _ = current_actor
     board = await db.get(Board, board_id)
     if not board:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    if _is_inbox(board):
+        return _system_board_response("Cannot add columns to the system inbox board")
+
+    # Invariant 7: standard boards only host STANDARD_STAGES (not unclassified).
+    if req.stage == Stage.UNCLASSIFIED.value or req.stage not in _STANDARD_STAGE_VALUES:
+        return _payload_invalid_response(
+            f"Standard boards only allow stages: {', '.join(sorted(_STANDARD_STAGE_VALUES))}",
+            details={"stage": req.stage, "allowed": sorted(_STANDARD_STAGE_VALUES)},
+        )
 
     existing_col = await db.get(Column, req.column_id)
     if existing_col:
@@ -272,15 +353,7 @@ async def add_column(
     db.add(col)
     await db.commit()
     await db.refresh(col)
-    return ColumnOut(
-        column_id=col.column_id,
-        board_id=col.board_id,
-        name=col.name,
-        stage=col.stage,
-        position=col.position,
-        wip_limit=col.wip_limit,
-        created_at=col.created_at,
-    )
+    return ColumnOut.model_validate(col)
 
 
 @router.get("/{board_id}/members", response_model=list[ActorOut])

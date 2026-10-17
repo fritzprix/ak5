@@ -131,17 +131,40 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             name="Core Engine",
             description="Test board",
             created_by="user_pm",
+            kind="standard",
+            template="default",
+            auto_created=False,
         )
-        session.add(board)
+        inbox = Board(
+            board_id="inbox",
+            name="Global Inbox",
+            description="System inbox",
+            created_by="user_pm",
+            kind="inbox",
+            template="inbox",
+            auto_created=False,
+        )
+        session.add_all([board, inbox])
 
         members = [
             BoardMember(board_id="proj-core-engine", actor_id="user_pm", role="admin"),
             BoardMember(board_id="proj-core-engine", actor_id="agent_image_worker", role="agent"),
+            BoardMember(board_id="inbox", actor_id="user_pm", role="admin"),
         ]
         session.add_all(members)
 
+        # Full default-template stage set (workflow.md §2.2). Keep legacy
+        # column_ids (col_todo / col_in_progress / col_review / col_done) for
+        # existing test compatibility.
         cols = [
-            Column(column_id="col_todo", board_id="proj-core-engine", name="To Do", stage="open", position=1, wip_limit=0),
+            Column(
+                column_id="col_todo",
+                board_id="proj-core-engine",
+                name="Backlog",
+                stage="backlog",
+                position=1,
+                wip_limit=0,
+            ),
             Column(
                 column_id="col_in_progress",
                 board_id="proj-core-engine",
@@ -150,8 +173,46 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
                 position=2,
                 wip_limit=3,
             ),
-            Column(column_id="col_review", board_id="proj-core-engine", name="Review", stage="review", position=3, wip_limit=3),
-            Column(column_id="col_done", board_id="proj-core-engine", name="Done", stage="done", position=4, wip_limit=0),
+            Column(
+                column_id="col_review",
+                board_id="proj-core-engine",
+                name="Agent Review",
+                stage="agent_review",
+                position=3,
+                wip_limit=3,
+            ),
+            Column(
+                column_id="col_postmortem_pending",
+                board_id="proj-core-engine",
+                name="Postmortem Pending",
+                stage="postmortem_pending",
+                position=4,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="col_human_review",
+                board_id="proj-core-engine",
+                name="Human Review",
+                stage="human_review",
+                position=5,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="col_done",
+                board_id="proj-core-engine",
+                name="Done",
+                stage="done",
+                position=6,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="inbox_unclassified",
+                board_id="inbox",
+                name="Unclassified",
+                stage="unclassified",
+                position=1,
+                wip_limit=0,
+            ),
         ]
         session.add_all(cols)
         await session.commit()

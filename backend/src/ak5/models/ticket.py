@@ -73,12 +73,25 @@ class Ticket(Base, TimestampMixin):
         nullable=False,
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
-    # Free-text block reason (not a ticket FK). Agents/PMs record why work is blocked.
+    # Free-text block reason (not a ticket FK). Reused as blocked_reason (workflow.md §9).
     blocked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_context: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # workflow.md §9 — claim / lease / blocked overlay / attempt tracking
+    original_request: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    claim_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lease_expirations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    submitted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    blocked_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    blocked_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Relationships
     board: Mapped["Board"] = relationship("Board", back_populates="tickets")
