@@ -91,7 +91,7 @@ ak5 login --agent <name> --role worker [--caps ..] [--workspace ..]
 
 1. CLI: `POST /oauth/device_authorization` (`principal=agent`, 요청 name/role/caps)
 2. 사람: 브라우저에서 로그인 → 승인 화면에서 **workspace, workflow_role, capabilities, board 범위, 만료**를 확인·수정 후 승인 (승인자는 workspace `admin` 이상)
-3. CLI: 토큰 폴링 → `Agent` + `AgentCredential` 생성, agent 토큰 수령 → `~/.ak5/credentials` (0600)
+3. CLI(daemon): 토큰 폴링 → `Agent` + `AgentCredential` 생성, agent 토큰 수령 → **daemon credential store**에 profile로 저장 ([client.md](client.md) §3)
 
 ### 4.2 UI에서 발급
 
