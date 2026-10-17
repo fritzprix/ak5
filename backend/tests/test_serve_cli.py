@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from ak5.cli.commands.serve import (
+    _load_dotenv_files,
     assert_safe_bind,
     auth_is_configured,
     is_loopback_bind,
@@ -24,6 +26,32 @@ from ak5.main import app, create_app
 from click.testing import CliRunner
 from fastapi import FastAPI
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+# Repo root: backend/tests/test_serve_cli.py → parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_serve_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep checkout ``.env`` from mutating process env via ``run_serve``.
+
+    ``_load_dotenv_files`` writes unset keys into ``os.environ`` permanently.
+    A developer ``.env`` with ``AK5_AUTH_PASSWORD`` would otherwise flip bind-safety
+    assertions and leak into later modules (e.g. ``test_device_auth``).
+    """
+    monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
+    monkeypatch.setattr("ak5.cli.commands.serve._load_dotenv_files", lambda: None)
+    for key in (
+        "AK5_AUTH_PASSWORD",
+        "AK5_WEB_PASSWORD",
+        "AK5_AUTH_USERNAME",
+        "AK5_IDENTIFY_SECRET",
+        "IDENTIFY_SECRET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.WEB_PASSWORD", "")
+    monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
 
 
 @pytest.mark.parametrize(
@@ -541,8 +569,6 @@ def test_default_daemon_command_targets_cli_main() -> None:
 
 
 def test_stop_daemon_sibling_sends_sigterm() -> None:
-    import os
-
     child_script = (
         "import time, signal, sys\n"
         "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
@@ -559,3 +585,132 @@ def test_stop_daemon_sibling_sends_sigterm() -> None:
     assert proc.poll() is not None
     with pytest.raises(ProcessLookupError):
         os.killpg(proc.pid, signal.SIGTERM)
+
+
+def test_load_dotenv_respects_ak5_skip_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``AK5_SKIP_DOTENV=1`` must prevent checkout ``.env`` from entering os.environ."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("AK5_AUTH_PASSWORD=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+
+    _load_dotenv_files()
+
+    assert "AK5_AUTH_PASSWORD" not in os.environ
+
+
+def test_load_dotenv_loads_when_skip_unset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("AK5_AUTH_PASSWORD=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AK5_SKIP_DOTENV", raising=False)
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+
+    _load_dotenv_files()
+
+    assert os.environ.get("AK5_AUTH_PASSWORD") == "from-dotenv"
+
+
+def test_load_dotenv_does_not_overwrite_existing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("AK5_AUTH_PASSWORD=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AK5_SKIP_DOTENV", raising=False)
+    monkeypatch.setenv("AK5_AUTH_PASSWORD", "already-set")
+
+    _load_dotenv_files()
+
+    assert os.environ.get("AK5_AUTH_PASSWORD") == "already-set"
+
+
+def test_serve_cli_rejects_non_loopback_with_repo_dotenv_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: repo-root ``.env`` with auth password must not bypass bind safety.
+
+    Without ``AK5_SKIP_DOTENV`` / fixture isolation, ``run_serve`` loads the file and
+    ``assert_safe_bind`` incorrectly treats auth as configured.
+    """
+    env_path = _REPO_ROOT / ".env"
+    created = False
+    previous: str | None = None
+    if env_path.is_file():
+        previous = env_path.read_text(encoding="utf-8")
+    else:
+        created = True
+    env_path.write_text("AK5_AUTH_PASSWORD=x\n", encoding="utf-8")
+    try:
+        monkeypatch.setenv("AK5_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
+        monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+        monkeypatch.delenv("AK5_WEB_PASSWORD", raising=False)
+        monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
+        monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
+        monkeypatch.setattr("ak5.config.settings.WEB_PASSWORD", "")
+        monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
+
+        runner = CliRunner()
+        with patch("ak5.cli.commands.serve.uvicorn.run") as run_mock:
+            result = runner.invoke(cli, ["serve", "--host", "0.0.0.0", "--port", "18030"])
+
+        assert result.exit_code == 1, result.output
+        assert "Refusing to bind" in result.output
+        run_mock.assert_not_called()
+        # Fixture / SKIP must keep process env clean for later tests.
+        assert os.environ.get("AK5_AUTH_PASSWORD") in (None, "")
+    finally:
+        if created:
+            env_path.unlink(missing_ok=True)
+        elif previous is not None:
+            env_path.write_text(previous, encoding="utf-8")
+
+
+def test_run_serve_does_not_pollute_environ_from_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run_serve`` with ``AK5_SKIP_DOTENV=1`` must not inject ``.env`` into os.environ.
+
+    Restores the real ``_load_dotenv_files`` (autouse otherwise no-ops it) so this
+    fails on builds that lack the skip switch.
+    """
+    from ak5.cli.commands.serve import run_serve
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("AK5_AUTH_PASSWORD=pollute-me\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AK5_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+    monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
+    # Bypass the module autouse no-op; exercise the real loader + skip switch.
+    monkeypatch.setattr("ak5.cli.commands.serve._load_dotenv_files", _load_dotenv_files)
+
+    with (
+        patch("ak5.cli.commands.serve._prepare_database"),
+        patch("ak5.cli.commands.serve.uvicorn.run"),
+    ):
+        run_serve(
+            host="127.0.0.1",
+            port=18031,
+            ui=False,
+            daemon=False,
+            tailscale_serve=False,
+            ssl_keyfile=None,
+            ssl_certfile=None,
+            reload=False,
+            insecure=False,
+            no_browser=True,
+        )
+
+    assert os.environ.get("AK5_AUTH_PASSWORD") in (None, "")

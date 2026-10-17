@@ -17,8 +17,13 @@ _TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="ak5_pytest_data_"))
 os.environ["AK5_DATA_DIR"] = str(_TEST_DATA_DIR)
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(_TEST_DATA_DIR / 'ak5.db').as_posix()}"
 os.environ.setdefault("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
+# Prevent ``ak5 serve`` from permanently writing checkout ``.env`` into os.environ.
+os.environ["AK5_SKIP_DOTENV"] = "1"
 os.environ.pop("AK5_IDENTIFY_SECRET", None)
 os.environ.pop("IDENTIFY_SECRET", None)
+os.environ.pop("AK5_AUTH_PASSWORD", None)
+os.environ.pop("AK5_WEB_PASSWORD", None)
+os.environ.pop("AK5_AUTH_USERNAME", None)
 
 import ak5.models  # noqa: E402, F401
 import pytest  # noqa: E402
@@ -73,9 +78,13 @@ TestAsyncSessionLocal = async_sessionmaker(
 def _isolate_runtime_secrets(monkeypatch):
     """Stable JWT for tests; identify gate off unless a test enables it."""
     monkeypatch.setenv("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
+    monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
     monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("AK5_JWT_SECRET_FILE", raising=False)
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_AUTH_USERNAME", raising=False)
     # Keep AK5_DATA_DIR / DATABASE_URL on the isolated temp dir for the whole session.
     monkeypatch.setenv("AK5_DATA_DIR", str(_TEST_DATA_DIR))
     monkeypatch.setenv("DATABASE_URL", os.environ["DATABASE_URL"])

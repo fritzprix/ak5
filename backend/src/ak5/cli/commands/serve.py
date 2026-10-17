@@ -213,7 +213,16 @@ def stop_daemon_sibling(
 
 
 def _load_dotenv_files() -> None:
-    """Best-effort .env load for AK5_AUTH_* without adding python-dotenv."""
+    """Best-effort .env load for AK5_AUTH_* without adding python-dotenv.
+
+    Skips when ``AK5_SKIP_DOTENV`` is a truthy value (``1``/``true``/``yes``/``on``)
+    so test suites can isolate from developer checkout ``.env`` files. Existing
+    ``os.environ`` keys are never overwritten.
+    """
+    skip = os.environ.get("AK5_SKIP_DOTENV", "").strip().lower()
+    if skip in {"1", "true", "yes", "on"}:
+        return
+
     candidates = [
         Path.cwd() / ".env",
         Path.cwd() / "frontend" / ".env",
