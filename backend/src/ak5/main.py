@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.config import settings
+from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
 from ak5.database import engine, run_sqlite_schema_migrations
 from ak5.mcp.tools import server as mcp_server
 from ak5.models.base import Base
@@ -98,6 +99,16 @@ async def health_check():
     return {"status": "ok", "project": settings.PROJECT_NAME, "version": settings.VERSION}
 
 
+@app.get("/meta", tags=["system"])
+async def meta():
+    """API version negotiation (cli.md §2). No authentication required."""
+    return {
+        "api_version": API_VERSION,
+        "min_client": MIN_CLIENT_VERSION,
+        "capabilities": ["long_poll"],
+    }
+
+
 _AUTH_PUBLIC_PREFIXES = (
     "/api/auth",
     "/api/v1",
@@ -105,6 +116,7 @@ _AUTH_PUBLIC_PREFIXES = (
     "/redoc",
     "/openapi.json",
     "/health",
+    "/meta",
     "/mcp",
     "/_next",
     "/login",

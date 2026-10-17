@@ -131,17 +131,37 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             name="Core Engine",
             description="Test board",
             created_by="user_pm",
+            kind="standard",
+            template="default",
+            auto_created=False,
         )
-        session.add(board)
+        inbox = Board(
+            board_id="inbox",
+            name="Global Inbox",
+            description="System inbox",
+            created_by="user_pm",
+            kind="inbox",
+            template="inbox",
+            auto_created=False,
+        )
+        session.add_all([board, inbox])
 
         members = [
             BoardMember(board_id="proj-core-engine", actor_id="user_pm", role="admin"),
             BoardMember(board_id="proj-core-engine", actor_id="agent_image_worker", role="agent"),
+            BoardMember(board_id="inbox", actor_id="user_pm", role="admin"),
         ]
         session.add_all(members)
 
         cols = [
-            Column(column_id="col_todo", board_id="proj-core-engine", name="To Do", stage="open", position=1, wip_limit=0),
+            Column(
+                column_id="col_todo",
+                board_id="proj-core-engine",
+                name="Backlog",
+                stage="backlog",
+                position=1,
+                wip_limit=0,
+            ),
             Column(
                 column_id="col_in_progress",
                 board_id="proj-core-engine",
@@ -150,8 +170,30 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
                 position=2,
                 wip_limit=3,
             ),
-            Column(column_id="col_review", board_id="proj-core-engine", name="Review", stage="review", position=3, wip_limit=3),
-            Column(column_id="col_done", board_id="proj-core-engine", name="Done", stage="done", position=4, wip_limit=0),
+            Column(
+                column_id="col_review",
+                board_id="proj-core-engine",
+                name="Agent Review",
+                stage="agent_review",
+                position=3,
+                wip_limit=3,
+            ),
+            Column(
+                column_id="col_done",
+                board_id="proj-core-engine",
+                name="Done",
+                stage="done",
+                position=4,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="inbox_unclassified",
+                board_id="inbox",
+                name="Unclassified",
+                stage="unclassified",
+                position=1,
+                wip_limit=0,
+            ),
         ]
         session.add_all(cols)
         await session.commit()

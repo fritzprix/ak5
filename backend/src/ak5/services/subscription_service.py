@@ -133,7 +133,10 @@ class SubscriptionService:
                 continue
             self._last_exec[debounce_key] = now
 
-            # 6. Run the registered hook command literally (payload via env + stdin)
+            # 6. Run the registered hook command literally (payload via env + stdin).
+            # v2 subscriptions may omit exec_command (daemon-side hooks; #11).
+            if not sub.exec_command:
+                continue
             session_actor_id = resolve_hook_session_actor(
                 for_agent=sub.for_agent,
                 created_by=sub.created_by,

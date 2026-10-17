@@ -14,15 +14,22 @@ from ak5.models.board import Board
 from ak5.models.board_member import BoardMember
 from ak5.models.column import Column
 from ak5.models.device_code import DeviceCode
+from ak5.models.event import Event
+from ak5.models.idempotency import IdempotencyKey
 from ak5.models.subscription import Subscription
 from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
+from ak5.models.ticket_postmortem import TicketPostmortem
+from ak5.models.ticket_review import TicketReview
+from ak5.models.ticket_revision import TicketRevision
 from ak5.paths import get_app_data_dir
+from ak5.services.templates import DEFAULT_TEMPLATE, INBOX_TEMPLATE, get_template
 
 DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer"}
+INBOX_BOARD_ID = "inbox"
 
 
 async def seed_initial_data() -> None:
-    """Seed initial actors and default board if not present."""
+    """Seed initial actors, global inbox, and default board if not present."""
     async with AsyncSessionLocal() as db:
         # Check if default PM actor exists
         pm_actor = await db.get(Actor, "user_pm")
@@ -66,34 +73,71 @@ async def seed_initial_data() -> None:
             )
             db.add(reviewer_agent)
 
-        # Check if default board exists
+        # Ensure actors are flushed so FK from boards.created_by succeeds
+        await db.flush()
+
+        # Global inbox board (workflow.md §2.1) — system board, immutable
+        inbox = await db.get(Board, INBOX_BOARD_ID)
+        if not inbox:
+            inbox = Board(
+                board_id=INBOX_BOARD_ID,
+                name="Global Inbox",
+                description="System inbox for unclassified work (triage)",
+                created_by="user_pm",
+                kind="inbox",
+                template=INBOX_TEMPLATE.name,
+                auto_created=False,
+            )
+            db.add(inbox)
+            for col in INBOX_TEMPLATE.columns:
+                db.add(
+                    Column(
+                        column_id=f"{INBOX_BOARD_ID}_{col.stage}",
+                        board_id=INBOX_BOARD_ID,
+                        name=col.name,
+                        stage=col.stage,
+                        position=col.position,
+                        wip_limit=col.wip_limit,
+                    )
+                )
+            for actor_id in DEFAULT_SYSTEM_ACTORS:
+                db.add(
+                    BoardMember(
+                        board_id=INBOX_BOARD_ID,
+                        actor_id=actor_id,
+                        role="admin" if actor_id == "user_pm" else "agent",
+                    )
+                )
+        elif inbox.kind != "inbox":
+            inbox.kind = "inbox"
+            inbox.template = inbox.template or INBOX_TEMPLATE.name
+
+        # Default project board with default template columns
         board = await db.get(Board, settings.DEFAULT_BOARD_ID)
         if not board:
+            tmpl = DEFAULT_TEMPLATE
             board = Board(
                 board_id=settings.DEFAULT_BOARD_ID,
                 name=settings.DEFAULT_BOARD_NAME,
                 description="Default Kanban board for autonomous agent orchestration",
                 created_by="user_pm",
+                kind="standard",
+                template=tmpl.name,
+                auto_created=False,
             )
             db.add(board)
 
-            # Default columns
-            default_cols = [
-                {"id": f"{settings.DEFAULT_BOARD_ID}_todo", "name": "To Do", "stage": "open", "pos": 1, "wip": 0},
-                {"id": f"{settings.DEFAULT_BOARD_ID}_in_progress", "name": "In Progress", "stage": "in_progress", "pos": 2, "wip": 3},
-                {"id": f"{settings.DEFAULT_BOARD_ID}_review", "name": "Review", "stage": "review", "pos": 3, "wip": 3},
-                {"id": f"{settings.DEFAULT_BOARD_ID}_done", "name": "Done", "stage": "done", "pos": 4, "wip": 0},
-            ]
-            for c in default_cols:
-                col = Column(
-                    column_id=c["id"],
-                    board_id=settings.DEFAULT_BOARD_ID,
-                    name=c["name"],
-                    stage=c["stage"],
-                    position=c["pos"],
-                    wip_limit=c["wip"],
+            for col in tmpl.columns:
+                db.add(
+                    Column(
+                        column_id=f"{settings.DEFAULT_BOARD_ID}_{col.stage}",
+                        board_id=settings.DEFAULT_BOARD_ID,
+                        name=col.name,
+                        stage=col.stage,
+                        position=col.position,
+                        wip_limit=col.wip_limit,
+                    )
                 )
-                db.add(col)
 
         # Seed default board members
         for actor_id in DEFAULT_SYSTEM_ACTORS:
@@ -134,6 +178,13 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
     async with AsyncSessionLocal() as db:
         # Temporarily disable foreign keys during bulk purge
         await db.execute(text("PRAGMA foreign_keys = OFF;"))
+
+        # Workflow history tables
+        await db.execute(delete(TicketPostmortem))
+        await db.execute(delete(TicketReview))
+        await db.execute(delete(TicketRevision))
+        await db.execute(delete(Event))
+        await db.execute(delete(IdempotencyKey))
 
         # 1. Delete attachments records
         res_att = await db.execute(delete(TicketAttachment))
@@ -180,7 +231,7 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
         await db.execute(text("PRAGMA foreign_keys = ON;"))
         await db.commit()
 
-    # Re-seed default PM, default agents, and default board
+    # Re-seed default PM, default agents, inbox, and default board
     await seed_initial_data()
 
     # 8. Clean attachment files from disk
@@ -209,3 +260,13 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
             pass
 
     return counts
+
+
+# Re-export for boards router / tests
+__all__ = [
+    "DEFAULT_SYSTEM_ACTORS",
+    "INBOX_BOARD_ID",
+    "get_template",
+    "reset_kanban_data",
+    "seed_initial_data",
+]
