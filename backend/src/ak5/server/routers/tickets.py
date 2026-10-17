@@ -19,7 +19,11 @@ from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
-from ak5.server.routers.auth import get_current_actor, get_current_actor_optional
+from ak5.server.routers.auth import (
+    get_auth_workspace_id,
+    get_current_actor,
+    get_current_actor_optional,
+)
 from ak5.server.schemas.ticket import (
     AuditLogOut,
     BlockRequest,
@@ -192,6 +196,7 @@ async def _idempotent(
 async def create_ticket(
     req: TicketCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
@@ -235,6 +240,7 @@ async def create_ticket(
                 labels=req.labels,
                 parent_ticket_id=req.parent_ticket_id,
                 max_attempts=req.max_attempts,
+                workspace_id=workspace_id,
             )
             if req.due_date is not None:
                 ticket.due_date = req.due_date
@@ -270,6 +276,7 @@ async def create_ticket(
 async def list_tickets(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     board_id: str | None = None,
     is_archived: bool = False,
     include_all: bool = False,
@@ -286,12 +293,17 @@ async def list_tickets(
     """List and filter tickets with rich selection parameters.
 
     Requires Bearer JWT. Lazy-reclaims expired leases (T8/T20) first.
+    Scoped to the caller's workspace.
     """
     _ = current_actor
     await wf.reclaim_expired_leases(db, board_id=board_id)
     await db.commit()
     safe_limit = min(max(1, limit), 200)
-    stmt = select(Ticket).options(selectinload(Ticket.subtasks), selectinload(Ticket.column))
+    stmt = (
+        select(Ticket)
+        .options(selectinload(Ticket.subtasks), selectinload(Ticket.column))
+        .where(Ticket.workspace_id == workspace_id)
+    )
     if board_id:
         stmt = stmt.where(Ticket.board_id == board_id)
     if not include_all:
@@ -334,8 +346,12 @@ async def get_ticket_detail(
     ticket_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
-) -> TicketDetailOut:
-    """Get ticket detail, subtasks, and comments. Requires Bearer JWT."""
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+) -> TicketDetailOut | JSONResponse:
+    """Get ticket detail, subtasks, and comments. Requires Bearer JWT.
+
+    Cross-workspace access → ``WORKSPACE_FORBIDDEN``.
+    """
     _ = current_actor
     stmt = (
         select(Ticket)
@@ -351,6 +367,15 @@ async def get_ticket_detail(
     ticket = result.scalar_one_or_none()
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
+    if ticket.workspace_id != workspace_id:
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+            content=error_body(
+                ErrorCode.WORKSPACE_FORBIDDEN,
+                "Ticket is outside the caller's workspace",
+                details={"ticket_id": ticket_id, "workspace_id": workspace_id},
+            ),
+        )
 
     subtask_done = sum(1 for s in ticket.subtasks if s.status == "done")
     subtask_stats = (len(ticket.subtasks), subtask_done)

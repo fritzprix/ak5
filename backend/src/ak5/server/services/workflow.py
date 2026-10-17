@@ -999,6 +999,7 @@ async def create_inbox(
     ticket_id = await _generate_ticket_id(db)
     ticket = Ticket(
         ticket_id=ticket_id,
+        workspace_id=inbox.workspace_id,
         board_id=INBOX_BOARD_ID,
         column_id=column.column_id,
         parent_ticket_id=parent_ticket_id,
@@ -1050,6 +1051,7 @@ async def create_direct(
     labels: list[str] | None = None,
     parent_ticket_id: str | None = None,
     max_attempts: int | None = None,
+    workspace_id: str | None = None,
 ) -> Ticket:
     """T2 — create ticket directly onto a board backlog with revision r1."""
     # T2 is human/triage; parented create_direct (delegate, cli.md §5) allows any
@@ -1075,12 +1077,19 @@ async def create_direct(
         raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
     if board.kind == "inbox":
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot create_direct onto an inbox board")
+    if workspace_id is not None and board.workspace_id != workspace_id:
+        raise WorkflowError(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Board is outside the caller's workspace",
+            details={"board_id": board_id, "workspace_id": workspace_id},
+        )
 
     tmpl = get_template(board.template or "default")
     column = await _column_for_stage(db, board_id, Stage.BACKLOG)
     ticket_id = await _generate_ticket_id(db)
     ticket = Ticket(
         ticket_id=ticket_id,
+        workspace_id=board.workspace_id,
         board_id=board_id,
         column_id=column.column_id,
         parent_ticket_id=parent_ticket_id,
