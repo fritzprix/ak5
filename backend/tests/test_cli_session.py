@@ -371,7 +371,8 @@ def test_require_auth_headers_exits_when_ambiguous(project: Path) -> None:
     )
     with pytest.raises(SystemExit) as exc:
         require_auth_headers()
-    assert exc.value.code == 1
+    # cli.md §3.1: authentication required → exit 8
+    assert exc.value.code == 8
 
 
 def test_clear_session_removes_claim(project: Path) -> None:
