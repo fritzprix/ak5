@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ak5.models.base import Base
@@ -15,6 +15,12 @@ if TYPE_CHECKING:
 
 class Board(Base):
     __tablename__ = "boards"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('inbox', 'standard')",
+            name="check_board_kind",
+        ),
+    )
 
     board_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -26,6 +32,10 @@ class Board(Base):
         server_default=func.now(),
         nullable=False,
     )
+    # workflow.md §9 / §2.1–§2.2
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="standard")
+    template: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    auto_created: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     creator: Mapped["Actor"] = relationship("Actor", foreign_keys=[created_by])
     columns: Mapped[list["Column"]] = relationship(
