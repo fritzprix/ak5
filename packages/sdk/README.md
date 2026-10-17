@@ -1,8 +1,6 @@
 # @ak5/sdk
 
-Official TypeScript & JavaScript SDK for **AK5 (Agent-Orchestrated Kanban System)**.
-
-Seamlessly interact with AK5 Kanban boards, discover AI agents, delegate subtasks, update task statuses, and subscribe to real-time Server-Sent Events (SSE).
+Official TypeScript & JavaScript SDK for **AK5 (Agent-Orchestrated Kanban)** — aligned with the **v2** workflow, events, and CLI contracts.
 
 ---
 
@@ -10,87 +8,96 @@ Seamlessly interact with AK5 Kanban boards, discover AI agents, delegate subtask
 
 ```bash
 npm install @ak5/sdk
-# or
-pnpm add @ak5/sdk
-# or
-yarn add @ak5/sdk
 ```
 
 ---
 
-## Quickstart
+## Quickstart (pull-model agent loop)
 
-### 1. Initialize Client & Authenticate
 ```typescript
-import { AK5Client } from "@ak5/sdk";
+import { AK5Client, AK5Error } from "@ak5/sdk";
 
 const client = new AK5Client({
   baseUrl: "http://127.0.0.1:8000/api/v1",
-  actorId: "agent_orchestrator",
-  actorRole: "Lead Orchestrator",
-  actorCapabilities: ["orchestration", "delegation"],
+  actorId: "agent_worker",
+  actorType: "agent",
+  actorRole: "worker",
+  actorCapabilities: ["typescript"],
+});
+
+// Negotiates GET /meta (api_version=2, min_client)
+await client.ensureCompatible();
+
+const ticket = await client.nextTicket("proj-core-engine", {
+  capabilities: ["typescript"],
+});
+if (!ticket) {
+  // no work (HTTP 204)
+  process.exit(6);
+}
+
+const claim = await client.claimTicket(ticket.ticket_id, {
+  capabilities: ["typescript"],
+});
+
+await client.submitTicket(ticket.ticket_id, {
+  claim_token: claim.claim_token,
+  deliverable: {
+    summary: "Implemented feature",
+    artifacts: [{ kind: "commit", ref: "abc123" }],
+    criteria_self_check: [{ criterion: "tests pass", pass: true }],
+  },
 });
 ```
 
-### 2. Fetch Board & Discover Specialist Agents
+### Long-poll subscriptions
+
 ```typescript
-// Fetch full board hierarchy
-const board = await client.getBoard("proj-core-engine");
-console.log(`Board: ${board.name} has ${board.columns.length} columns`);
-
-// Discover agents with image-processing capability
-const imageWorkers = await client.discoverAgents({
-  capability: "image-resize",
-  status: "idle",
+const sub = await client.createSubscription({
+  filter: { board_id: "inbox", events: ["WORK_AVAILABLE"], role: "triage" },
+  start: "now",
 });
-console.log("Found agent:", imageWorkers[0]?.actor_id);
+
+const batch = await client.pollSubscriptionEvents(sub.subscription_id, {
+  wait: 25,
+  consumerId: "daemon-1",
+});
+// Always advance with next_cursor (may move even when events is empty)
+await client.ackSubscription(sub.subscription_id, batch.next_cursor, {
+  consumerId: "daemon-1",
+});
 ```
 
-### 3. Create & Delegate Subtask
+### Typed errors
+
 ```typescript
-// Create a parent ticket
-const parent = await client.createTicket({
-  board_id: "proj-core-engine",
-  column_id: "proj-core-engine_todo",
-  title: "Media Processing Pipeline",
-  priority: "high",
-});
-
-// Delegate subtask to specialist agent
-const subtask = await client.delegateSubtask(parent.ticket_id, {
-  target_actor_id: "agent_image_worker",
-  subtask_title: "WebP 200x200 Avatar Resizer",
-  subtask_description: "Build resizing routine with 85% quality factor",
-  priority: "high",
-});
+try {
+  await client.claimTicket("t1");
+} catch (e) {
+  if (e instanceof AK5Error) {
+    console.error(e.code, e.exitCode, e.details);
+  }
+}
 ```
 
-### 4. Move Ticket & Add Comments
-```typescript
-// Move ticket to In Progress
-await client.moveTicket(subtask.ticket_id, {
-  target_column_id: "proj-core-engine_in_progress",
-});
+---
 
-// Add reasoning comment
-await client.addComment(
-  subtask.ticket_id,
-  "Started WebP compression pipeline",
-  true, // isInternal
-  { benchmark: "12ms" }
-);
-```
+## v2 surface (high level)
 
-### 5. Real-Time Board Events (SSE)
-```typescript
-// Subscribe to live Kanban events
-const unsubscribe = client.subscribeToEvents((event) => {
-  console.log(`[Event ${event.eventType}]`, event.data);
-});
+| Area | Methods |
+|---|---|
+| Version | `getMeta`, `ensureCompatible` |
+| Work queue | `nextTicket` |
+| Transitions | `claimTicket`, `heartbeatTicket`, `releaseTicket`, `submitTicket`, `bounceTicket`, `routeTicket`, `verdictTicket`, `postmortemTicket`, `blockTicket`, `unblockTicket`, `reopenTicket`, `rerouteTicket` |
+| History | `getTicketHistory` |
+| Events | `createSubscription`, `pollSubscriptionEvents`, `ackSubscription`, `pollEvents` |
+| Legacy | `createTicket`, `moveTicket`, `delegateSubtask`, `addComment`, `subscribeToEvents` (SSE observation) |
 
-// To stop listening:
-// unsubscribe();
-```
+Removed / changed vs v1 usage:
+- Prefer transition commands over using `moveTicket` to change stage.
+- `delegateSubtask` is create_direct (pull); `target_actor_id` is ignored.
+- `createTicket` without `board_id` lands in inbox (T1).
+- Agent wake path: long-poll + `next` + `claim` (not SSE assignment).
 
 ---
 
