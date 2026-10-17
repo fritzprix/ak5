@@ -140,5 +140,5 @@ stdin: `{"event": "...", "data": {...}}`. HTTP로 전달하려면 exec hook에�
 ## 6. 기존 구현에서의 이행
 
 - 서버의 `--exec` 실행 코드(`subscription_service`의 실행 경로, CLI `run_subscription_loop`, `execute_subscriber_command`)는 daemon 패키지로 이동한다.
-- 기존 `subscribe create --exec`는 `subscribe add --hook-exec`로 대체: 서버에는 필터를, 로컬 `daemon.toml`에는 hook을 저장한다.
+- 기존 `subscribe create --exec`는 `subscribe add --exec`로 대체: 서버에는 profile당 subscription 1개(필터)만, exec hook은 daemon 로컬 구독자로 저장한다 (client.md §4).
 - SSE(`events watch`)는 사람 터미널용 관찰 기능으로만 유지한다.
