@@ -104,7 +104,6 @@ def test_cli_whoami_help():
     assert result.exit_code == 0
     assert "whoami" in result.output.lower()
     assert "AK5_ACTOR_ID" in result.output or "plain" in result.output.lower()
-    assert "subscribe create" in result.output
 
 
 def test_cli_create_board_help():
@@ -113,15 +112,16 @@ def test_cli_create_board_help():
     assert result.exit_code == 0
     assert "--name" in result.output
     assert "--owner" in result.output
-    assert "user_pm" in result.output
+    assert "--template" in result.output
+    assert "deprecated" in result.output.lower()
 
 
 def test_cli_claim_board_help():
     runner = CliRunner()
     result = runner.invoke(cli, ["claim-board", "--help"])
     assert result.exit_code == 0
-    assert "claim" in result.output.lower()
-    assert "human" in result.output.lower()
+    assert "deprecated" in result.output.lower()
+    assert "adopt" in result.output.lower()
 
 
 def test_cli_boards_help():
@@ -139,8 +139,8 @@ def test_cli_board_help():
     assert "--list" in result.output
     assert "--done-limit" in result.output
     assert "--include-archived" in result.output
-    assert "[BOARD_ID]" in result.output
-    assert "subscribe create" in result.output
+    assert "create" in result.output
+    assert "adopt" in result.output
     assert "do NOT use" in result.output or "Do not use" in result.output
 
 
@@ -155,7 +155,6 @@ def test_cli_delegate_help():
     runner = CliRunner()
     result = runner.invoke(cli, ["delegate", "--help"])
     assert result.exit_code == 0
-    assert "--to" in result.output
     assert "--title" in result.output
 
 
@@ -166,8 +165,7 @@ def test_cli_login_help():
     assert "--device" in result.output
     assert "--board" in result.output
     assert "--id" in result.output
-    assert "whoami" in result.output
-    assert "subscribe create" in result.output
+    assert "worker" in result.output
     assert "leading" in result.output.lower() or "@" in result.output
 
 
@@ -175,8 +173,8 @@ def test_cli_root_help_agent_happy_path():
     runner = CliRunner()
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert "whoami" in result.output
-    assert "subscribe create" in result.output
-    assert "poll" in result.output.lower() or "relative" in result.output.lower()
+    assert "next --json" in result.output
+    assert "subscribe add" in result.output
+    assert "ticket claim" in result.output
 
 

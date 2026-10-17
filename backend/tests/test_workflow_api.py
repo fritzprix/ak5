@@ -347,15 +347,38 @@ async def test_concurrent_claim_one_wins(client: AsyncClient, roles, test_db: As
 
     from ak5.main import app
 
-    async def claim_as(actor_id: str) -> int:
+    async def claim_as(actor_id: str) -> tuple[int, dict]:
         transport = ASGITransport(app=app)
         token_headers = _h(roles, actor_id)
         async with AsyncClient(transport=transport, base_url="http://test", headers=token_headers) as ac:
             resp = await ac.post(f"/api/v1/tickets/{tid}/claim")
-            return resp.status_code
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+            return resp.status_code, body if isinstance(body, dict) else {}
 
     results = await asyncio.gather(claim_as("agent_worker"), claim_as("agent_worker_b"))
-    assert sorted(results) == [200, 409]
+    statuses = sorted(s for s, _ in results)
+    assert statuses == [200, 409]
+    loser = next(body for status, body in results if status == 409)
+    assert loser["error"]["code"] == ErrorCode.CLAIM_CONFLICT.value
+
+    # Sequential: after a completed claim (in_progress + valid lease), loser → CLAIM_CONFLICT
+    # (not INVALID_TRANSITION). Separate ticket avoids :memory: StaticPool race corruption.
+    tid2 = (
+        await client.post("/api/v1/tickets", json=board_ticket("Race late"), headers=human)
+    ).json()["ticket_id"]
+    won = await client.post(f"/api/v1/tickets/{tid2}/claim", headers=_h(roles, "agent_worker"))
+    assert won.status_code == 200, won.text
+    assert won.json()["ticket"]["stage"] == "in_progress"
+    assert won.json()["claim_token"]
+    late = await client.post(
+        f"/api/v1/tickets/{tid2}/claim",
+        headers=_h(roles, "agent_worker_b"),
+    )
+    assert late.status_code == 409, late.text
+    assert late.json()["error"]["code"] == ErrorCode.CLAIM_CONFLICT.value
 
 
 @pytest.mark.asyncio

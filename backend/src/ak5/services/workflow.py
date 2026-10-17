@@ -314,7 +314,7 @@ async def _load_ticket(db: AsyncSession, ticket_id: str, *, for_update: bool = F
         stmt = stmt.with_for_update()
     ticket = (await db.execute(stmt)).scalar_one_or_none()
     if ticket is None:
-        raise WorkflowError(ErrorCode.INVALID_TRANSITION, f"Ticket '{ticket_id}' not found")
+        raise WorkflowError(ErrorCode.NOT_FOUND, f"Ticket '{ticket_id}' not found")
     return ticket
 
 
@@ -963,7 +963,7 @@ async def create_direct(
 
     board = await db.get(Board, board_id)
     if board is None:
-        raise WorkflowError(ErrorCode.INVALID_TRANSITION, f"Board '{board_id}' not found")
+        raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
     if board.kind == "inbox":
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot create_direct onto an inbox board")
 
@@ -1033,6 +1033,9 @@ async def claim_ticket(
     await reclaim_expired_leases(db)
     ticket = await _load_ticket(db, ticket_id, for_update=True)
     _require_unblocked(ticket)
+    # Valid claim (incl. in_progress) → conflict for losers, not INVALID_TRANSITION.
+    if is_claim_valid(ticket):
+        raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "Ticket is already claimed")
     stage = ticket_stage(ticket)
 
     role_map: dict[Stage, Role] = {
@@ -1075,9 +1078,6 @@ async def claim_ticket(
                 details={"required": required_caps, "have": actor.capability_list},
             )
         _ = check_caps
-
-    if is_claim_valid(ticket):
-        raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "Ticket is already claimed")
 
     to_stage = Stage.IN_PROGRESS if stage == Stage.BACKLOG else stage
     if to_stage == Stage.IN_PROGRESS:
@@ -1357,7 +1357,7 @@ async def route_ticket(
         target_board_id = plan.target.board_id
         board = await db.get(Board, target_board_id)
         if board is None:
-            raise WorkflowError(ErrorCode.INVALID_TRANSITION, f"Board '{target_board_id}' not found")
+            raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{target_board_id}' not found")
         if board.kind == "inbox" or target_board_id == INBOX_BOARD_ID:
             raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot route onto the inbox board")
 
@@ -1735,7 +1735,7 @@ async def reroute(
             )
         board = await db.get(Board, target_board_id)
         if board is None:
-            raise WorkflowError(ErrorCode.INVALID_TRANSITION, f"Board '{target_board_id}' not found")
+            raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{target_board_id}' not found")
         await _move_ticket(db, ticket, board_id=target_board_id, stage=Stage.BACKLOG)
         to_stage = Stage.BACKLOG
 
@@ -2076,7 +2076,7 @@ async def next_ticket(
     await reclaim_expired_leases(db, board_id=board_id)
     board = await db.get(Board, board_id)
     if board is None:
-        raise WorkflowError(ErrorCode.INVALID_TRANSITION, f"Board '{board_id}' not found")
+        raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
 
     role = resolve_workflow_role(actor)
     if board_id == INBOX_BOARD_ID or board.kind == "inbox":
@@ -2144,7 +2144,7 @@ async def next_ticket(
 async def ticket_history(db: AsyncSession, ticket_id: str) -> dict[str, Any]:
     ticket = await db.get(Ticket, ticket_id)
     if ticket is None:
-        raise WorkflowError(ErrorCode.INVALID_TRANSITION, f"Ticket '{ticket_id}' not found")
+        raise WorkflowError(ErrorCode.NOT_FOUND, f"Ticket '{ticket_id}' not found")
 
     revisions = list(
         (
