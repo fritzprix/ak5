@@ -1,6 +1,10 @@
 import type { TicketUpdatePayload } from "./ticketEdit";
 import type { ReviewDecision } from "./reviewDecision";
 import {
+  buildCreateTicketPayload,
+  type CreateTicketOptions,
+} from "./createTicketPayload";
+import {
   Board,
   BoardSummary,
   Ticket,
@@ -11,6 +15,9 @@ import {
   BlockedKind,
   ApiErrorBody,
 } from "./types";
+
+export type { CreateTicketOptions } from "./createTicketPayload";
+export { buildCreateTicketPayload } from "./createTicketPayload";
 
 /** Same-origin by default so embedded FastAPI (`ak5 web`) needs no CORS/port split. */
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
@@ -175,46 +182,16 @@ export async function moveTicket(
   return res.json();
 }
 
-export type CreateTicketOptions = {
-  /** When true (or boardId is "inbox"), creates via T1 into global inbox. */
-  toInbox?: boolean;
-  /** T2 acceptance criteria; defaults to a single criterion from the description. */
-  acceptanceCriteria?: string[];
-};
-
 export async function createTicket(
   boardId: string,
   columnId: string,
   title: string,
   description?: string,
   priority: string = "medium",
-  assignedTo?: string | null,
   options?: CreateTicketOptions
 ): Promise<Ticket> {
   const token = await getAuthToken();
-  const toInbox = Boolean(options?.toInbox) || boardId === "inbox";
-
-  const payload: Record<string, unknown> = {
-    title,
-    description: description || undefined,
-    priority,
-    labels: ["manual"],
-  };
-
-  if (toInbox) {
-    // T1 — omit board_id; land on unclassified @inbox
-    payload.original_request = description?.trim() || title;
-  } else {
-    // T2 — create_direct onto board backlog
-    payload.board_id = boardId;
-    payload.column_id = columnId; // ignored by server; kept for compat
-    payload.spec = description?.trim() || title;
-    payload.acceptance_criteria =
-      options?.acceptanceCriteria && options.acceptanceCriteria.length > 0
-        ? options.acceptanceCriteria
-        : ["Ticket accepted when deliverable meets the description"];
-    if (assignedTo) payload.assigned_to = assignedTo;
-  }
+  const payload = buildCreateTicketPayload(boardId, columnId, title, description, priority, options);
 
   const res = await fetch(`${API_BASE}/tickets`, {
     method: "POST",

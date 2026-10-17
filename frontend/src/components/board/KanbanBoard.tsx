@@ -95,7 +95,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newPriority, setNewPriority] = useState<string>("medium");
-  const [newAssignee, setNewAssignee] = useState<string>("");
 
   const [subtaskTitle, setSubtaskTitle] = useState("");
   const [subtaskDesc, setSubtaskDesc] = useState("");
@@ -404,15 +403,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
     const firstCol = board.columns[0];
     try {
       setActionError(null);
-      await createTicket(
-        board.board_id,
-        firstCol.column_id,
-        newTitle,
-        newDesc,
-        newPriority,
-        newAssignee || null,
-        { toInbox: isInboxBoard(board) }
-      );
+      await createTicket(board.board_id, firstCol.column_id, newTitle, newDesc, newPriority, {
+        toInbox: isInboxBoard(board),
+      });
       setNewTitle("");
       setNewDesc("");
       setIsNewTicketOpen(false);
@@ -721,27 +714,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ boardId }) => {
               placeholder="Acceptance criteria or agent instructions"
             />
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-xs text-[var(--muted)]">Priority</label>
-              <select className="ak-input" value={newPriority} onChange={(e) => setNewPriority(e.target.value)}>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="urgent">Urgent</option>
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-[var(--muted)]">Assignee</label>
-              <select className="ak-input" value={newAssignee} onChange={(e) => setNewAssignee(e.target.value)}>
-                <option value="">Unassigned</option>
-                {actors.map((a) => (
-                  <option key={a.actor_id} value={a.actor_id}>
-                    {a.name} ({a.role})
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div>
+            <label className="mb-1 block text-xs text-[var(--muted)]">Priority</label>
+            <select className="ak-input" value={newPriority} onChange={(e) => setNewPriority(e.target.value)}>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+            </select>
           </div>
         </form>
       </Dialog>
