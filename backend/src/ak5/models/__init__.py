@@ -6,6 +6,7 @@ from ak5.models.board_member import BoardMember
 from ak5.models.column import Column
 from ak5.models.device_code import DeviceCode
 from ak5.models.event import Event
+from ak5.models.event_log_meta import EventLogMeta
 from ak5.models.idempotency import IdempotencyKey
 from ak5.models.subscription import Subscription
 from ak5.models.ticket import Ticket, TicketAttachment, TicketComment
@@ -22,6 +23,7 @@ __all__ = [
     "Column",
     "DeviceCode",
     "Event",
+    "EventLogMeta",
     "IdempotencyKey",
     "Subscription",
     "Ticket",

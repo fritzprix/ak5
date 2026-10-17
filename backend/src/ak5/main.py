@@ -20,7 +20,6 @@ from ak5.routers.subscriptions import router as subscriptions_router
 from ak5.routers.tickets import router as tickets_router
 from ak5.routers.web_auth import router as web_auth_router
 from ak5.seed import seed_initial_data
-from ak5.services.subscription_service import subscription_service
 from ak5.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 from ak5.web_ui_static import mount_web_ui, web_ui_available
 
@@ -50,11 +49,8 @@ async def lifespan(app: FastAPI):
         snapshot_live_database(reason="startup")
     except Exception:
         logger.exception("Failed to snapshot live database on startup")
-    # Start background event subscriber service
-    await subscription_service.start()
+    # Server no longer starts a background exec listener (events.md §0 / #11).
     yield
-    # Stop background event subscriber service
-    await subscription_service.stop()
     # Shutdown engine
     await engine.dispose()
 

@@ -1,38 +1,50 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class SubscriptionBase(BaseModel):
-    board_id: str | None = Field(default=None, max_length=128, description="Target board ID or None for all boards")
-    # Nullable in DB for v2 daemon hooks (#11 removes server exec); create still requires it.
-    exec_command: str | None = Field(
-        default=None,
-        max_length=2048,
-        description="Literal shell hook command (event via env/stdin); optional for v2 daemon",
-    )
-    events: list[str] | str | None = Field(default=None, description="Event types to match")
-    for_agent: str | None = Field(default=None, max_length=128, description="Filter by assigned agent ID")
-    ignore_actor: str | None = Field(default=None, max_length=128, description="Ignore events triggered by this actor")
-    debounce_seconds: float = Field(default=0.0, ge=0.0, le=3600.0, description="Debounce cooldown in seconds")
+class SubscriptionFilter(BaseModel):
+    """Server-side filter only (events.md §2). Hooks live on the client daemon."""
+
+    board_id: str | None = Field(default=None, max_length=128)
+    events: list[str] | None = Field(default=None)
+    role: str | None = Field(default=None, max_length=64)
+    capabilities: list[str] | None = Field(default=None)
+    for_actor: str | None = Field(default=None, max_length=128)
 
 
-class SubscriptionCreate(SubscriptionBase):
-    subscription_id: str | None = Field(default=None, max_length=128, description="Optional custom ID")
-    exec_command: str = Field(
-        ...,
-        min_length=1,
-        max_length=2048,
-        description="Literal shell hook command (event via env/stdin)",
-    )
+class SubscriptionConsumer(BaseModel):
+    consumer_id: str
+    lease_expires_at: datetime
 
 
-class SubscriptionOut(SubscriptionBase):
+class SubscriptionCreate(BaseModel):
+    subscription_id: str | None = Field(default=None, max_length=128)
+    filter: SubscriptionFilter = Field(default_factory=SubscriptionFilter)
+    # "now" = start at current max(seq) (skip retention history); "earliest" = replay.
+    start: Literal["now", "earliest"] = "now"
+
+
+class SubscriptionAckIn(BaseModel):
+    cursor: int = Field(..., ge=0)
+
+
+class SubscriptionAckOut(BaseModel):
+    ack_cursor: int
+
+
+class LongPollEventsOut(BaseModel):
+    events: list[dict]
+    next_cursor: int
+
+
+class SubscriptionOut(BaseModel):
     subscription_id: str
-    created_by: str
-    created_at: datetime
+    owner: str
+    filter: SubscriptionFilter
     ack_cursor: int = 0
-    consumer_id: str | None = None
-    consumer_lease_expires_at: datetime | None = None
+    consumer: SubscriptionConsumer | None = None
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

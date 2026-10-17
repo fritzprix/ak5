@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, func
+from sqlalchemy import DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.models.base import Base
@@ -11,12 +11,12 @@ class Subscription(Base):
 
     subscription_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     board_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    # Nullable for v2 daemon-side hooks (events.md §2); removal of exec path is #11.
-    exec_command: Mapped[str | None] = mapped_column(Text, nullable=True)
-    events: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated or JSON
+    # Filter fields (events.md §2) — no server-side exec_command.
+    events: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated
+    role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    capabilities: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
+    # API name: for_actor (legacy column name retained for migration simplicity)
     for_agent: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    ignore_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    debounce_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     created_by: Mapped[str] = mapped_column(String(128), default="system", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

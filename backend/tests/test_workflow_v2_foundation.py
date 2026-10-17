@@ -273,9 +273,14 @@ async def _build_v1_sqlite_db(engine) -> int:
 @pytest.mark.asyncio
 async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
     """Real v1 DB (FKs + tickets) through create_all → migrations → seed."""
+    import json
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
     db_path = tmp_path / "v1.db"
     url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
     monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("AK5_DATA_DIR", str(data_dir))
 
     from ak5 import database as dbmod
     from ak5 import seed as seedmod
@@ -302,6 +307,18 @@ async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
     await run_sqlite_schema_migrations(engine)
     await seed_initial_data()
+
+    # Medium: v1 exec_command exported before drop (fixed schema for #13 daemon.toml).
+    legacy_path = data_dir / "legacy_subscriptions.json"
+    assert legacy_path.is_file(), "expected legacy_subscriptions.json export"
+    legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+    assert isinstance(legacy, list)
+    assert len(legacy) == 1
+    assert set(legacy[0].keys()) == set(dbmod.LEGACY_SUBSCRIPTIONS_EXPORT_KEYS)
+    assert legacy[0]["subscription_id"] == "sub1"
+    assert legacy[0]["exec_command"] == "echo hi"
+    assert legacy[0]["board_id"] == "b1"
+    assert legacy[0]["created_by"] == "user_pm"
 
     async with engine.connect() as conn:
         fk_bad = (await conn.execute(text("PRAGMA foreign_key_check"))).fetchall()
@@ -351,12 +368,24 @@ async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
             "blocked_actor",
         } <= ticket_cols
 
-        exec_row = next(
-            r
+        sub_cols = {
+            r["name"]
             for r in (await conn.execute(text("PRAGMA table_info(subscriptions)"))).mappings()
-            if r["name"] == "exec_command"
-        )
-        assert exec_row["notnull"] == 0
+        }
+        # Filter-only subscriptions (#11): server exec_command removed
+        assert "exec_command" not in sub_cols
+        assert {"ack_cursor", "role", "capabilities", "for_agent"} <= sub_cols
+
+        # Migrated subscriptions start at event-log tip (no wake storm from ack=0).
+        ack = (
+            await conn.execute(
+                text("SELECT ack_cursor FROM subscriptions WHERE subscription_id = 'sub1'")
+            )
+        ).scalar()
+        max_seq = (
+            await conn.execute(text("SELECT COALESCE(MAX(seq), 0) FROM events"))
+        ).scalar()
+        assert ack == max_seq
 
         stages = {
             row[0]

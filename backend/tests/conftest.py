@@ -96,6 +96,15 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
 
     app.dependency_overrides[get_db] = override_get_db
 
+    # Long-poll / SSE re-open sessions via the service factory (same in-memory engine).
+    from ak5.services.subscription_service import (
+        reset_purge_throttle_for_tests,
+        subscription_service,
+    )
+
+    subscription_service.session_factory = TestAsyncSessionLocal
+    reset_purge_throttle_for_tests()
+
     # Seed initial test data
     async with TestAsyncSessionLocal() as session:
         # Seed default PM and agents
