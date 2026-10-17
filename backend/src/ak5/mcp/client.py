@@ -358,6 +358,28 @@ class AK5Client:
         resp = await self._request("GET", f"tickets/{ticket_id}")
         return resp.json()
 
+    async def delegate(
+        self,
+        parent_ticket_id: str,
+        *,
+        title: str,
+        description: str | None = None,
+        acceptance_criteria: list[str] | None = None,
+        priority: str = "medium",
+        labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Parented create_direct (``POST /tickets/{id}/delegate``)."""
+        payload: dict[str, Any] = {
+            "subtask_title": title,
+            "subtask_description": description or "",
+            "priority": priority,
+            "labels": labels if labels is not None else ["delegated", "subtask"],
+        }
+        if acceptance_criteria is not None:
+            payload["acceptance_criteria"] = acceptance_criteria
+        resp = await self._request("POST", f"tickets/{parent_ticket_id}/delegate", json=payload)
+        return resp.json()
+
     async def delegate_subtask(
         self,
         parent_ticket_id: str,
@@ -367,15 +389,13 @@ class AK5Client:
         priority: str = "medium",
     ) -> dict[str, Any]:
         """Deprecated pull-model delegate — creates a child via create_direct."""
-        payload = {
-            "target_actor_id": target_agent_id,
-            "subtask_title": title,
-            "subtask_description": description,
-            "priority": priority,
-            "labels": ["delegated", "subtask"],
-        }
-        resp = await self._request("POST", f"tickets/{parent_ticket_id}/delegate", json=payload)
-        return resp.json()
+        _ = target_agent_id
+        return await self.delegate(
+            parent_ticket_id,
+            title=title,
+            description=description,
+            priority=priority,
+        )
 
     async def update_ticket_status(
         self,
