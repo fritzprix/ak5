@@ -29,6 +29,8 @@ class ErrorCode(StrEnum):
     # identity.md §10 / cli.md §2 / §3.1
     UNAUTHENTICATED = "UNAUTHENTICATED"
     VERSION_MISMATCH = "VERSION_MISMATCH"
+    WORKSPACE_FORBIDDEN = "WORKSPACE_FORBIDDEN"
+    USER_PRESENCE_REQUIRED = "USER_PRESENCE_REQUIRED"
 
     # client.md §8
     DAEMON_UNAVAILABLE = "DAEMON_UNAVAILABLE"
@@ -50,6 +52,8 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SUBSCRIPTION_NOT_FOUND: 404,
     ErrorCode.UNAUTHENTICATED: 401,
     ErrorCode.VERSION_MISMATCH: 409,
+    ErrorCode.WORKSPACE_FORBIDDEN: 403,
+    ErrorCode.USER_PRESENCE_REQUIRED: 403,
     ErrorCode.DAEMON_UNAVAILABLE: 503,
 }
 
@@ -68,6 +72,8 @@ EXIT_CODE: dict[ErrorCode, int] = {
     ErrorCode.VERSION_MISMATCH: 7,
     ErrorCode.UNAUTHENTICATED: 8,
     ErrorCode.DAEMON_UNAVAILABLE: 9,  # client.md §8
+    ErrorCode.WORKSPACE_FORBIDDEN: 4,
+    ErrorCode.USER_PRESENCE_REQUIRED: 4,
     # events.md codes without an explicit cli.md exit → treat as generic failure
     ErrorCode.CURSOR_EXPIRED: 1,
     ErrorCode.SUBSCRIPTION_NOT_FOUND: 1,

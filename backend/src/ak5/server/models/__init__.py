@@ -13,9 +13,21 @@ from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.server.models.ticket_postmortem import TicketPostmortem
 from ak5.server.models.ticket_review import TicketReview
 from ak5.server.models.ticket_revision import TicketRevision
+from ak5.server.models.workspace import (
+    LOCAL_WORKSPACE_ID,
+    Agent,
+    AgentCredential,
+    Membership,
+    User,
+    UserIdentity,
+    UserSession,
+    Workspace,
+)
 
 __all__ = [
     "Actor",
+    "Agent",
+    "AgentCredential",
     "AuditLog",
     "Base",
     "Board",
@@ -25,6 +37,8 @@ __all__ = [
     "Event",
     "EventLogMeta",
     "IdempotencyKey",
+    "LOCAL_WORKSPACE_ID",
+    "Membership",
     "Subscription",
     "Ticket",
     "TicketAttachment",
@@ -32,4 +46,8 @@ __all__ = [
     "TicketPostmortem",
     "TicketReview",
     "TicketRevision",
+    "User",
+    "UserIdentity",
+    "UserSession",
+    "Workspace",
 ]

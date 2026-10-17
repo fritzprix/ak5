@@ -26,12 +26,22 @@ from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.server.models.ticket_postmortem import TicketPostmortem
 from ak5.server.models.ticket_review import TicketReview
 from ak5.server.models.ticket_revision import TicketRevision
+from ak5.server.models.workspace import (
+    LOCAL_WORKSPACE_ID,
+    Agent,
+    Membership,
+    User,
+    Workspace,
+)
 from ak5.server.services.templates import DEFAULT_TEMPLATE, INBOX_TEMPLATE, get_template
 from ak5.server.services.ticket_status import derive_status
 
 DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer", "system"}
 INBOX_BOARD_ID = "inbox"
 SYSTEM_ACTOR_ID = "system"
+LOCAL_USER_ID = "usr_local_pm"
+LOCAL_AGENT_WORKER_ID = "agt_image_worker"
+LOCAL_AGENT_REVIEWER_ID = "agt_code_reviewer"
 
 _CLAIMLESS_IN_PROGRESS_REASON = (
     "v2 migration: ticket was in in_progress without a valid claim; "
@@ -178,9 +188,66 @@ async def repair_claimless_in_progress_tickets(db: AsyncSession) -> None:
         )
 
 
+async def ensure_local_tenancy(db: AsyncSession) -> None:
+    """Create ``ws_local`` workspace + mapped user/agents (identity.md §9 / #23)."""
+    ws = await db.get(Workspace, LOCAL_WORKSPACE_ID)
+    if ws is None:
+        db.add(Workspace(workspace_id=LOCAL_WORKSPACE_ID, name="Local", policy="{}"))
+
+    user = await db.get(User, LOCAL_USER_ID)
+    if user is None:
+        db.add(
+            User(
+                user_id=LOCAL_USER_ID,
+                email="local-pm@localhost",
+                display_name="Project Manager (David)",
+            )
+        )
+    membership_id = f"mem_{LOCAL_WORKSPACE_ID}_{LOCAL_USER_ID}"
+    if await db.get(Membership, membership_id) is None:
+        db.add(
+            Membership(
+                membership_id=membership_id,
+                workspace_id=LOCAL_WORKSPACE_ID,
+                user_id=LOCAL_USER_ID,
+                role="owner",
+            )
+        )
+
+    for agent_id, name, workflow_role, caps in (
+        (
+            LOCAL_AGENT_WORKER_ID,
+            "Image Worker Agent",
+            "worker",
+            ["image-resize", "webp", "ocr", "thumbnail"],
+        ),
+        (
+            LOCAL_AGENT_REVIEWER_ID,
+            "Code Reviewer Agent",
+            "gatekeeper",
+            ["code-review", "python", "rust", "security", "testing"],
+        ),
+    ):
+        if await db.get(Agent, agent_id) is None:
+            db.add(
+                Agent(
+                    agent_id=agent_id,
+                    workspace_id=LOCAL_WORKSPACE_ID,
+                    name=name,
+                    workflow_role=workflow_role,
+                    capabilities=json.dumps(caps),
+                    board_scope="[]",
+                    created_by=LOCAL_USER_ID,
+                )
+            )
+    await db.flush()
+
+
 async def seed_initial_data() -> None:
     """Seed initial actors, global inbox, and default board if not present."""
     async with AsyncSessionLocal() as db:
+        await ensure_local_tenancy(db)
+
         # Check if default PM actor exists
         pm_actor = await db.get(Actor, "user_pm")
         if not pm_actor:

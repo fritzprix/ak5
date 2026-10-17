@@ -5,6 +5,7 @@ from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, T
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ak5.server.models.base import Base
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 if TYPE_CHECKING:
     from ak5.server.models.actor import Actor
@@ -23,6 +24,9 @@ class Board(Base):
     )
 
     board_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(128), ForeignKey("actors.actor_id"), nullable=False)

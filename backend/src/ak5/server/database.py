@@ -217,6 +217,37 @@ def migrate_sqlite_board_workflow_fields(sync_conn: Connection) -> None:
     )
 
 
+def migrate_sqlite_workspace_id_columns(sync_conn: Connection) -> None:
+    """Add workspace_id to tenant tables (identity.md §1 / issue #23). Default ``ws_local``."""
+    tenant_tables = (
+        "boards",
+        "columns",
+        "tickets",
+        "ticket_revisions",
+        "ticket_reviews",
+        "ticket_postmortems",
+        "events",
+        "subscriptions",
+        "idempotency_keys",
+        "audit_logs",
+        "board_members",
+        "ticket_comments",
+        "ticket_attachments",
+        "device_codes",
+        "event_log_meta",
+    )
+    for table in tenant_tables:
+        exists = sync_conn.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:t"),
+            {"t": table},
+        ).scalar()
+        if not exists:
+            continue
+        _add_column_if_missing(
+            sync_conn, table, "workspace_id", "VARCHAR(128) NOT NULL DEFAULT 'ws_local'"
+        )
+
+
 def migrate_sqlite_ticket_workflow_fields(sync_conn: Connection) -> None:
     """Add ticket claim / blocked / attempt columns (workflow.md §9)."""
     exists = sync_conn.execute(
@@ -534,6 +565,7 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
         await conn.run_sync(migrate_sqlite_board_workflow_fields)
         await conn.run_sync(migrate_sqlite_ticket_workflow_fields)
         await conn.run_sync(migrate_sqlite_subscription_add_fields)
+        await conn.run_sync(migrate_sqlite_workspace_id_columns)
 
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_subscription_filter_only)
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_column_stages)
