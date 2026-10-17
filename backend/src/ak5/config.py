@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # 0 = no-op (SQLite). >0 holds back events newer than this many seconds.
     EVENT_VISIBILITY_WINDOW_SECONDS: float = 0.0
 
+    # Workflow v2 (workflow.md §2.2 / claim lease)
+    CLAIM_LEASE_TTL_SECONDS: int = 300  # 5 minutes
+    MAX_AUTO_BOARDS: int = 50
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

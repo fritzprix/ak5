@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.config import settings
+from ak5.contracts.errors import HTTP_STATUS, error_body
 from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
 from ak5.database import engine, run_sqlite_schema_migrations
 from ak5.mcp.tools import server as mcp_server
@@ -20,6 +21,7 @@ from ak5.routers.subscriptions import router as subscriptions_router
 from ak5.routers.tickets import router as tickets_router
 from ak5.routers.web_auth import router as web_auth_router
 from ak5.seed import seed_initial_data
+from ak5.services.workflow import WorkflowError
 from ak5.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 from ak5.web_ui_static import mount_web_ui, web_ui_available
 
@@ -61,6 +63,16 @@ app = FastAPI(
     description="AK5: Agent-Orchestrated Kanban System Gateway",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(WorkflowError)
+async def workflow_error_handler(_request: Request, exc: WorkflowError) -> JSONResponse:
+    """Map workflow state-machine errors to the contracts error envelope."""
+    return JSONResponse(
+        status_code=HTTP_STATUS[exc.code],
+        content=error_body(exc.code, exc.message, details=exc.details),
+    )
+
 
 # CORS: local + Tailscale CGNAT / MagicDNS only (not open wildcard)
 TAILSCALE_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1|100\.\d{1,3}\.\d{1,3}\.\d{1,3}|.*\.ts\.net)(:\d+)?"

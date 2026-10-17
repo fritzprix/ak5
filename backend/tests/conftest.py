@@ -133,7 +133,16 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             capabilities=json.dumps(["image-resize", "webp"]),
             status="idle",
         )
-        session.add_all([pm, agent])
+        system = Actor(
+            actor_id="system",
+            actor_type="agent",
+            name="System",
+            role="system",
+            description="Automated system actions",
+            capabilities=json.dumps([]),
+            status="idle",
+        )
+        session.add_all([pm, agent, system])
 
         board = Board(
             board_id="proj-core-engine",

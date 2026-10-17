@@ -14,7 +14,7 @@ async def test_ticket_attachments_crud_flow(client: AsyncClient, auth_headers, t
     # 1. Create a ticket
     t_resp = await client.post(
         "/api/v1/tickets",
-        json={"title": "Ticket with Artifacts", "board_id": "proj-core-engine", "column_id": "col_todo"},
+        json={"title": "Ticket with Artifacts", "board_id": "proj-core-engine", "column_id": "col_todo", "acceptance_criteria": ["done"], "spec": "spec"},
         headers=headers,
     )
     assert t_resp.status_code == 201
@@ -88,7 +88,7 @@ async def test_ticket_attachment_errors(client: AsyncClient, auth_headers, tmp_p
     # Create real ticket
     t_resp = await client.post(
         "/api/v1/tickets",
-        json={"title": "Size limit test", "board_id": "proj-core-engine", "column_id": "col_todo"},
+        json={"title": "Size limit test", "board_id": "proj-core-engine", "column_id": "col_todo", "acceptance_criteria": ["done"], "spec": "spec"},
         headers=headers,
     )
     ticket_id = t_resp.json()["ticket_id"]
@@ -114,7 +114,7 @@ async def test_ticket_attachment_traversal_filename_confined(
     headers = auth_headers("user_pm", "human")
     t_resp = await client.post(
         "/api/v1/tickets",
-        json={"title": "Traversal test", "board_id": "proj-core-engine", "column_id": "col_todo"},
+        json={"title": "Traversal test", "board_id": "proj-core-engine", "column_id": "col_todo", "acceptance_criteria": ["done"], "spec": "spec"},
         headers=headers,
     )
     ticket_id = t_resp.json()["ticket_id"]

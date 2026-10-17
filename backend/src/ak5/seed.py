@@ -29,8 +29,9 @@ from ak5.paths import get_app_data_dir
 from ak5.services.templates import DEFAULT_TEMPLATE, INBOX_TEMPLATE, get_template
 from ak5.services.ticket_status import derive_status
 
-DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer"}
+DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer", "system"}
 INBOX_BOARD_ID = "inbox"
+SYSTEM_ACTOR_ID = "system"
 
 _CLAIMLESS_IN_PROGRESS_REASON = (
     "v2 migration: ticket was in in_progress without a valid claim; "
@@ -222,6 +223,21 @@ async def seed_initial_data() -> None:
             )
             db.add(reviewer_agent)
 
+        # System actor for lease reclaim / automated audit (not a workflow role).
+        # Seed bypasses reserved-id API guards; actor_id "system" is intentional.
+        system_actor = await db.get(Actor, SYSTEM_ACTOR_ID)
+        if not system_actor:
+            system_actor = Actor(
+                actor_id=SYSTEM_ACTOR_ID,
+                actor_type="agent",
+                name="System",
+                role="system",
+                description="Automated system actions (lease reclaim, repair)",
+                capabilities=json.dumps([]),
+                status="idle",
+            )
+            db.add(system_actor)
+
         # Ensure actors are flushed so FK from boards.created_by succeeds
         await db.flush()
 
@@ -307,6 +323,10 @@ async def seed_initial_data() -> None:
         # v1 → v2 data repairs (idempotent): missing stages + claimless tickets
         await backfill_standard_board_stages(db)
         await repair_claimless_in_progress_tickets(db)
+        # Recompute derived status for migrated tickets (orchestrator note on #10).
+        from ak5.services.workflow import recompute_all_ticket_statuses
+
+        await recompute_all_ticket_statuses(db)
 
         await db.commit()
 
@@ -419,6 +439,7 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
 __all__ = [
     "DEFAULT_SYSTEM_ACTORS",
     "INBOX_BOARD_ID",
+    "SYSTEM_ACTOR_ID",
     "get_template",
     "reset_kanban_data",
     "seed_initial_data",
