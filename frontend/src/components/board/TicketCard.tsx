@@ -36,7 +36,7 @@ function subtaskRows(ticket: Ticket): SubtaskSummary[] {
       stage: st.stage ?? null,
       board_id: st.board_id,
       blocked: st.status === "blocked" || Boolean(st.blocked_kind),
-      claimed: Boolean(st.claim_token || st.claimed_by),
+      claimed: Boolean(st.claimed_by),
     };
   });
 }
@@ -72,7 +72,7 @@ export const TicketCard: React.FC<TicketCardProps> = ({
             : "Blocked";
   const summaries = subtaskRows(ticket);
   const hasSubtasks = ticket.subtask_count > 0 || summaries.length > 0;
-  const isClaimed = Boolean(ticket.claimed_by || ticket.claim_token);
+  const isClaimed = Boolean(ticket.claimed_by);
   const isAgentActive =
     (ticket.status === "in_progress" || isClaimed) &&
     Boolean(ticket.assigned_to?.startsWith("agent") || ticket.claimed_by?.startsWith("agent"));

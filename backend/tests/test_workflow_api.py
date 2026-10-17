@@ -946,7 +946,7 @@ async def test_patch_blocked_releases_claim_and_moves_to_backlog(
     body = blocked.json()
     assert body["status"] == "blocked"
     assert body["stage"] == "backlog"
-    assert body["claim_token"] is None
+    assert "claim_token" not in body
     assert body["claimed_by"] is None
     assert body["blocked_kind"] == "external"
     assert body["blocked_by"] == "waiting on vendor"

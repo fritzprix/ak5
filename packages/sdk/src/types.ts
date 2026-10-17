@@ -84,7 +84,6 @@ export interface Ticket {
   stage?: Stage | string | null;
   attempt?: number;
   max_attempts?: number;
-  claim_token?: string | null;
   claimed_by?: string | null;
   lease_expires_at?: string | null;
   lease_expirations?: number;
