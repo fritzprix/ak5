@@ -16,7 +16,7 @@ from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket
 from ak5.server.routers.actors import _to_actor_out
-from ak5.server.routers.auth import get_current_actor
+from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.actor import ActorOut
 from ak5.server.schemas.board import (
     BoardClaimOut,
@@ -149,10 +149,15 @@ def _to_board_ticket_out(
 async def list_boards(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
 ) -> list[BoardOut]:
-    """List all boards (summary without columns/tickets). Requires Bearer JWT."""
+    """List boards in the caller's workspace. Requires Bearer JWT."""
     _ = current_actor
-    stmt = select(Board).order_by(Board.created_at.asc(), Board.name.asc())
+    stmt = (
+        select(Board)
+        .where(Board.workspace_id == workspace_id)
+        .order_by(Board.created_at.asc(), Board.name.asc())
+    )
     result = await db.execute(stmt)
     boards = result.scalars().all()
     return [_to_board_out(b) for b in boards]
@@ -186,12 +191,13 @@ async def get_board(
     board_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     include_archived: bool = False,
     done_limit: int | None = 10,
-) -> BoardDetailOut:
+) -> BoardDetailOut | JSONResponse:
     """Retrieve full board details including columns and tickets ordered by rank.
 
-    Requires Bearer JWT.
+    Requires Bearer JWT. Cross-workspace access → ``WORKSPACE_FORBIDDEN``.
     """
     _ = current_actor
     stmt = (
@@ -206,6 +212,15 @@ async def get_board(
     board = result.scalar_one_or_none()
     if not board:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    if board.workspace_id != workspace_id:
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+            content=error_body(
+                ErrorCode.WORKSPACE_FORBIDDEN,
+                "Board is outside the caller's workspace",
+                details={"board_id": board_id, "workspace_id": workspace_id},
+            ),
+        )
 
     # One query for all children of tickets on this board (children may live on other boards).
     parent_ids = [t.ticket_id for t in board.tickets]
@@ -282,6 +297,7 @@ async def get_board(
 async def create_board(
     req: BoardCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> BoardOut | JSONResponse:
     """Create a new board and seed columns from the requested template.
@@ -324,6 +340,7 @@ async def create_board(
 
     board = Board(
         board_id=board_id,
+        workspace_id=workspace_id,
         name=req.name,
         description=req.description,
         created_by=current_actor.actor_id,

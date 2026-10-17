@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ak5.server.models.base import Base, TimestampMixin
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 if TYPE_CHECKING:
     from ak5.server.models.actor import Actor
@@ -42,6 +43,9 @@ class Ticket(Base, TimestampMixin):
     )
 
     ticket_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     board_id: Mapped[str] = mapped_column(
         String(128),
         ForeignKey("boards.board_id", ondelete="CASCADE"),

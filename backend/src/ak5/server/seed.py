@@ -313,6 +313,7 @@ async def seed_initial_data() -> None:
         if not inbox:
             inbox = Board(
                 board_id=INBOX_BOARD_ID,
+                workspace_id=LOCAL_WORKSPACE_ID,
                 name="Global Inbox",
                 description="System inbox for unclassified work (triage)",
                 created_by="user_pm",
@@ -350,6 +351,7 @@ async def seed_initial_data() -> None:
             tmpl = DEFAULT_TEMPLATE
             board = Board(
                 board_id=settings.DEFAULT_BOARD_ID,
+                workspace_id=LOCAL_WORKSPACE_ID,
                 name=settings.DEFAULT_BOARD_NAME,
                 description="Default Kanban board for autonomous agent orchestration",
                 created_by="user_pm",

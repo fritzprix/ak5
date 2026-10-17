@@ -8,10 +8,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ak5.server.auth.bridge import actor_id_for_principal
+from ak5.server.auth.tokens import verify_access_token
 from ak5.server.authz import RESERVED_ADMIN_IDS, RESERVED_ADMIN_ROLES
 from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 from ak5.server.schemas.actor import ActorIdentifyRequest, ActorOut, TokenResponse
 from ak5.server.security import (
     IDENTIFY_SECRET_HEADER,
@@ -34,11 +37,38 @@ def create_access_token(actor_id: str, actor_type: str) -> str:
     return jwt.encode(to_encode, get_jwt_secret(), algorithm=settings.JWT_ALGORITHM)
 
 
+async def get_auth_workspace_id(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> str:
+    """Workspace for the Bearer token (Principal ``ws`` claim, else ``ws_local``)."""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header missing",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = jwt.decode(
+            credentials.credentials, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM]
+        )
+    except jwt.PyJWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is invalid or expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if payload.get("principal_type") in ("user", "agent"):
+        principal = await verify_access_token(credentials.credentials, db)
+        return principal.workspace_id
+    return LOCAL_WORKSPACE_ID
+
+
 async def get_current_actor(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Actor:
-    """Extract and validate Actor from Bearer token."""
+    """Extract and validate Actor from Bearer token (legacy or Principal JWT)."""
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -51,8 +81,8 @@ async def get_current_actor(
         payload = jwt.decode(
             token, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM]
         )
-        actor_id: str = payload.get("sub")
-        if not actor_id:
+        subject: str = payload.get("sub")
+        if not subject:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token payload",
@@ -63,6 +93,12 @@ async def get_current_actor(
             detail="Token is invalid or expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if payload.get("principal_type") in ("user", "agent"):
+        principal = await verify_access_token(token, db)
+        actor_id = actor_id_for_principal(principal.principal_id)
+    else:
+        actor_id = subject
 
     stmt = select(Actor).where(Actor.actor_id == actor_id)
     result = await db.execute(stmt)
