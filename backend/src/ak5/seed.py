@@ -307,6 +307,10 @@ async def seed_initial_data() -> None:
         # v1 → v2 data repairs (idempotent): missing stages + claimless tickets
         await backfill_standard_board_stages(db)
         await repair_claimless_in_progress_tickets(db)
+        # Recompute derived status for migrated tickets (orchestrator note on #10).
+        from ak5.services.workflow import recompute_all_ticket_statuses
+
+        await recompute_all_ticket_statuses(db)
 
         await db.commit()
 

@@ -2,7 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -30,7 +30,9 @@ from ak5.schemas.column import ColumnCreate, ColumnOut
 from ak5.schemas.device_auth import BoardMemberCreate, BoardMemberOut
 from ak5.schemas.ticket import TicketOut
 from ak5.seed import INBOX_BOARD_ID
+from ak5.services import workflow as wf
 from ak5.services.templates import get_template, template_column_dicts
+from ak5.services.workflow import WorkflowError
 
 _STANDARD_STAGE_VALUES = frozenset(s.value for s in STANDARD_STAGES)
 
@@ -110,6 +112,29 @@ async def list_boards(
     result = await db.execute(stmt)
     boards = result.scalars().all()
     return [_to_board_out(b) for b in boards]
+
+
+@router.get("/{board_id}/next", response_model=None)
+async def next_work_item(
+    board_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    capabilities: str | None = None,
+) -> TicketOut | JSONResponse:
+    """Oldest unclaimed unblocked ticket for this board (incl. inbox). 204 if none."""
+    caps = [c.strip() for c in capabilities.split(",") if c.strip()] if capabilities else None
+    try:
+        ticket = await wf.next_ticket(db, current_actor, board_id, capabilities=caps)
+        await db.commit()
+    except WorkflowError as exc:
+        await db.rollback()
+        return JSONResponse(
+            status_code=HTTP_STATUS[exc.code],
+            content=error_body(exc.code, exc.message, details=exc.details),
+        )
+    if ticket is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return _to_ticket_out(ticket, {})
 
 
 @router.get("/{board_id}", response_model=BoardDetailOut)
