@@ -841,7 +841,6 @@ def execute_comment_ticket(
 @click.option("--title", default=None, help="New title")
 @click.option("--desc", "description", default=None, help="New description")
 @click.option("--priority", type=click.Choice(["low", "medium", "high", "urgent"]), default=None)
-@click.option("--assign", "assigned_to", default=None, help="New assignee Actor ID")
 @click.option("--status", type=click.Choice(["open", "in_progress", "done", "blocked"]), default=None)
 @click.pass_context
 def update_ticket_cmd(
@@ -850,10 +849,9 @@ def update_ticket_cmd(
     title: str | None,
     description: str | None,
     priority: str | None,
-    assigned_to: str | None,
     status: str | None,
 ) -> None:
-    """Update ticket title, description, priority, or assignee."""
+    """Update ticket title, description, or priority (assignee is claim-derived)."""
     json_mode = _jm(ctx)
     payload: dict[str, Any] = {}
     if title is not None:
@@ -862,8 +860,6 @@ def update_ticket_cmd(
         payload["description"] = description
     if priority is not None:
         payload["priority"] = priority
-    if assigned_to is not None:
-        payload["assigned_to"] = assigned_to
     if status is not None:
         payload["status"] = status
     if not payload:

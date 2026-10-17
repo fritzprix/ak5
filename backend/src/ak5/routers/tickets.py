@@ -199,6 +199,11 @@ async def create_ticket(
     """Create a ticket — T1 (no board → inbox) or T2 (board → backlog + revision)."""
 
     async def _run() -> TicketOut:
+        if req.assigned_to is not None:
+            raise WorkflowError(
+                ErrorCode.PAYLOAD_INVALID,
+                "assignee is derived from claim; do not set assigned_to on create",
+            )
         if req.board_id is None:
             original = req.original_request or req.description or req.title
             ticket = await wf.create_inbox(
@@ -236,8 +241,6 @@ async def create_ticket(
                 ticket.due_date = req.due_date
             if req.execution_context is not None:
                 ticket.execution_context_dict = req.execution_context
-            if req.assigned_to is not None:
-                ticket.assigned_to = req.assigned_to
         await db.flush()
         # Server onupdate expires updated_at under AsyncSession; keep a local value.
         ticket.updated_at = datetime.now(UTC).replace(tzinfo=None)
@@ -401,6 +404,15 @@ async def update_ticket(
     if not data:
         return _format_ticket_out(ticket)
 
+    if "assigned_to" in data:
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.PAYLOAD_INVALID],
+            content=error_body(
+                ErrorCode.PAYLOAD_INVALID,
+                "assignee is derived from claim; do not set assigned_to via PATCH",
+            ),
+        )
+
     should_block = False
     should_unblock = False
     block_reason = "blocked via PATCH"
@@ -449,18 +461,6 @@ async def update_ticket(
     if "labels" in data and data["labels"] is not None:
         changes["labels"] = (ticket.label_list, data["labels"])
         ticket.label_list = data["labels"]
-    if "assigned_to" in data:
-        # Normalize "" → None so actor FK is never set to an empty string.
-        new_assignee = data["assigned_to"] or None
-        if new_assignee:
-            assignee = await db.get(Actor, new_assignee)
-            if not assignee:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Assignee '{new_assignee}' not found",
-                )
-        changes["assigned_to"] = (ticket.assigned_to, new_assignee)
-        ticket.assigned_to = new_assignee
     if "status" in data and data["status"] is not None:
         requested_status = data["status"]
         # Non-blocked status writes are derived; never bypass B1/B2 via PATCH.

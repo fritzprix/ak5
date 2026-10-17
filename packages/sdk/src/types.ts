@@ -273,7 +273,6 @@ export interface TicketCreateInput {
   description?: string;
   priority?: TicketPriority;
   labels?: string[];
-  assigned_to?: string | null;
   parent_ticket_id?: string | null;
   execution_context?: Record<string, unknown>;
   due_date?: string | null;

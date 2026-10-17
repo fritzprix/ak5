@@ -5,8 +5,6 @@ export type TicketEditFields = {
   title: string;
   description: string;
   priority: TicketPriority;
-  /** Empty string means unassigned. */
-  assigned_to: string;
   blocked: boolean;
   blocked_by: string;
 };
@@ -16,7 +14,6 @@ export type TicketUpdatePayload = {
   title?: string;
   description?: string | null;
   priority?: TicketPriority;
-  assigned_to?: string | null;
   status?: TicketStatus;
   blocked_by?: string | null;
 };
@@ -42,7 +39,6 @@ export function ticketToEditFields(ticket: Ticket): TicketEditFields {
     title: ticket.title,
     description: ticket.description ?? "",
     priority: ticket.priority,
-    assigned_to: ticket.assigned_to ?? "",
     blocked: ticket.status === "blocked" || Boolean(ticket.blocked_kind),
     blocked_by: ticket.blocked_by ?? "",
   };
@@ -78,12 +74,6 @@ export function buildTicketUpdatePayload(
 
   if (edit.priority !== original.priority) {
     payload.priority = edit.priority;
-  }
-
-  const nextAssignee = edit.assigned_to.trim() || null;
-  const prevAssignee = original.assigned_to ?? null;
-  if (nextAssignee !== prevAssignee) {
-    payload.assigned_to = nextAssignee;
   }
 
   const wasBlocked = original.status === "blocked" || Boolean(original.blocked_kind);

@@ -482,16 +482,6 @@ def _clear_claim(ticket: Ticket) -> None:
     ticket.assigned_to = None
 
 
-def _issue_claim(ticket: Ticket, actor: Actor, *, now: datetime | None = None) -> str:
-    token = f"clm_{uuid.uuid4().hex}"
-    ref = now or _now()
-    ticket.claim_token = token
-    ticket.claimed_by = actor.actor_id
-    ticket.assigned_to = actor.actor_id
-    ticket.lease_expires_at = _naive(ref + timedelta(seconds=settings.CLAIM_LEASE_TTL_SECONDS))
-    return token
-
-
 async def _move_ticket(
     db: AsyncSession,
     ticket: Ticket,
@@ -814,13 +804,23 @@ async def recompute_all_ticket_statuses(db: AsyncSession) -> int:
 
 async def clear_assignees_without_claim(db: AsyncSession) -> int:
     """Startup repair (#30): assigned_to only when a claim is valid; audit prior values."""
-    tickets = (
-        await db.execute(select(Ticket).options(selectinload(Ticket.column)))
-    ).scalars().all()
+    now = _naive(_now())
+    # Candidates only: has assignee but missing/mismatched/expired claim.
+    stmt = (
+        select(Ticket)
+        .options(selectinload(Ticket.column))
+        .where(
+            Ticket.assigned_to.is_not(None),
+            or_(
+                Ticket.claim_token.is_(None),
+                Ticket.claimed_by.is_distinct_from(Ticket.assigned_to),
+                Ticket.lease_expires_at.is_not(None) & (Ticket.lease_expires_at <= now),
+            ),
+        )
+    )
+    tickets = (await db.execute(stmt)).scalars().all()
     changed = 0
     for ticket in tickets:
-        if not ticket.assigned_to:
-            continue
         if is_claim_valid(ticket) and ticket.claimed_by == ticket.assigned_to:
             continue
         prev = ticket.assigned_to

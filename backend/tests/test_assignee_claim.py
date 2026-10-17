@@ -151,3 +151,59 @@ async def test_startup_clears_stale_assignee_with_audit(test_db):
         )
     ).scalars().all()
     assert any("clear_stale_assignee" in (a.payload or "") for a in audits)
+
+
+@pytest.mark.asyncio
+async def test_create_and_patch_reject_assigned_to(client: AsyncClient, auth_headers, test_db):
+    headers = auth_headers("user_pm", "human")
+    test_db.add(
+        Actor(
+            actor_id="agent_asg_rej",
+            actor_type="agent",
+            name="Reject",
+            role="worker",
+            capabilities=json.dumps([]),
+            status="idle",
+        )
+    )
+    await test_db.commit()
+
+    bad_create = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("No assignee on create", assigned_to="user_pm"),
+        headers=headers,
+    )
+    assert bad_create.status_code == 422, bad_create.text
+    assert bad_create.json()["error"]["code"] == "PAYLOAD_INVALID"
+
+    ok = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("Claim sets assignee"),
+        headers=headers,
+    )
+    assert ok.status_code == 201
+    tid = ok.json()["ticket_id"]
+
+    bad_patch = await client.patch(
+        f"/api/v1/tickets/{tid}",
+        json={"assigned_to": "agent_asg_rej"},
+        headers=headers,
+    )
+    assert bad_patch.status_code == 422
+    assert bad_patch.json()["error"]["code"] == "PAYLOAD_INVALID"
+
+    claim = await client.post(
+        f"/api/v1/tickets/{tid}/claim",
+        headers=auth_headers("agent_asg_rej", "agent"),
+    )
+    assert claim.status_code == 200
+    assert claim.json()["ticket"]["assigned_to"] == "agent_asg_rej"
+    token = claim.json()["claim_token"]
+
+    release = await client.post(
+        f"/api/v1/tickets/{tid}/release",
+        json={"claim_token": token, "reason": "done testing"},
+        headers=auth_headers("agent_asg_rej", "agent"),
+    )
+    assert release.status_code == 200
+    assert release.json()["assigned_to"] is None

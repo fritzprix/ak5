@@ -384,12 +384,19 @@ async def test_ticket_update_fields_and_clear_assignee(client: AsyncClient, auth
             "Editable ticket",
             description="before",
             priority="low",
-            assigned_to="user_pm",
         ),
         headers=headers,
     )
     assert created.status_code == 201, created.text
     ticket_id = created.json()["ticket_id"]
+
+    reject_assign = await client.patch(
+        f"/api/v1/tickets/{ticket_id}",
+        json={"assigned_to": "agent_image_worker"},
+        headers=headers,
+    )
+    assert reject_assign.status_code == 422, reject_assign.text
+    assert reject_assign.json()["error"]["code"] == "PAYLOAD_INVALID"
 
     updated = await client.patch(
         f"/api/v1/tickets/{ticket_id}",
@@ -397,7 +404,6 @@ async def test_ticket_update_fields_and_clear_assignee(client: AsyncClient, auth
             "title": "Editable ticket v2",
             "description": "after",
             "priority": "urgent",
-            "assigned_to": "agent_image_worker",
             "status": "blocked",
             "blocked_by": "waiting on design",
         },
@@ -408,41 +414,19 @@ async def test_ticket_update_fields_and_clear_assignee(client: AsyncClient, auth
     assert body["title"] == "Editable ticket v2"
     assert body["description"] == "after"
     assert body["priority"] == "urgent"
-    assert body["assigned_to"] == "agent_image_worker"
+    assert body["assigned_to"] is None
     assert body["status"] == "blocked"
     assert body["blocked_by"] == "waiting on design"
 
     cleared = await client.patch(
         f"/api/v1/tickets/{ticket_id}",
-        json={"assigned_to": None, "blocked_by": None, "status": "open"},
+        json={"blocked_by": None, "status": "open"},
         headers=headers,
     )
     assert cleared.status_code == 200, cleared.text
     cleared_body = cleared.json()
-    assert cleared_body["assigned_to"] is None
     assert cleared_body["blocked_by"] is None
     assert cleared_body["status"] == "open"
-
-    empty_assign = await client.patch(
-        f"/api/v1/tickets/{ticket_id}",
-        json={"assigned_to": "user_pm"},
-        headers=headers,
-    )
-    assert empty_assign.status_code == 200
-    cleared_via_empty = await client.patch(
-        f"/api/v1/tickets/{ticket_id}",
-        json={"assigned_to": ""},
-        headers=headers,
-    )
-    assert cleared_via_empty.status_code == 200, cleared_via_empty.text
-    assert cleared_via_empty.json()["assigned_to"] is None
-
-    missing = await client.patch(
-        f"/api/v1/tickets/{ticket_id}",
-        json={"assigned_to": "actor_does_not_exist"},
-        headers=headers,
-    )
-    assert missing.status_code == 404
 
 
 @pytest.mark.asyncio
