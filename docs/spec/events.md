@@ -115,7 +115,7 @@ POST /subscriptions/{id}/ack   { "cursor": <seq> }
 | `AK5_EVENT_ID` *(신규)* | 중복 제거용 |
 | `AK5_CURSOR` *(신규)* | 이벤트 seq |
 
-stdin: `{"event": "...", "data": {...}}`. `http` hook은 같은 JSON을 POST body로 받는다.
+stdin: `{"event": "...", "data": {...}}`. HTTP로 전달하려면 exec hook에서 `curl -d @-`를 쓴다 (hook 타입은 exec 하나, client.md §4.3).
 
 ### 4.2 실패 정책
 

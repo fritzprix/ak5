@@ -22,8 +22,8 @@ Status: Draft · 2026-10-17 · 관련: [identity.md](identity.md), [events.md](e
 │                            ├ credential store (profile별)       │
 │                            ├ event spool (profile별)            │
 │                            └ local subscribers (N)              │
-│                               ├ hook exec  → harness 깨우기      │
-│                               ├ hook http  → 로컬 webhook        │
+│                               ├ hook exec  → curl (harness API)  │
+│                               ├ hook exec  → CLI (claude -p, …)  │
 │                               └ waiter     ← `ak5 events wait`   │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -116,7 +116,7 @@ Server subscription (profile당 1개, consumer = daemon)
 daemon ── 수신 배치를 profile spool에 기록 (fsync) ── 서버에 ack(next_cursor)
         │
         ├─ local subscriber A (filter, hook exec)    local cursor A
-        ├─ local subscriber B (filter, hook http)    local cursor B
+        ├─ local subscriber B (filter, hook exec)    local cursor B
         └─ waiter (ak5 events wait)                  요청별 cursor
 ```
 
@@ -130,13 +130,27 @@ daemon ── 수신 배치를 profile spool에 기록 (fsync) ── 서버에 
 
 ```
 ak5 subscribe add [--profile worker-1] [--events WORK_AVAILABLE,…] [--board …]
-                  --hook-exec '…' | --hook-http URL
+                  --exec '<command>'
 ak5 subscribe list | remove <id>
 ```
 
 - 서버에 아무것도 만들지 않는다. daemon 상태(`~/.ak5/daemon/state.db`)에 `{id, profile, filter, hook, local_cursor}`로 저장.
 - 구독자마다 독립된 local cursor, 재시도, dead-letter(events.md §4.4 정책 그대로)를 가진다. 한 구독자의 실패가 다른 구독자나 서버 ack를 막지 않는다.
-- hook 계약(env/stdin)은 events.md §4.3 그대로.
+- hook 계약(env/stdin)은 events.md §4.1 그대로.
+
+#### Hook은 exec 하나로 통일
+
+로컬 구독자는 **실행 가능한 명령 문자열(exec)** 로 저장한다. 별도의 http hook 타입은 없다. agent가 쓰는 harness에 따라 명령만 달라진다:
+
+| harness 형태 | `--exec` 예 |
+|---|---|
+| HTTP API를 가진 harness (세션에 메시지 주입) | `curl -s -X POST http://127.0.0.1:3030/api/sessions/$SESSION/messages -H 'Content-Type: application/json' -d @-` |
+| CLI형 harness | `claude -p "$AK5_SUMMARY"` · `agent -p "$AK5_SUMMARY"` |
+| 임의 스크립트 | `~/bin/on-ak5-event.sh` |
+
+- 명령은 셸로 실행하되 **이벤트 데이터는 env/stdin으로만** 전달하고 명령 문자열에 보간하지 않는다 (셸 주입 방지).
+- stdin은 이벤트 JSON 원문이므로 `curl -d @-`로 그대로 전달할 수 있다.
+- 자주 쓰는 형태는 CLI가 preset으로 생성할 수 있다 (`--preset claude|cursor|curl:<url>`). preset은 exec 문자열을 만들어 저장할 뿐이며, 저장 형태는 항상 exec다.
 
 ### 4.4 Waiter (pull 대기 원시 연산)
 
