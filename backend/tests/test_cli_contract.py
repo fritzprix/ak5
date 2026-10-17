@@ -59,7 +59,7 @@ def claims_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (ErrorCode.ROLE_FORBIDDEN, 4),
         (ErrorCode.SEPARATION_OF_DUTIES, 4),
         (ErrorCode.SYSTEM_BOARD, 4),
-        (ErrorCode.WIP_LIMIT, 4),
+        (ErrorCode.WIP_LIMIT, 3),
         (ErrorCode.NOT_FOUND, 4),
         (ErrorCode.TICKET_BLOCKED, 5),
         (ErrorCode.VERSION_MISMATCH, 7),
