@@ -21,16 +21,20 @@ export type TicketUpdatePayload = {
   blocked_by?: string | null;
 };
 
+/** Map column stage → derived status when unblocking via legacy PATCH. */
 const STAGE_TO_STATUS: Record<ColumnStage, TicketStatus> = {
-  open: "open",
+  unclassified: "open",
+  backlog: "open",
   in_progress: "in_progress",
-  review: "in_progress",
+  agent_review: "in_progress",
+  postmortem_pending: "in_progress",
+  human_review: "in_progress",
   done: "done",
 };
 
 export function statusForColumnStage(stage: ColumnStage | null): TicketStatus {
   if (!stage) return "open";
-  return STAGE_TO_STATUS[stage];
+  return STAGE_TO_STATUS[stage] ?? "open";
 }
 
 export function ticketToEditFields(ticket: Ticket): TicketEditFields {
@@ -39,7 +43,7 @@ export function ticketToEditFields(ticket: Ticket): TicketEditFields {
     description: ticket.description ?? "",
     priority: ticket.priority,
     assigned_to: ticket.assigned_to ?? "",
-    blocked: ticket.status === "blocked",
+    blocked: ticket.status === "blocked" || Boolean(ticket.blocked_kind),
     blocked_by: ticket.blocked_by ?? "",
   };
 }
@@ -51,6 +55,7 @@ export function isTicketEditDirty(original: Ticket, edit: TicketEditFields): boo
 /**
  * Build a minimal PATCH body from drawer edits.
  * When unblocking, `columnStage` restores status from the ticket's column stage.
+ * Prefer POST /unblock for needs_human / escalation (B3).
  * Returns null when nothing changed.
  */
 export function buildTicketUpdatePayload(
@@ -81,7 +86,7 @@ export function buildTicketUpdatePayload(
     payload.assigned_to = nextAssignee;
   }
 
-  const wasBlocked = original.status === "blocked";
+  const wasBlocked = original.status === "blocked" || Boolean(original.blocked_kind);
   if (edit.blocked && !wasBlocked) {
     payload.status = "blocked";
   } else if (!edit.blocked && wasBlocked) {

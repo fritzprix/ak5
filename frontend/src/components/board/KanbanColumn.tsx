@@ -51,13 +51,19 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
     column.tickets.length > 0 ? column.tickets.map((t) => t.ticket_id) : [emptySlotId];
 
   const stageDot =
-    column.stage === "open"
-      ? "bg-sky-400"
-      : column.stage === "in_progress"
-        ? "bg-[var(--warning)]"
-        : column.stage === "review"
-          ? "bg-[var(--accent)]"
-          : "bg-[var(--success)]";
+    column.stage === "unclassified"
+      ? "bg-violet-400"
+      : column.stage === "backlog"
+        ? "bg-sky-400"
+        : column.stage === "in_progress"
+          ? "bg-[var(--warning)]"
+          : column.stage === "agent_review"
+            ? "bg-amber-400"
+            : column.stage === "postmortem_pending"
+              ? "bg-orange-500"
+              : column.stage === "human_review"
+                ? "bg-[var(--accent)]"
+                : "bg-[var(--success)]";
 
   return (
     <div
