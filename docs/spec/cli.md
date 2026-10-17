@@ -117,6 +117,8 @@ ak5 boards [--query ..]
 ak5 board <id> [--watch]
 ak5 board create <id> --template <name> ..
 ak5 board adopt  <id>              # 기존 claim-board (ticket claim과의 이름 충돌 해소)
+ak5 template list | show <name>    # 서버 GET /templates (workflow.md §2.2)
+ak5 template apply <board> <name>  # 누락 stage 컬럼만 보강, 삭제 없음
 ```
 
 ### 4.6 Subscription / Daemon

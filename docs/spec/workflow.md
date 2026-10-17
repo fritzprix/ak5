@@ -56,9 +56,12 @@ status   : API 하위호환용 파생 필드 (저장하지 않음)
 일반 board는 `template`을 가진다. template은 다음을 정의한다.
 
 - 컬럼 구성: `backlog, in_progress, agent_review, postmortem_pending, human_review, done` 각 stage마다 최소 1개의 컬럼
-- worker capability 요구사항
-- gatekeeper review 기준 (acceptance criteria 기본 템플릿)
+- `worker_capabilities`: backlog claim에 필요한 capability (없으면 `next`에서 제외, claim은 `ROLE_FORBIDDEN`)
+- `acceptance_criteria_defaults`: worker claim 응답에 포함되는 기본 acceptance criteria
+- `review_checklist`: gatekeeper claim 응답에 포함되는 board별 리뷰 기준
 - `max_attempts` 기본값 (기본 3, 티켓별 오버라이드 가능)
+
+내장 템플릿(`default`, `coding`, `research`, `inbox`)과 사용자 정의 템플릿(JSON)을 **서버가** 관리하며, 조회는 `GET /templates`, `GET /templates/{name}`로 한다. 클라이언트는 로컬 레지스트리를 정본으로 쓰지 않는다. 사용자 정의 템플릿의 범위는 workspace다 ([identity.md](identity.md) §7).
 
 자동 생성된 board는 `auto_created = true`로 표시하며, 서버 설정 `max_auto_boards`로 생성 수를 제한한다.
 
