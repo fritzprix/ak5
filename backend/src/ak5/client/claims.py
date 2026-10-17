@@ -7,6 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from ak5.client.errors import EXIT_USAGE, ClientError
+from ak5.contracts.errors import ErrorCode
 
 
 def claims_dir() -> Path:
@@ -61,5 +62,6 @@ def resolve_claim_token(ticket_id: str, token: str | None) -> str:
     raise ClientError(
         f"No claim token for ticket '{ticket_id}'. "
         "Pass --token or run `ak5 ticket claim` first.",
+        code=ErrorCode.PAYLOAD_INVALID,
         exit_code=EXIT_USAGE,
     )

@@ -24,11 +24,26 @@ from ak5.cli.commands.ticket import (
 )
 from ak5.cli.commands.web import web_command
 from ak5.cli.commands.whoami import whoami_command
+from ak5.client.errors import ClientError
+from ak5.client.output import handle_client_error
 
 console = Console()
 
 
-@click.group()
+class AK5Group(click.Group):
+    """Catch :class:`ClientError` at the CLI entry point (cli.md §3)."""
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except ClientError as exc:
+            json_mode = None
+            if isinstance(ctx.obj, dict) and "json" in ctx.obj:
+                json_mode = bool(ctx.obj["json"])
+            handle_client_error(exc, json_mode=json_mode)
+
+
+@click.group(cls=AK5Group)
 @click.version_option(package_name="ak5", prog_name="ak5")
 @click.option(
     "--json",

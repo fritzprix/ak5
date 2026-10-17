@@ -9,9 +9,13 @@ from typing import Any
 
 import httpx
 
-from ak5.cli.config import get_api_url, require_auth_headers
+from ak5.cli.config import get_api_url, get_token, require_auth_headers
+from ak5.client.auth import resolve_access_token, set_access_token_resolver
 from ak5.client.errors import EXIT_AUTH, ClientError
 from ak5.client.http import AK5Client
+
+# Wire CLI session/env token resolution through the client chokepoint (#13).
+set_access_token_resolver(get_token)
 
 _TEST_TRANSPORT: httpx.BaseTransport | None = None
 
@@ -79,7 +83,8 @@ def open_client(
     headers: dict[str, str] = {}
     if require_auth:
         try:
-            headers = require_auth_headers(url)
+            # Validate identity / ambiguous session (may SystemExit).
+            require_auth_headers(url)
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else EXIT_AUTH
             # Map legacy auth SystemExit(1) → exit 8 for API contract.
@@ -89,6 +94,10 @@ def open_client(
                 "Authentication required",
                 exit_code=code,
             ) from exc
+        token = resolve_access_token()
+        if not token:
+            raise ClientError("Authentication required", exit_code=EXIT_AUTH)
+        headers = {"Authorization": f"Bearer {token}"}
 
     skip = skip_version_check
     if skip is None:

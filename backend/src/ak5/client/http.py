@@ -126,6 +126,7 @@ class AK5Client:
         if resp.status_code == 401:
             raise ClientError(
                 "Authentication required",
+                code=ErrorCode.UNAUTHENTICATED,
                 exit_code=EXIT_AUTH,
                 http_status=401,
             )
@@ -215,6 +216,7 @@ class AK5Client:
         if resp.status_code == 401:
             raise ClientError(
                 "Authentication required or session expired",
+                code=ErrorCode.UNAUTHENTICATED,
                 exit_code=EXIT_AUTH,
                 http_status=401,
             )

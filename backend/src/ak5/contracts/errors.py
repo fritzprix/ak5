@@ -19,13 +19,15 @@ class ErrorCode(StrEnum):
     WIP_LIMIT = "WIP_LIMIT"
     PAYLOAD_INVALID = "PAYLOAD_INVALID"
     SYSTEM_BOARD = "SYSTEM_BOARD"
+    NOT_FOUND = "NOT_FOUND"
 
     # events.md §5
     CURSOR_EXPIRED = "CURSOR_EXPIRED"
     CONSUMER_CONFLICT = "CONSUMER_CONFLICT"
     SUBSCRIPTION_NOT_FOUND = "SUBSCRIPTION_NOT_FOUND"
 
-    # cli.md §2 / §3.1
+    # identity.md §10 / cli.md §2 / §3.1
+    UNAUTHENTICATED = "UNAUTHENTICATED"
     VERSION_MISMATCH = "VERSION_MISMATCH"
 
 
@@ -39,9 +41,11 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.WIP_LIMIT: 409,
     ErrorCode.PAYLOAD_INVALID: 422,
     ErrorCode.SYSTEM_BOARD: 403,
+    ErrorCode.NOT_FOUND: 404,
     ErrorCode.CURSOR_EXPIRED: 410,
     ErrorCode.CONSUMER_CONFLICT: 409,
     ErrorCode.SUBSCRIPTION_NOT_FOUND: 404,
+    ErrorCode.UNAUTHENTICATED: 401,
     ErrorCode.VERSION_MISMATCH: 409,
 }
 
@@ -55,8 +59,10 @@ EXIT_CODE: dict[ErrorCode, int] = {
     ErrorCode.SEPARATION_OF_DUTIES: 4,
     ErrorCode.SYSTEM_BOARD: 4,
     ErrorCode.WIP_LIMIT: 4,
+    ErrorCode.NOT_FOUND: 4,
     ErrorCode.TICKET_BLOCKED: 5,
     ErrorCode.VERSION_MISMATCH: 7,
+    ErrorCode.UNAUTHENTICATED: 8,
     # events.md codes without an explicit cli.md exit → treat as generic failure
     ErrorCode.CURSOR_EXPIRED: 1,
     ErrorCode.SUBSCRIPTION_NOT_FOUND: 1,

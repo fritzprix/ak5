@@ -59,7 +59,7 @@ def exit_code_for_error(code: ErrorCode | str | None, *, http_status: int | None
             code = None
     if isinstance(code, ErrorCode):
         return EXIT_CODE.get(code, EXIT_GENERIC)
-    # FastAPI request-validation often returns 422 without our envelope.
+    # FastAPI request-validation → PAYLOAD_INVALID (exit 2).
     if http_status == 422:
         return EXIT_USAGE
     return EXIT_GENERIC

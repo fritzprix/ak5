@@ -60,8 +60,10 @@ def claims_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (ErrorCode.SEPARATION_OF_DUTIES, 4),
         (ErrorCode.SYSTEM_BOARD, 4),
         (ErrorCode.WIP_LIMIT, 4),
+        (ErrorCode.NOT_FOUND, 4),
         (ErrorCode.TICKET_BLOCKED, 5),
         (ErrorCode.VERSION_MISMATCH, 7),
+        (ErrorCode.UNAUTHENTICATED, 8),
         (None, 1),
     ],
 )
@@ -72,6 +74,7 @@ def test_exit_code_table_rows(code, expected):
 def test_exit_code_401_is_8():
     assert exit_code_for_error(None, http_status=401) == EXIT_AUTH
     assert exit_code_for_error(ErrorCode.PAYLOAD_INVALID, http_status=401) == EXIT_AUTH
+    assert exit_code_for_error(ErrorCode.UNAUTHENTICATED) == EXIT_AUTH
 
 
 def test_exit_constants_match_spec():
@@ -463,3 +466,177 @@ async def test_create_defaults_to_inbox(cli_asgi, monkeypatch: pytest.MonkeyPatc
     body = json.loads(result.stdout)
     assert body["board_id"] == "inbox"
     assert body["stage"] == "unclassified"
+
+
+def _assert_payload_invalid_cli(result) -> dict:
+    """Assert --json ClientError contract: exit 2, PAYLOAD_INVALID, no traceback."""
+    combined = (result.stdout or "") + (result.stderr or "") + (result.output or "")
+    assert "Traceback" not in combined, combined
+    assert "ClientError" not in combined or combined.strip().startswith("{"), combined
+    assert result.exit_code == EXIT_USAGE, result.stdout or result.output
+    body = json.loads(result.stdout)
+    assert body["error"]["code"] == ErrorCode.PAYLOAD_INVALID
+    assert "message" in body["error"]
+    return body
+
+
+@pytest.mark.asyncio
+async def test_client_payload_errors_exit_2_no_traceback(cli_asgi, tmp_path: Path):
+    """Medium: client-side payload failures → PAYLOAD_INVALID + exit 2, never traceback."""
+    runner = CliRunner()
+    missing = str(tmp_path / "no-such-payload.json")
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{not-json", encoding="utf-8")
+    wrong_shape = tmp_path / "scalar.json"
+    wrong_shape.write_text("42", encoding="utf-8")
+    findings_obj = tmp_path / "findings-obj.json"
+    findings_obj.write_text('{"not_findings": true}', encoding="utf-8")
+
+    # submit: missing file
+    r = runner.invoke(
+        cli,
+        ["--json", "ticket", "submit", "TK-x", "--deliverable", f"@{missing}"],
+    )
+    _assert_payload_invalid_cli(r)
+
+    # submit: invalid JSON
+    r = runner.invoke(
+        cli,
+        ["--json", "ticket", "submit", "TK-x", "--deliverable", f"@{bad_json}"],
+    )
+    _assert_payload_invalid_cli(r)
+
+    # route: schema mismatch (scalar, not object)
+    r = runner.invoke(
+        cli,
+        ["--json", "ticket", "route", "TK-x", "--plan", f"@{wrong_shape}"],
+    )
+    _assert_payload_invalid_cli(r)
+
+    # verdict: findings must be array / {findings:…} (raised outside per-command try)
+    r = runner.invoke(
+        cli,
+        [
+            "--json",
+            "ticket",
+            "verdict",
+            "TK-x",
+            "--approve",
+            "--findings",
+            f"@{findings_obj}",
+        ],
+    )
+    _assert_payload_invalid_cli(r)
+
+    # postmortem: missing file
+    r = runner.invoke(
+        cli,
+        ["--json", "ticket", "postmortem", "TK-x", "--body", f"@{missing}"],
+    )
+    _assert_payload_invalid_cli(r)
+
+    # block: API/client error still envelope (no traceback); kind is click-validated
+    r = runner.invoke(
+        cli,
+        [
+            "--json",
+            "ticket",
+            "block",
+            "does-not-exist-block",
+            "--kind",
+            "needs_human",
+            "--reason",
+            "audit regression",
+        ],
+    )
+    combined = (r.stdout or "") + (r.stderr or "") + (r.output or "")
+    assert "Traceback" not in combined, combined
+    assert r.exit_code != 0
+    body = json.loads(r.stdout)
+    assert "error" in body and "code" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_claim_in_progress_conflict_exit_3(
+    cli_asgi, client: AsyncClient, auth_headers, test_db, monkeypatch
+):
+    """Medium: after worker A claims (stage→in_progress), B gets CLAIM_CONFLICT exit 3."""
+    import json as _json
+
+    from ak5.models.actor import Actor
+
+    if await test_db.get(Actor, "cli_worker_b") is None:
+        test_db.add(
+            Actor(
+                actor_id="cli_worker_b",
+                actor_type="agent",
+                name="cli_worker_b",
+                role="worker",
+                capabilities=_json.dumps(["python"]),
+                status="idle",
+            )
+        )
+        await test_db.commit()
+
+    created = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("in_progress conflict", board_id="proj-core-engine"),
+        headers=auth_headers("user_pm", "human"),
+    )
+    assert created.status_code == 201, created.text
+    tid = created.json()["ticket_id"]
+
+    first = await client.post(
+        f"/api/v1/tickets/{tid}/claim",
+        headers=auth_headers("cli_worker", "agent"),
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["ticket"]["stage"] == "in_progress"
+    assert first.json()["claim_token"]
+
+    token = create_access_token("cli_worker_b", "agent")
+    monkeypatch.setenv("AK5_ACTOR_TOKEN", token)
+    monkeypatch.setenv("AK5_ACTOR_ID", "cli_worker_b")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "ticket", "claim", tid])
+    assert result.exit_code == 3, result.stdout or result.output
+    body = json.loads(result.stdout)
+    assert body["error"]["code"] == ErrorCode.CLAIM_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_missing_ticket_not_found_exit_4(cli_asgi):
+    """Medium: nonexistent ticket → NOT_FOUND (404) → CLI exit 4."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "ticket", "claim", "TK-DOES-NOT-EXIST"])
+    assert result.exit_code == 4, result.stdout or result.output
+    body = json.loads(result.stdout)
+    assert body["error"]["code"] == ErrorCode.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_401_json_code_unauthenticated(cli_asgi, monkeypatch):
+    """Low: 401 --json error code is UNAUTHENTICATED (identity.md §10), exit 8."""
+    monkeypatch.setenv("AK5_ACTOR_TOKEN", "not-a-valid-jwt")
+    monkeypatch.setenv("AK5_ACTOR_ID", "cli_worker")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "next", "--inbox"])
+    assert result.exit_code == EXIT_AUTH, result.stdout or result.output
+    body = json.loads(result.stdout)
+    assert body["error"]["code"] == ErrorCode.UNAUTHENTICATED
+
+
+@pytest.mark.asyncio
+async def test_request_validation_error_envelope(client: AsyncClient, auth_headers):
+    """Low: FastAPI RequestValidationError → PAYLOAD_INVALID envelope with errors[]."""
+    resp = await client.post(
+        "/api/v1/tickets",
+        json={"title": ""},  # min_length=1 → RequestValidationError
+        headers=auth_headers("user_pm", "human"),
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == ErrorCode.PAYLOAD_INVALID
+    assert "errors" in body["error"]["details"]
+    assert isinstance(body["error"]["details"]["errors"], list)

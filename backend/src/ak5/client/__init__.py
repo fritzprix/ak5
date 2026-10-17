@@ -3,6 +3,7 @@
 Does not import ak5.server / ak5.routers / ak5.services / ak5.models.
 """
 
+from ak5.client.auth import resolve_access_token, set_access_token_resolver
 from ak5.client.claims import (
     clear_claim_token,
     load_claim_token,
@@ -37,6 +38,8 @@ __all__ = [
     "load_json_payload",
     "print_error",
     "print_result",
+    "resolve_access_token",
     "resolve_claim_token",
     "save_claim_token",
+    "set_access_token_resolver",
 ]

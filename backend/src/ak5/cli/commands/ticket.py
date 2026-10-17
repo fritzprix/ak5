@@ -14,6 +14,7 @@ from ak5.client.claims import clear_claim_token, resolve_claim_token, save_claim
 from ak5.client.errors import EXIT_USAGE, ClientError
 from ak5.client.output import handle_client_error, is_json_mode, print_result
 from ak5.client.payload import load_json_object
+from ak5.contracts.errors import ErrorCode
 from ak5.contracts.stages import BlockedKind
 from rich.console import Console
 from rich.panel import Panel
@@ -146,6 +147,7 @@ def create_ticket_cmd(
                 else:
                     raise ClientError(
                         "criteria file must be a JSON array or object with acceptance_criteria",
+                        code=ErrorCode.PAYLOAD_INVALID,
                         exit_code=EXIT_USAGE,
                     )
             else:
@@ -272,8 +274,8 @@ def submit_cmd(
     """Submit deliverable → agent_review; clears local claim token."""
     json_mode = _jm(ctx)
     try:
-        claim_token = resolve_claim_token(ticket_id, token)
         body = load_json_object(deliverable)
+        claim_token = resolve_claim_token(ticket_id, token)
         with open_client() as client:
             result = client.submit(ticket_id, claim_token=claim_token, deliverable=body)
         clear_claim_token(ticket_id)
@@ -324,8 +326,8 @@ def route_cmd(ctx: click.Context, ticket_id: str, token: str | None, plan: str) 
     """Route unclassified inbox ticket to a board (triage)."""
     json_mode = _jm(ctx)
     try:
-        claim_token = resolve_claim_token(ticket_id, token)
         plan_body = load_json_object(plan)
+        claim_token = resolve_claim_token(ticket_id, token)
         with open_client() as client:
             result = client.route(ticket_id, claim_token=claim_token, plan=plan_body)
         clear_claim_token(ticket_id)
@@ -379,6 +381,7 @@ def verdict_cmd(
         else:
             raise ClientError(
                 "findings must be a JSON array or object with findings",
+                code=ErrorCode.PAYLOAD_INVALID,
                 exit_code=EXIT_USAGE,
             )
 
@@ -420,8 +423,8 @@ def postmortem_cmd(ctx: click.Context, ticket_id: str, token: str | None, body: 
     """Submit postmortem → backlog."""
     json_mode = _jm(ctx)
     try:
-        claim_token = resolve_claim_token(ticket_id, token)
         pm = load_json_object(body)
+        claim_token = resolve_claim_token(ticket_id, token)
         with open_client() as client:
             result = client.postmortem(ticket_id, claim_token=claim_token, postmortem=pm)
         clear_claim_token(ticket_id)
