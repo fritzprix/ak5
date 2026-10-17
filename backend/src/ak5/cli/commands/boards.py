@@ -1,6 +1,11 @@
+"""Board list + deprecated top-level create-board / claim-board aliases (cli.md §4.5 / §5)."""
+
+from __future__ import annotations
+
 import click
-import httpx
-from ak5.cli.config import get_api_url
+from ak5.cli.client_factory import json_flag_from_ctx, open_client
+from ak5.client.errors import ClientError
+from ak5.client.output import handle_client_error, is_json_mode, print_result
 from rich.console import Console
 from rich.table import Table
 
@@ -8,9 +13,11 @@ console = Console()
 
 
 def render_boards_table(boards: list[dict]) -> Table:
-    table = Table(title="📋 Available Kanban Boards", show_lines=True)
+    table = Table(title="Available Kanban Boards", show_lines=True)
     table.add_column("Board ID", style="cyan bold", no_wrap=True)
     table.add_column("Name", style="magenta bold")
+    table.add_column("Kind", style="yellow")
+    table.add_column("Template", style="dim")
     table.add_column("Description", style="white")
     table.add_column("Created By", style="green")
 
@@ -18,6 +25,8 @@ def render_boards_table(boards: list[dict]) -> Table:
         table.add_row(
             b["board_id"],
             b["name"],
+            str(b.get("kind") or "standard"),
+            str(b.get("template") or ""),
             b.get("description") or "[dim]N/A[/dim]",
             f"@{b['created_by']}",
         )
@@ -26,14 +35,13 @@ def render_boards_table(boards: list[dict]) -> Table:
 
 @click.command("boards")
 @click.option("--query", "-q", default=None, help="Filter boards by name or description")
-def boards_command(query: str | None) -> None:
+@click.pass_context
+def boards_command(ctx: click.Context, query: str | None) -> None:
     """List all available Kanban boards."""
-    api_url = get_api_url()
+    json_mode = is_json_mode(flag=json_flag_from_ctx(ctx))
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(f"{api_url}/boards")
-            resp.raise_for_status()
-            boards = resp.json()
+        with open_client() as client:
+            boards = client.list_boards()
 
         if query:
             q = query.lower()
@@ -45,112 +53,137 @@ def boards_command(query: str | None) -> None:
                 or q in (b.get("description") or "").lower()
             ]
 
+        if json_mode:
+            print_result(boards, json_mode=True)
+            return
+
         if not boards:
             console.print("[yellow]No boards found.[/yellow]")
             return
 
         console.print(render_boards_table(boards))
         console.print(
-            "\n[dim]💡 Tip: View a specific board with [bold cyan]ak5 board <board_id>[/bold cyan] "
-            "(e.g. [cyan]ak5 board proj-harbor-eval[/cyan])[/dim]"
+            "\n[dim]Tip: View a board with [bold cyan]ak5 board <board_id>[/bold cyan]; "
+            "create with [bold cyan]ak5 board create <id> --template default[/bold cyan][/dim]"
         )
-    except httpx.ConnectError:
-        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
+    except ClientError as exc:
+        handle_client_error(exc, json_mode=json_mode)
     except Exception as e:
-        console.print(f"[bold red]✗ Error querying boards:[/bold red] {e}")
+        handle_client_error(e, json_mode=json_mode)
 
 
-@click.command(
-    "create-board",
-    epilog=(
-        "Examples:\n"
-        "  ak5 create-board proj-mobile-app --name \"Mobile App\" --desc \"iOS/Android\"\n"
-        "  ak5 create-board proj-agent-owned --name \"Agent Project\" --owner user_pm\n"
-        "  ak5 create-board proj-shared --name \"Shared\" --owner user_pm --owner user_other"
-    ),
-)
-@click.argument("board_id")
-@click.option("--name", "-n", required=True, help="Board display name")
-@click.option("--desc", "-d", "description", default=None, help="Board description")
-@click.option(
-    "--owner",
-    "owners",
-    multiple=True,
-    help="Human actor ID to enroll as board admin (repeatable). Prefer this when an agent creates a board.",
-)
-def create_board_command(
-    board_id: str, name: str, description: str | None, owners: tuple[str, ...]
+def _create_board_impl(
+    board_id: str,
+    name: str,
+    description: str | None,
+    template: str,
+    owners: tuple[str, ...],
+    *,
+    json_mode: bool,
+    deprecated_alias: bool = False,
 ) -> None:
-    """Create a new Kanban project board with standard default columns.
-
-    When an agent creates a board, pass --owner <human_id> so a human gets
-    board admin immediately. For boards already created without a human admin,
-    use `ak5 claim-board`.
-    """
-    from ak5.cli.config import require_auth_headers
-
-    api_url = get_api_url()
-    headers = require_auth_headers(api_url)
-
     payload: dict[str, object] = {
         "board_id": board_id,
         "name": name,
         "description": description,
+        "template": template,
     }
     if owners:
         payload["owner_actor_ids"] = list(owners)
 
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(f"{api_url}/boards", json=payload, headers=headers)
-            resp.raise_for_status()
-            board = resp.json()
-
-        console.print(f"[bold green]✓[/bold green] Board [cyan bold]{board['board_id']}[/cyan bold] created successfully!")
+        with open_client() as client:
+            board = client.create_board(payload)
+        if json_mode:
+            print_result(board, json_mode=True)
+            return
+        if deprecated_alias:
+            console.print(
+                "[yellow]Deprecated:[/yellow] use [cyan]ak5 board create[/cyan] instead of create-board."
+            )
+        console.print(
+            f"[bold green]✓[/bold green] Board [cyan bold]{board['board_id']}[/cyan bold] created "
+            f"(template={board.get('template')})!"
+        )
         console.print(f"  Name: [bold white]{board['name']}[/bold white]")
         if board.get("description"):
             console.print(f"  Description: {board['description']}")
         if owners:
             console.print(f"  Owners: {', '.join(f'@{o}' for o in owners)}")
-        console.print(f"\n[dim]💡 View the board with [bold cyan]ak5 board {board_id}[/bold cyan][/dim]")
-    except httpx.ConnectError:
-        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
-    except httpx.HTTPStatusError as e:
-        console.print(f"[bold red]✗ Board creation failed ({e.response.status_code}):[/bold red] {e.response.text}")
+    except ClientError as exc:
+        handle_client_error(exc, json_mode=json_mode)
     except Exception as e:
-        console.print(f"[bold red]✗ Error creating board:[/bold red] {e}")
+        handle_client_error(e, json_mode=json_mode)
 
 
-@click.command(
-    "claim-board",
-    epilog=(
-        "Example:\n"
-        "  ak5 claim-board proj-agent-owned\n\n"
-        "Only human actors can claim. Fails with 409 if a human admin already exists."
-    ),
-)
-@click.argument("board_id")
-def claim_board_command(board_id: str) -> None:
-    """Claim board admin as a human when the board has no human admin yet."""
-    from ak5.cli.config import require_auth_headers
-
-    api_url = get_api_url()
-    headers = require_auth_headers(api_url)
-
+def _adopt_board_impl(board_id: str, *, json_mode: bool, deprecated_alias: bool = False) -> None:
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(f"{api_url}/boards/{board_id}/claim", headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
+        with open_client() as client:
+            data = client.adopt_board(board_id)
+        if json_mode:
+            print_result(data, json_mode=True)
+            return
+        if deprecated_alias:
+            console.print(
+                "[yellow]Deprecated:[/yellow] use [cyan]ak5 board adopt[/cyan] instead of claim-board."
+            )
         console.print(
             f"[bold green]✓[/bold green] {data.get('message', 'Claimed')} "
             f"— [cyan bold]{data['board_id']}[/cyan bold] as @{data['actor_id']} ({data['role']})"
         )
-    except httpx.ConnectError:
-        console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
-    except httpx.HTTPStatusError as e:
-        console.print(f"[bold red]✗ Claim failed ({e.response.status_code}):[/bold red] {e.response.text}")
+    except ClientError as exc:
+        handle_client_error(exc, json_mode=json_mode)
     except Exception as e:
-        console.print(f"[bold red]✗ Error claiming board:[/bold red] {e}")
+        handle_client_error(e, json_mode=json_mode)
 
+
+@click.command(
+    "create-board",
+    deprecated=True,
+    epilog="Deprecated alias of `ak5 board create <id> --template <name>`.",
+)
+@click.argument("board_id")
+@click.option("--name", "-n", required=True, help="Board display name")
+@click.option("--desc", "-d", "description", default=None, help="Board description")
+@click.option("--template", default="default", help="Board template (default: default)")
+@click.option(
+    "--owner",
+    "owners",
+    multiple=True,
+    help="Human actor ID to enroll as board admin (repeatable).",
+)
+@click.pass_context
+def create_board_command(
+    ctx: click.Context,
+    board_id: str,
+    name: str,
+    description: str | None,
+    template: str,
+    owners: tuple[str, ...],
+) -> None:
+    """Deprecated alias of ``ak5 board create``."""
+    _create_board_impl(
+        board_id,
+        name,
+        description,
+        template,
+        owners,
+        json_mode=is_json_mode(flag=json_flag_from_ctx(ctx)),
+        deprecated_alias=True,
+    )
+
+
+@click.command(
+    "claim-board",
+    deprecated=True,
+    epilog="Deprecated alias of `ak5 board adopt <id>`.",
+)
+@click.argument("board_id")
+@click.pass_context
+def claim_board_command(ctx: click.Context, board_id: str) -> None:
+    """Deprecated alias of ``ak5 board adopt``."""
+    _adopt_board_impl(
+        board_id,
+        json_mode=is_json_mode(flag=json_flag_from_ctx(ctx)),
+        deprecated_alias=True,
+    )
