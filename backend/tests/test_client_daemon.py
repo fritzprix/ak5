@@ -274,11 +274,87 @@ def test_slow_hook_does_not_block_token(daemon_home, monkeypatch):
 def test_cursor_expired_tip_parser():
     from ak5.daemon.poller import _tip_from_expired
 
+    # Prefer purged_through_seq — never the expired cursor (410-loop bug)
     assert (
-        _tip_from_expired({"error": {"details": {"cursor": 42}}})
-        == 42
+        _tip_from_expired(
+            {"error": {"details": {"cursor": 5, "purged_through_seq": 120}}}
+        )
+        == 120
     )
     assert _tip_from_expired({"error": {"details": {"oldest_seq": 7}}}) == 7
+    assert _tip_from_expired({"error": {"details": {"cursor": 5}}}) == 0
+
+
+def test_fast_subscriber_not_blocked_by_slow_while_polling(daemon_home, monkeypatch):
+    """client.md §4.3: new events must reach fast hooks while a slow hook still runs."""
+    sock: Path = daemon_home["sock"]
+    monkeypatch.setenv("AK5_HOOK_TIMEOUT", "30")
+    upsert_profile(Profile(name="worker-1", server="http://127.0.0.1:9/api/v1", role="worker"))
+    save_credential(
+        "worker-1",
+        ProfileCredential(access_token="tok-abc", actor_id="agent_w1", status="active"),
+    )
+    start_daemon_background(sock=sock)
+    home: Path = daemon_home["home"]
+    with _uds_client(sock) as client:
+        assert (
+            client.post(
+                "/v1/subscribers",
+                json={
+                    "profile": "worker-1",
+                    "events": ["WORK_AVAILABLE"],
+                    "exec_command": "sleep 12",
+                },
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/subscribers",
+                json={
+                    "profile": "worker-1",
+                    "events": ["WORK_AVAILABLE"],
+                    "exec_command": f'touch {home}/fast-$AK5_TICKET_ID',
+                },
+            ).status_code
+            == 200
+        )
+        # Non-blocking spool (mirrors poller schedule_dispatch)
+        assert (
+            client.post(
+                "/v1/spool",
+                json={
+                    "profile": "worker-1",
+                    "type": "WORK_AVAILABLE",
+                    "ticket_id": "TK-1",
+                    "data": {},
+                    "wait": False,
+                },
+                timeout=5.0,
+            ).status_code
+            == 200
+        )
+        time.sleep(0.4)
+        assert (
+            client.post(
+                "/v1/spool",
+                json={
+                    "profile": "worker-1",
+                    "type": "WORK_AVAILABLE",
+                    "ticket_id": "TK-2",
+                    "data": {},
+                    "wait": False,
+                },
+                timeout=5.0,
+            ).status_code
+            == 200
+        )
+    # Fast hook should see TK-2 within a few seconds — not after sleep 12 finishes
+    deadline = time.time() + 5
+    target = home / "fast-TK-2"
+    while time.time() < deadline and not target.is_file():
+        time.sleep(0.05)
+    assert target.is_file(), "fast subscriber blocked by slow peer / awaited dispatch"
 
 
 def test_subscribe_add_is_local_only():

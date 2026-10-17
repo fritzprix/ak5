@@ -25,17 +25,21 @@ def _api_base(server: str) -> str:
 
 
 def _tip_from_expired(body: dict[str, Any]) -> int:
-    """CURSOR_EXPIRED tip from error envelope (events.md)."""
+    """CURSOR_EXPIRED tip from error envelope (events.md).
+
+    Server details are ``{cursor: <expired>, purged_through_seq: N}`` — use the
+    purge tip, never the expired cursor (that would 410-loop forever).
+    """
     err = body.get("error") if isinstance(body.get("error"), dict) else {}
     details = err.get("details") if isinstance(err.get("details"), dict) else {}
-    for key in ("cursor", "oldest_seq", "tip"):
+    for key in ("purged_through_seq", "tip", "oldest_seq"):
         raw = details.get(key)
         if raw is not None:
             try:
                 return int(raw)
             except (TypeError, ValueError):
                 pass
-    for key in ("cursor", "next_cursor"):
+    for key in ("next_cursor", "tip"):
         raw = body.get(key)
         if raw is not None:
             try:
@@ -43,6 +47,15 @@ def _tip_from_expired(body: dict[str, Any]) -> int:
             except (TypeError, ValueError):
                 pass
     return 0
+
+
+def schedule_dispatch(state: DaemonState, profile: str) -> None:
+    """Fan-out in the background so long-poll can continue immediately."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(dispatch_new_events(state, profile))
 
 
 async def _ack_server(
@@ -131,9 +144,9 @@ async def poll_profile_once(
             )
             state.set_server_cursor(profile.name, subscription_id=sub_id, ack_cursor=tip)
             await _ack_server(client, sub_id, tip)
-            await dispatch_new_events(state, profile.name)
             if wake:
                 wake(profile.name)
+            schedule_dispatch(state, profile.name)
             return 1
         if resp.status_code != 200:
             return 0
@@ -157,9 +170,10 @@ async def poll_profile_once(
             )
             await _ack_server(client, sub_id, next_cursor)
         if events:
-            await dispatch_new_events(state, profile.name)
             if wake:
                 wake(profile.name)
+            # Do not await — slow hooks must not stall the next long-poll
+            schedule_dispatch(state, profile.name)
     return written
 
 

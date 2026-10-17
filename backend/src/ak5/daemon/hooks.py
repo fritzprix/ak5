@@ -69,8 +69,10 @@ def hook_env_for_event(event: dict[str, Any]) -> dict[str, str]:
         inner = {}
     title = _ticket_title(inner, data if isinstance(data, dict) else {})
     status = str(
-        inner.get("status")
+        inner.get("to_stage")
+        or inner.get("status")
         or inner.get("stage")
+        or data.get("to_stage")
         or data.get("status")
         or data.get("stage")
         or ""
@@ -88,11 +90,13 @@ def hook_env_for_event(event: dict[str, Any]) -> dict[str, str]:
         or event.get("actor_id")
         or ""
     )
+    # Prefer server event_id (evt_…); fall back to seq only if absent
     event_id = str(
-        event.get("event_id")
-        or data.get("event_id")
+        data.get("event_id")
         or data.get("id")
-        or f"seq-{event.get('seq', '')}"
+        or inner.get("event_id")
+        or event.get("event_id")
+        or (f"seq-{event['seq']}" if event.get("seq") is not None else "")
     )
     cursor = str(event.get("seq") or data.get("cursor") or "")
     env = os.environ.copy()
@@ -124,11 +128,18 @@ def append_dead_letter(
 ) -> None:
     path = dead_letter_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    event_id = str(
+        data.get("event_id")
+        or event.get("event_id")
+        or data.get("id")
+        or (f"seq-{event.get('seq')}" if event.get("seq") is not None else "")
+    )
     row = {
         "ts": time.time(),
         "subscriber_id": subscriber_id,
         "profile": profile,
-        "event_id": event.get("event_id") or f"seq-{event.get('seq')}",
+        "event_id": event_id,
         "seq": event.get("seq"),
         "type": event.get("type"),
         "ticket_id": event.get("ticket_id"),

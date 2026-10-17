@@ -256,9 +256,15 @@ def create_daemon_app(state: DaemonState | None = None) -> FastAPI:
             board_id=body.get("board_id"),
         )
         from ak5.daemon.hooks import dispatch_new_events
+        from ak5.daemon.poller import schedule_dispatch
 
-        await dispatch_new_events(_state(), profile)
         _wake(profile)
+        # Default wait=true keeps unit tests deterministic; wait=false mirrors poller.
+        wait_hooks = body.get("wait", True)
+        if wait_hooks is False or wait_hooks == "0":
+            schedule_dispatch(_state(), profile)
+        else:
+            await dispatch_new_events(_state(), profile)
         return {"seq": seq}
 
     setattr(app.state, "wake_profile", _wake)
