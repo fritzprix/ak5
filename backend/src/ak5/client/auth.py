@@ -1,7 +1,8 @@
-"""Access-token resolution chokepoint (client.md).
+"""Access-token resolution chokepoint (client.md §3.3–§3.4).
 
-Callers must use :func:`resolve_access_token` only. Issue #13 will replace the
-body with daemon token-broker IPC; keep call sites unchanged.
+Order: ``AK5_TOKEN`` / ``AK5_ACTOR_TOKEN`` → daemon ``/v1/token`` (if running)
+→ session resolver. Autostart is handled by CLI commands that require the daemon,
+not by every token lookup (keeps pytest / ``AK5_TOKEN`` CI paths quiet).
 """
 
 from __future__ import annotations
@@ -20,7 +21,23 @@ def set_access_token_resolver(resolver: Callable[[], str | None] | None) -> None
 
 def resolve_access_token() -> str | None:
     """Return a Bearer access token, or ``None`` if unavailable."""
+    for key in ("AK5_TOKEN", "AK5_ACTOR_TOKEN"):
+        env_token = os.environ.get(key, "").strip()
+        if env_token:
+            return env_token
+
+    try:
+        from ak5.daemon.ipc import fetch_token
+        from ak5.daemon.server import is_daemon_running
+
+        if is_daemon_running():
+            body = fetch_token(os.environ.get("AK5_PROFILE") or None, ensure=False)
+            token = str(body.get("access_token") or "")
+            if token:
+                return token
+    except Exception:  # noqa: BLE001 — fall through to session resolver
+        pass
+
     if _resolver is not None:
         return _resolver()
-    token = os.environ.get("AK5_ACTOR_TOKEN")
-    return token if token else None
+    return None

@@ -30,6 +30,9 @@ class ErrorCode(StrEnum):
     UNAUTHENTICATED = "UNAUTHENTICATED"
     VERSION_MISMATCH = "VERSION_MISMATCH"
 
+    # client.md §8
+    DAEMON_UNAVAILABLE = "DAEMON_UNAVAILABLE"
+
 
 HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.INVALID_TRANSITION: 409,
@@ -47,6 +50,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SUBSCRIPTION_NOT_FOUND: 404,
     ErrorCode.UNAUTHENTICATED: 401,
     ErrorCode.VERSION_MISMATCH: 409,
+    ErrorCode.DAEMON_UNAVAILABLE: 503,
 }
 
 EXIT_CODE: dict[ErrorCode, int] = {
@@ -63,6 +67,7 @@ EXIT_CODE: dict[ErrorCode, int] = {
     ErrorCode.TICKET_BLOCKED: 5,
     ErrorCode.VERSION_MISMATCH: 7,
     ErrorCode.UNAUTHENTICATED: 8,
+    ErrorCode.DAEMON_UNAVAILABLE: 9,  # client.md §8
     # events.md codes without an explicit cli.md exit → treat as generic failure
     ErrorCode.CURSOR_EXPIRED: 1,
     ErrorCode.SUBSCRIPTION_NOT_FOUND: 1,

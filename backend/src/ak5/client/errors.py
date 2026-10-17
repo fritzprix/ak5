@@ -13,6 +13,7 @@ EXIT_USAGE = 2
 EXIT_EMPTY = 6  # next returned nothing
 EXIT_VERSION = 7
 EXIT_AUTH = 8
+EXIT_DAEMON = 9  # client.md §8 — DAEMON_UNAVAILABLE
 
 
 class ClientError(Exception):

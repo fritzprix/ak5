@@ -449,6 +449,18 @@ def subscribe_group() -> None:
 @click.option("--debounce", default=0.0, type=float, help="Per-ticket cooldown seconds between runs.")
 @click.option("--id", "custom_id", default=None, help="Custom subscription ID (default: auto-generated).")
 @click.option("--dry-run", is_flag=True, help="Print hook contract and exit without registering.")
+@click.option(
+    "--local/--server",
+    "local",
+    default=False,
+    help="Register a daemon-local subscriber (client.md). Default: server-side hook.",
+)
+@click.option("--profile", default=None, help="Profile for --local subscribers")
+@click.option(
+    "--preset",
+    default=None,
+    help="Build --exec from a preset (claude|cursor|curl:<url>); still stored as exec.",
+)
 def subscribe_add(
     board_id: str | None,
     exec_command: str,
@@ -458,17 +470,60 @@ def subscribe_add(
     debounce: float,
     custom_id: str | None,
     dry_run: bool,
+    local: bool,
+    profile: str | None,
+    preset: str | None,
 ) -> None:
-    """Register a server-side hook and return immediately.
+    """Register a local daemon subscriber (default) or server-side hook.
 
     \b
     Examples:
-      # Recommended: omit --events so all core events (created, delegated, updated, moved, comments) are captured
-      ak5 subscribe create proj-core-engine --for-agent "$AK5_ACTOR_ID" \
-        --exec 'agent -p "$AK5_SUMMARY"'
-      ak5 subscribe create proj-core-engine --exec './scripts/on_board_event.sh'
-      ak5 subscribe create --exec 'curl -X POST https://hooks.example/ak5 -d @-' --dry-run
+      ak5 subscribe add --exec 'agent -p \"$AK5_SUMMARY\"' --events WORK_AVAILABLE
+      ak5 subscribe add --server proj-core-engine --exec './hook.sh'
     """
+    if preset:
+        if preset == "claude":
+            exec_command = 'claude -p "$AK5_SUMMARY"'
+        elif preset == "cursor":
+            exec_command = 'agent -p "$AK5_SUMMARY"'
+        elif preset.startswith("curl:"):
+            url = preset[5:]
+            exec_command = (
+                f'curl -s -X POST {url} -H "Content-Type: application/json" -d @-'
+            )
+        else:
+            raise click.UsageError(f"unknown preset: {preset}")
+
+    if dry_run:
+        console.print(
+            Panel.fit(
+                f"local={local}\nexec={exec_command}\nevents={events}\nboard={board_id}",
+                title="subscribe dry-run",
+            )
+        )
+        return
+
+    if local:
+        from ak5.daemon.ipc import daemon_client, ensure_daemon
+
+        ensure_daemon()
+        event_list = [e.strip() for e in (events or "").split(",") if e.strip()]
+        with daemon_client() as client:
+            resp = client.post(
+                "/v1/subscribers",
+                json={
+                    "profile": profile,
+                    "board_id": board_id,
+                    "events": event_list,
+                    "exec_command": exec_command,
+                    "id": custom_id,
+                },
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        console.print(f"[green]✓ local subscriber[/green] {body.get('id')}")
+        return
+
     do_subscribe(
         board_id=board_id,
         exec_command=exec_command,
@@ -477,7 +532,7 @@ def subscribe_add(
         ignore_actor=ignore_actor,
         debounce=debounce,
         custom_id=custom_id,
-        dry_run=dry_run,
+        dry_run=False,
     )
 
 
