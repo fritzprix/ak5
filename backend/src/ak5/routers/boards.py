@@ -23,12 +23,13 @@ from ak5.schemas.board import (
     BoardCreate,
     BoardDetailOut,
     BoardOut,
+    BoardTicketOut,
     BoardUpdate,
     ColumnWithTicketsOut,
 )
 from ak5.schemas.column import ColumnCreate, ColumnOut
 from ak5.schemas.device_auth import BoardMemberCreate, BoardMemberOut
-from ak5.schemas.ticket import TicketOut
+from ak5.schemas.ticket import SubtaskSummaryOut, TicketOut
 from ak5.seed import INBOX_BOARD_ID
 from ak5.services import workflow as wf
 from ak5.services.templates import get_template, template_column_dicts
@@ -74,6 +75,22 @@ def _to_board_out(board: Board) -> BoardOut:
     )
 
 
+def _ticket_stage(t: Ticket) -> str | None:
+    col = t.__dict__.get("column")
+    return col.stage if col is not None else None
+
+
+def _subtask_summary(child: Ticket) -> SubtaskSummaryOut:
+    return SubtaskSummaryOut(
+        ticket_id=child.ticket_id,
+        title=child.title,
+        stage=_ticket_stage(child),
+        board_id=child.board_id,
+        blocked=child.status == "blocked" or child.blocked_kind is not None,
+        claimed=bool(child.claim_token or child.claimed_by),
+    )
+
+
 def _to_ticket_out(t: Ticket, subtask_stats: dict[str, tuple[int, int]]) -> TicketOut:
     count, done_count = subtask_stats.get(t.ticket_id, (0, 0))
     return TicketOut(
@@ -96,8 +113,32 @@ def _to_ticket_out(t: Ticket, subtask_stats: dict[str, tuple[int, int]]) -> Tick
         archived_at=t.archived_at,
         created_at=t.created_at,
         updated_at=t.updated_at,
+        stage=_ticket_stage(t),
+        attempt=t.attempt,
+        max_attempts=t.max_attempts,
+        claim_token=t.claim_token,
+        claimed_by=t.claimed_by,
+        lease_expires_at=t.lease_expires_at,
+        lease_expirations=t.lease_expirations,
+        submitted_by=t.submitted_by,
+        blocked_kind=t.blocked_kind,
+        blocked_since=t.blocked_since,
+        blocked_actor=t.blocked_actor,
+        original_request=t.original_request,
         subtask_count=count,
         subtask_done_count=done_count,
+    )
+
+
+def _to_board_ticket_out(
+    t: Ticket,
+    subtask_stats: dict[str, tuple[int, int]],
+    subtasks_by_parent: dict[str, list[SubtaskSummaryOut]],
+) -> BoardTicketOut:
+    base = _to_ticket_out(t, subtask_stats)
+    return BoardTicketOut(
+        **base.model_dump(),
+        subtasks=list(subtasks_by_parent.get(t.ticket_id, [])),
     )
 
 
@@ -163,13 +204,26 @@ async def get_board(
     if not board:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
 
-    # Compute subtask statistics across the board
+    # One query for all children of tickets on this board (children may live on other boards).
+    parent_ids = [t.ticket_id for t in board.tickets]
+    subtasks_by_parent: dict[str, list[SubtaskSummaryOut]] = {pid: [] for pid in parent_ids}
     subtask_stats: dict[str, tuple[int, int]] = {}
-    for t in board.tickets:
-        if t.parent_ticket_id:
-            count, done = subtask_stats.get(t.parent_ticket_id, (0, 0))
-            is_done = 1 if t.status == "done" else 0
-            subtask_stats[t.parent_ticket_id] = (count + 1, done + is_done)
+    if parent_ids:
+        child_stmt = (
+            select(Ticket)
+            .where(Ticket.parent_ticket_id.in_(parent_ids))
+            .options(selectinload(Ticket.column))
+            .order_by(Ticket.created_at.asc(), Ticket.ticket_id.asc())
+        )
+        child_result = await db.execute(child_stmt)
+        for child in child_result.scalars().all():
+            parent_id = child.parent_ticket_id
+            if parent_id is None:
+                continue
+            subtasks_by_parent.setdefault(parent_id, []).append(_subtask_summary(child))
+            count, done = subtask_stats.get(parent_id, (0, 0))
+            is_done = 1 if child.status == "done" else 0
+            subtask_stats[parent_id] = (count + 1, done + is_done)
 
     # Build response with tickets ordered by rank
     columns_out = []
@@ -189,7 +243,9 @@ async def get_board(
         else:
             sorted_tickets = sorted(col_tickets, key=lambda t: t.rank)
 
-        ticket_outs = [_to_ticket_out(t, subtask_stats) for t in sorted_tickets]
+        ticket_outs = [
+            _to_board_ticket_out(t, subtask_stats, subtasks_by_parent) for t in sorted_tickets
+        ]
         columns_out.append(
             ColumnWithTicketsOut(
                 column_id=col.column_id,

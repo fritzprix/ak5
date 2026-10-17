@@ -4,7 +4,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ak5.schemas.column import ColumnOut
-from ak5.schemas.ticket import TicketOut
+from ak5.schemas.ticket import SubtaskSummaryOut, TicketOut
+
+
+class BoardTicketOut(TicketOut):
+    """Board column ticket with one-query subtask summaries (may be cross-board)."""
+
+    subtasks: list[SubtaskSummaryOut] = Field(default_factory=list)
 
 
 class BoardBase(BaseModel):
@@ -48,7 +54,7 @@ class BoardClaimOut(BaseModel):
 
 
 class ColumnWithTicketsOut(ColumnOut):
-    tickets: list[TicketOut] = Field(default_factory=list)
+    tickets: list[BoardTicketOut] = Field(default_factory=list)
     total_ticket_count: int | None = None
 
 

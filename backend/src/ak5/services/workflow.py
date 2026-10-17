@@ -396,22 +396,73 @@ async def _next_rank(db: AsyncSession, column_id: str) -> str:
     return rank_between(last.rank if last else None, None)
 
 
-async def _assert_wip(db: AsyncSession, column: Column, *, excluding_ticket_id: str | None = None) -> None:
-    if column.wip_limit <= 0:
-        return
+async def _wip_count(
+    db: AsyncSession, column: Column, *, excluding_ticket_id: str | None = None
+) -> int:
     stmt = select(func.count()).select_from(Ticket).where(
         Ticket.column_id == column.column_id,
         Ticket.is_archived.is_(False),
     )
     if excluding_ticket_id:
         stmt = stmt.where(Ticket.ticket_id != excluding_ticket_id)
-    count = (await db.execute(stmt)).scalar_one() or 0
+    return int((await db.execute(stmt)).scalar_one() or 0)
+
+
+async def _in_progress_has_capacity(
+    db: AsyncSession, board_id: str, *, excluding_ticket_id: str | None = None
+) -> bool:
+    """True if a backlog→in_progress claim would not hit WIP_LIMIT."""
+    column = await _column_for_stage(db, board_id, Stage.IN_PROGRESS)
+    if column.wip_limit <= 0:
+        return True
+    return await _wip_count(db, column, excluding_ticket_id=excluding_ticket_id) < column.wip_limit
+
+
+async def _assert_wip(db: AsyncSession, column: Column, *, excluding_ticket_id: str | None = None) -> None:
+    if column.wip_limit <= 0:
+        return
+    count = await _wip_count(db, column, excluding_ticket_id=excluding_ticket_id)
     if count >= column.wip_limit:
         raise WorkflowError(
             ErrorCode.WIP_LIMIT,
             f"WIP limit ({column.wip_limit}) exceeded for column '{column.name}'",
             details={"column_id": column.column_id, "wip_limit": column.wip_limit},
         )
+
+
+async def _emit_backlog_after_in_progress_freed(
+    db: AsyncSession,
+    board_id: str,
+    *,
+    actor_id: str | None,
+) -> None:
+    """Wake workers waiting on WIP: emit WORK_AVAILABLE for oldest claimable backlog ticket."""
+    if board_id == INBOX_BOARD_ID:
+        return
+    if not await _in_progress_has_capacity(db, board_id):
+        return
+    now = _naive(_now())
+    stmt = (
+        select(Ticket)
+        .join(Column, Ticket.column_id == Column.column_id)
+        .options(selectinload(Ticket.column), selectinload(Ticket.board))
+        .where(
+            Ticket.board_id == board_id,
+            Ticket.is_archived.is_(False),
+            Column.stage == Stage.BACKLOG.value,
+            Ticket.blocked_kind.is_(None),
+            or_(Ticket.blocked_by.is_(None), Ticket.blocked_by == ""),
+            or_(
+                Ticket.claim_token.is_(None),
+                Ticket.lease_expires_at.is_not(None) & (Ticket.lease_expires_at <= now),
+            ),
+        )
+        .order_by(Ticket.created_at.asc())
+        .limit(1)
+    )
+    ticket = (await db.execute(stmt)).scalar_one_or_none()
+    if ticket is not None and not is_claim_valid(ticket) and not is_blocked(ticket):
+        await _emit_work_available(db, ticket, actor_id=actor_id)
 
 
 async def _generate_ticket_id(db: AsyncSession) -> str:
@@ -1265,8 +1316,9 @@ async def submit(
     ctx = ticket.execution_context_dict or {}
     ctx["deliverable"] = deliverable.model_dump(mode="json", by_alias=True)
     ticket.execution_context_dict = ctx
-    await _move_ticket(db, ticket, board_id=ticket.board_id, stage=Stage.AGENT_REVIEW)
-    return await _finish_transition(
+    board_id = ticket.board_id
+    await _move_ticket(db, ticket, board_id=board_id, stage=Stage.AGENT_REVIEW)
+    result = await _finish_transition(
         db,
         ticket,
         actor=actor,
@@ -1275,6 +1327,9 @@ async def submit(
         to_stage=Stage.AGENT_REVIEW,
         work_available=True,
     )
+    # Freeing an in_progress slot should wake workers blocked on WIP (#42).
+    await _emit_backlog_after_in_progress_freed(db, board_id, actor_id=actor.actor_id)
+    return result
 
 
 async def bounce(
@@ -1298,8 +1353,9 @@ async def bounce(
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "bounce requires in_progress stage")
     _require_own_claim(ticket, actor, claim_token)
     _clear_claim(ticket)
+    board_id = ticket.board_id
     await _move_ticket(db, ticket, board_id=INBOX_BOARD_ID, stage=Stage.UNCLASSIFIED)
-    return await _finish_transition(
+    result = await _finish_transition(
         db,
         ticket,
         actor=actor,
@@ -1309,6 +1365,8 @@ async def bounce(
         reason=reason,
         work_available=True,
     )
+    await _emit_backlog_after_in_progress_freed(db, board_id, actor_id=actor.actor_id)
+    return result
 
 
 async def _create_auto_board(
@@ -1833,10 +1891,12 @@ async def block_ticket(
         raise WorkflowError(ErrorCode.STALE_CLAIM, "Claim token mismatch")
 
     from_stage = stage
+    board_id = ticket.board_id
+    freed_in_progress = stage == Stage.IN_PROGRESS
     if is_claim_valid(ticket):
         _clear_claim(ticket)
     if stage == Stage.IN_PROGRESS:
-        await _move_ticket(db, ticket, board_id=ticket.board_id, stage=Stage.BACKLOG)
+        await _move_ticket(db, ticket, board_id=board_id, stage=Stage.BACKLOG)
         stage = Stage.BACKLOG
 
     ticket.blocked_kind = kind.value
@@ -1848,13 +1908,13 @@ async def block_ticket(
     await record_event(
         db,
         EventType.TICKET_BLOCKED,
-        board_id=ticket.board_id,
+        board_id=board_id,
         ticket_id=ticket.ticket_id,
         actor_id=actor.actor_id,
-        data={"kind": kind.value, "reason": reason, "board_id": ticket.board_id},
+        data={"kind": kind.value, "reason": reason, "board_id": board_id},
     )
     human_action = kind in (BlockedKind.NEEDS_HUMAN, BlockedKind.ESCALATION)
-    return await _finish_transition(
+    result = await _finish_transition(
         db,
         ticket,
         actor=actor,
@@ -1866,6 +1926,9 @@ async def block_ticket(
         human_reason=reason,
         extra_audit={"blocked_kind": kind.value},
     )
+    if freed_in_progress:
+        await _emit_backlog_after_in_progress_freed(db, board_id, actor_id=actor.actor_id)
+    return result
 
 
 async def unblock_ticket(
@@ -2158,12 +2221,18 @@ async def next_ticket(
         except KeyError:
             required_caps = []
 
+    backlog_wip_ok: bool | None = None
     for ticket in candidates:
         if is_claim_valid(ticket):
             continue
         if is_blocked(ticket):
             continue
         if ticket_stage(ticket) == Stage.BACKLOG:
+            if backlog_wip_ok is None:
+                backlog_wip_ok = await _in_progress_has_capacity(db, board_id)
+            if not backlog_wip_ok:
+                # WIP full → nothing claimable; 204 rather than a ticket that claim would reject.
+                return None
             if required_caps and capabilities is not None:
                 have = {c.lower() for c in capabilities}
                 if not all(c.lower() in have for c in required_caps):

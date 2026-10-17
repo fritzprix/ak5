@@ -65,6 +65,16 @@ export interface TicketAttachment {
   created_at: string;
 }
 
+/** Compact child summary from GET /boards/{id} (may live on another board). */
+export interface SubtaskSummary {
+  ticket_id: string;
+  title: string;
+  stage?: string | null;
+  board_id: string;
+  blocked: boolean;
+  claimed: boolean;
+}
+
 export interface Ticket {
   ticket_id: string;
   board_id: string;
@@ -88,7 +98,8 @@ export interface Ticket {
   subtask_done_count: number;
   is_archived?: boolean;
   archived_at?: string | null;
-  subtasks?: Ticket[];
+  /** Board listing: SubtaskSummary[]; ticket detail: full Ticket[]. */
+  subtasks?: Array<SubtaskSummary | Ticket>;
   comments?: TicketComment[];
   attachments?: TicketAttachment[];
 

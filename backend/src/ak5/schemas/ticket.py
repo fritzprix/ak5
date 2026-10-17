@@ -132,6 +132,17 @@ class TicketOut(TicketBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SubtaskSummaryOut(BaseModel):
+    """Compact child ticket for board listing (workflow.md board accordion)."""
+
+    ticket_id: str
+    title: str
+    stage: str | None = None
+    board_id: str
+    blocked: bool = False
+    claimed: bool = False
+
+
 class TicketAttachmentOut(BaseModel):
     attachment_id: str
     ticket_id: str
