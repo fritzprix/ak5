@@ -437,6 +437,13 @@ class AK5Client:
     def update_board(self, board_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.patch(f"/boards/{board_id}", json=payload)
 
+    def list_templates(self) -> list[dict[str, Any]]:
+        data = self.get("/templates")
+        return data if isinstance(data, list) else []
+
+    def get_template(self, name: str) -> dict[str, Any]:
+        return self.get(f"/templates/{name}")
+
     def adopt_board(self, board_id: str) -> dict[str, Any]:
         return self.post(f"/boards/{board_id}/claim")
 

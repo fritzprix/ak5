@@ -21,6 +21,7 @@ from ak5.server.routers.boards import router as boards_router
 from ak5.server.routers.device_auth import router as device_auth_router
 from ak5.server.routers.events import router as events_router
 from ak5.server.routers.subscriptions import router as subscriptions_router
+from ak5.server.routers.templates import router as templates_router
 from ak5.server.routers.tickets import router as tickets_router
 from ak5.server.routers.web_auth import router as web_auth_router
 from ak5.server.seed import seed_initial_data
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
     application.include_router(device_auth_router)  # Direct access without /api/v1 prefix
     application.include_router(actors_router, prefix=settings.API_V1_STR)
     application.include_router(boards_router, prefix=settings.API_V1_STR)
+    application.include_router(templates_router, prefix=settings.API_V1_STR)
     application.include_router(tickets_router, prefix=settings.API_V1_STR)
     application.include_router(events_router, prefix=settings.API_V1_STR)
     application.include_router(subscriptions_router, prefix=settings.API_V1_STR)

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from ak5.models.actor import Actor
+from ak5.paths import get_app_data_dir
 from ak5.services.templates import (
     CODING_TEMPLATE,
     RESEARCH_TEMPLATE,
@@ -163,3 +165,79 @@ async def test_apply_template_adds_columns_without_deleting(
     after = await client.get("/api/v1/boards/board-apply-tpl", headers=pm)
     stages_after = {c["stage"] for c in after.json()["columns"]}
     assert stages_before <= stages_after
+
+
+@pytest.mark.asyncio
+async def test_templates_api_list_and_get(client: AsyncClient, auth_headers):
+    pm = auth_headers("user_pm", "human")
+    listed = await client.get("/api/v1/templates", headers=pm)
+    assert listed.status_code == 200, listed.text
+    names = {row["name"] for row in listed.json()}
+    assert {"default", "coding", "research", "inbox"} <= names
+    coding = next(r for r in listed.json() if r["name"] == "coding")
+    assert coding["source"] == "builtin"
+    assert coding["review_checklist"]
+
+    shown = await client.get("/api/v1/templates/coding", headers=pm)
+    assert shown.status_code == 200
+    assert shown.json()["name"] == "coding"
+    assert shown.json()["columns"]
+
+    missing = await client.get("/api/v1/templates/no-such-tmpl", headers=pm)
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_workspace_template_visible_via_api_and_apply(
+    client: AsyncClient, auth_headers
+):
+    """Server-side workspace JSON appears in GET /templates and can be applied."""
+    pm = auth_headers("user_pm", "human")
+    tmpl_dir = get_app_data_dir() / "templates"
+    tmpl_dir.mkdir(parents=True, exist_ok=True)
+    custom = {
+        "name": "docs-ws",
+        "max_attempts": 2,
+        "worker_capabilities": ["docs"],
+        "acceptance_criteria_defaults": ["outline complete"],
+        "review_checklist": ["structure ok", "links valid"],
+        "columns": [
+            {"name": "Backlog", "stage": "backlog", "position": 1, "wip_limit": 0},
+            {"name": "In Progress", "stage": "in_progress", "position": 2, "wip_limit": 2},
+            {"name": "Agent Review", "stage": "agent_review", "position": 3, "wip_limit": 2},
+            {
+                "name": "Postmortem Pending",
+                "stage": "postmortem_pending",
+                "position": 4,
+                "wip_limit": 0,
+            },
+            {"name": "Human Review", "stage": "human_review", "position": 5, "wip_limit": 0},
+            {"name": "Done", "stage": "done", "position": 6, "wip_limit": 0},
+        ],
+    }
+    Path(tmpl_dir / "docs-ws.json").write_text(json.dumps(custom), encoding="utf-8")
+
+    listed = await client.get("/api/v1/templates", headers=pm)
+    assert listed.status_code == 200
+    row = next(r for r in listed.json() if r["name"] == "docs-ws")
+    assert row["source"] == "workspace"
+    assert row["review_checklist"] == ["structure ok", "links valid"]
+
+    shown = await client.get("/api/v1/templates/docs-ws", headers=pm)
+    assert shown.status_code == 200
+    assert shown.json()["worker_capabilities"] == ["docs"]
+
+    created = await client.post(
+        "/api/v1/boards",
+        headers=pm,
+        json={"name": "Docs Board", "board_id": "board-docs-ws", "template": "default"},
+    )
+    assert created.status_code == 200
+    applied = await client.patch(
+        "/api/v1/boards/board-docs-ws",
+        headers=pm,
+        json={"template": "docs-ws"},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["template"] == "docs-ws"

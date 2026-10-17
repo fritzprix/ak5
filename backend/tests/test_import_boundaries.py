@@ -39,7 +39,6 @@ FORBIDDEN_MODULES = frozenset(
 _CLI_ALLOWED = frozenset(
     {
         "ak5.contracts.event_context",
-        "ak5.services.templates",
     }
 )
 
