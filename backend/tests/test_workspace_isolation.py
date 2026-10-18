@@ -349,3 +349,80 @@ def test_scoped_applies_workspace_filter_for_column():
     compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "workspace_id" in compiled
     assert LOCAL_WORKSPACE_ID in compiled
+
+
+@pytest.mark.asyncio
+async def test_attachment_download_rejects_other_workspace_and_query_token(
+    client: AsyncClient,
+    anon_client: AsyncClient,
+    auth_headers,
+    test_db: AsyncSession,
+    tmp_path,
+    monkeypatch,
+):
+    """#75: download needs a Bearer token from the ticket's workspace; no ?access_token=."""
+    from ak5.server.auth.bridge import register_bridge
+    from ak5.server.config import settings
+    from ak5.server.models.actor import Actor
+
+    monkeypatch.setattr(settings, "ATTACHMENTS_DIR", str(tmp_path))
+    await ensure_local_tenancy(test_db)
+    await _ensure_other_workspace(test_db)
+    if await test_db.get(Actor, "usr_other") is None:
+        test_db.add(
+            Actor(
+                actor_id="usr_other",
+                actor_type="human",
+                name="Other WS Owner",
+                role="human",
+                capabilities="[]",
+                status="idle",
+            )
+        )
+    register_bridge("usr_other", "usr_other")
+    await test_db.commit()
+    local = auth_headers("user_pm", "human")
+
+    created = await client.post(
+        "/api/v1/tickets",
+        json={
+            "board_id": "proj-core-engine",
+            "title": "Has a secret",
+            "spec": "x",
+            "acceptance_criteria": ["y"],
+        },
+        headers=local,
+    )
+    assert created.status_code == 201, created.text
+    tid = created.json()["ticket_id"]
+    up = await client.post(
+        f"/api/v1/tickets/{tid}/attachments",
+        files={"file": ("secret.txt", b"TOP-SECRET-A", "text/plain")},
+        headers=local,
+    )
+    assert up.status_code in (200, 201), up.text
+    att = up.json()["attachment_id"]
+    url = f"/api/v1/tickets/{tid}/attachments/{att}"
+
+    ok = await client.get(url, headers=local)
+    assert ok.status_code == 200 and ok.content == b"TOP-SECRET-A"
+
+    other_token = issue_access_token(
+        Principal(
+            principal_id="usr_other",
+            principal_type="user",
+            workspace_id="ws_other",
+            workflow_role=Role.HUMAN,
+            membership_role="owner",
+        )
+    )
+    foreign = await client.get(url, headers={"Authorization": f"Bearer {other_token}"})
+    assert foreign.status_code == 403
+    assert foreign.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+    assert b"TOP-SECRET-A" not in foreign.content
+
+    for token in (other_token, local["Authorization"].split(" ", 1)[1]):
+        # anon_client: no default Authorization header, only the query token.
+        queried = await anon_client.get(url, params={"access_token": token})
+        assert queried.status_code == 401
+        assert b"TOP-SECRET-A" not in queried.content

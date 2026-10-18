@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +23,6 @@ from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.server.routers.auth import (
     get_auth_workspace_id,
     get_current_actor,
-    get_current_actor_optional,
 )
 from ak5.server.schemas.ticket import (
     AuditLogOut,
@@ -1012,36 +1011,23 @@ async def list_attachments(
     return [TicketAttachmentOut.model_validate(a) for a in attachments]
 
 
-@router.get("/{ticket_id}/attachments/{attachment_id}")
+@router.get("/{ticket_id}/attachments/{attachment_id}", response_model=None)
 async def download_attachment(
     ticket_id: str,
     attachment_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_actor: Annotated[Actor | None, Depends(get_current_actor_optional)],
-    access_token: Annotated[str | None, Query()] = None,
-) -> FileResponse:
-    """Download an attachment. Requires Bearer JWT or ``access_token`` query (for ``<a href>``)."""
-    import jwt
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+) -> FileResponse | JSONResponse:
+    """Download an attachment. Requires a Bearer token from the ticket's workspace (#75).
 
-    from ak5.server.security import get_jwt_secret
-
-    actor = current_actor
-    if actor is None and access_token:
-        try:
-            payload = jwt.decode(
-                access_token, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM]
-            )
-            actor_id = payload.get("sub")
-            if actor_id:
-                actor = await db.get(Actor, actor_id)
-        except jwt.PyJWTError:
-            actor = None
-    if actor is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header or access_token query param required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    The ``?access_token=`` query form was removed: it skipped Principal checks
+    (membership, disabled agents, board scope) and leaked tokens into URLs.
+    """
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
+    _ = current_actor
 
     attachment = await db.get(TicketAttachment, attachment_id)
     if not attachment or attachment.ticket_id != ticket_id:
