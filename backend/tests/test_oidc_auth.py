@@ -320,3 +320,75 @@ def test_warn_co_located_agent_env(monkeypatch: pytest.MonkeyPatch, capsys):
     monkeypatch.setenv("AK5_AGENT", "1")
     warn_co_located_agent_env()
     assert "identity.md §8.2" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_upstream_device_start_and_poll(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    from ak5.server.auth.oidc import OidcClaims
+    from ak5.server.auth.oidc_device import (
+        UpstreamDevicePending,
+        clear_upstream_device_pending_for_tests,
+        mint_local_device_code_for_tests,
+    )
+
+    clear_upstream_device_pending_for_tests()
+    monkeypatch.setenv("AK5_OIDC_PROVIDERS", _github_providers_env())
+
+    async def fake_start(provider):
+        from ak5.server.auth.oidc_device import UpstreamDeviceStart
+
+        code = mint_local_device_code_for_tests(provider.id, interval=0)
+        return UpstreamDeviceStart(
+            device_code=code,
+            user_code="ABCD-EFGH",
+            verification_uri="https://github.com/login/device",
+            verification_uri_complete=None,
+            expires_in=900,
+            interval=0,
+        )
+
+    monkeypatch.setattr(
+        "ak5.server.routers.oidc_auth.start_upstream_device_flow",
+        fake_start,
+    )
+    started = await client.post("/auth/oidc/device/start", params={"provider": "github"})
+    assert started.status_code == 200
+    body = started.json()
+    assert body["user_code"] == "ABCD-EFGH"
+    device_code = body["device_code"]
+
+    calls = {"n": 0}
+
+    async def pending_then_ok(provider, *, device_code: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise UpstreamDevicePending("authorization_pending", retry_after=1)
+        return OidcClaims(
+            issuer="https://github.com",
+            subject="99",
+            email="a@b.c",
+            email_verified=True,
+            display_name="a",
+        )
+
+    monkeypatch.setattr(
+        "ak5.server.routers.oidc_auth.poll_upstream_device_flow",
+        pending_then_ok,
+    )
+    pending = await client.post(
+        "/auth/oidc/device/poll",
+        json={"provider": "github", "device_code": device_code},
+    )
+    assert pending.status_code == 400
+    assert pending.json()["error"] == "authorization_pending"
+
+    done = await client.post(
+        "/auth/oidc/device/poll",
+        json={"provider": "github", "device_code": device_code},
+    )
+    assert done.status_code == 200
+    assert done.json()["success"] is True
+    assert SESSION_COOKIE in done.cookies
+    clear_upstream_device_pending_for_tests()

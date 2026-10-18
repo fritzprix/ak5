@@ -25,6 +25,12 @@ from ak5.server.auth.oidc_config import (
     oidc_providers_configured,
     public_base_url,
 )
+from ak5.server.auth.oidc_device import (
+    UpstreamDevicePending,
+    poll_upstream_device_flow,
+    start_upstream_device_flow,
+    upstream_device_endpoints,
+)
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
     CSRF_HEADER,
@@ -94,6 +100,11 @@ def _clear_session_cookies(response: Response, *, secure: bool) -> None:
 
 class LocalLoginBody(BaseModel):
     password: str = Field(default="")
+
+
+class UpstreamDevicePollBody(BaseModel):
+    provider: str = Field(..., min_length=1)
+    device_code: str = Field(..., min_length=1)
 
 
 @router.get("/auth/login")
@@ -325,3 +336,75 @@ async def csrf_check(
     if not csrf_matches(presented, csrf_hash):
         return JSONResponse(status_code=403, content={"error": "CSRF validation failed"})
     return JSONResponse({"ok": True})
+
+
+@router.post("/auth/oidc/device/start")
+async def upstream_device_start(provider: str) -> JSONResponse:
+    """Start upstream IdP device flow when redirect URIs are unavailable (§8.1)."""
+    cfg = get_oidc_provider(provider)
+    if cfg is None:
+        return JSONResponse(status_code=404, content={"error": f"Unknown provider '{provider}'"})
+    if upstream_device_endpoints(cfg) is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Provider '{provider}' does not support device flow"},
+        )
+    try:
+        started = await start_upstream_device_flow(cfg)
+    except Exception as exc:
+        return JSONResponse(status_code=502, content={"error": str(exc)})
+    return JSONResponse(
+        {
+            "device_code": started.device_code,
+            "user_code": started.user_code,
+            "verification_uri": started.verification_uri,
+            "verification_uri_complete": started.verification_uri_complete,
+            "expires_in": started.expires_in,
+            "interval": started.interval,
+        }
+    )
+
+
+@router.post("/auth/oidc/device/poll")
+async def upstream_device_poll(
+    body: UpstreamDevicePollBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> JSONResponse:
+    """Poll upstream IdP device token; on success mint a web session."""
+    cfg = get_oidc_provider(body.provider)
+    if cfg is None:
+        return JSONResponse(status_code=404, content={"error": f"Unknown provider '{body.provider}'"})
+    try:
+        claims = await poll_upstream_device_flow(cfg, device_code=body.device_code)
+    except UpstreamDevicePending as pending:
+        payload: dict[str, Any] = {"error": pending.error}
+        if pending.retry_after is not None:
+            payload["interval"] = pending.retry_after
+        status_code = 400
+        return JSONResponse(status_code=status_code, content=payload)
+    except ValueError as exc:
+        code = str(exc)
+        status_code = 400 if code in {"expired_token", "access_denied"} else 401
+        return JSONResponse(status_code=status_code, content={"error": code})
+    except Exception as exc:
+        return JSONResponse(status_code=502, content={"error": str(exc)})
+
+    user = await upsert_user_from_oidc(
+        db,
+        issuer=claims.issuer,
+        subject=claims.subject,
+        email=claims.email,
+        email_verified=claims.email_verified,
+        display_name=claims.display_name,
+    )
+    session_cookie, csrf = await create_web_session_tokens(db, user.user_id)
+    await db.commit()
+    response = JSONResponse({"success": True, "user_id": user.user_id, "csrf": csrf})
+    _set_session_cookies(
+        response,
+        session_cookie=session_cookie,
+        csrf_token=csrf,
+        secure=_is_secure(request),
+    )
+    return response

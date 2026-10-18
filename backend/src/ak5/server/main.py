@@ -12,8 +12,11 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
+from ak5.server.auth.oidc_config import oidc_providers_configured
+from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
+from ak5.server.auth.users import local_owner_configured
 from ak5.server.config import settings
-from ak5.server.database import engine, run_sqlite_schema_migrations
+from ak5.server.database import AsyncSessionLocal, engine, run_sqlite_schema_migrations
 from ak5.server.models.base import Base
 from ak5.server.routers.actors import router as actors_router
 from ak5.server.routers.auth import router as auth_router
@@ -80,8 +83,17 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+def _web_gate_enabled() -> bool:
+    """Dashboard gate on when local password, OIDC, or legacy web auth is configured."""
+    return (
+        get_web_auth_config().enabled
+        or local_owner_configured()
+        or oidc_providers_configured()
+    )
+
+
 def _is_public_path(path: str) -> bool:
-    if path == "/" and not get_web_auth_config().enabled:
+    if path == "/" and not _web_gate_enabled():
         return True
     for prefix in _AUTH_PUBLIC_PREFIXES:
         if path == prefix or path.startswith(prefix + "/"):
@@ -92,6 +104,17 @@ def _is_public_path(path: str) -> bool:
         if lowered.endswith(ext):
             return True
     return False
+
+
+async def _request_has_web_session(request: Request) -> bool:
+    """Accept new ``ak5_session`` DB cookies or legacy in-memory ``ak5_auth``."""
+    session_cookie = request.cookies.get(SESSION_COOKIE)
+    if session_cookie:
+        async with AsyncSessionLocal() as db:
+            if await resolve_web_session(db, session_cookie) is not None:
+                return True
+    legacy = request.cookies.get(COOKIE_NAME)
+    return bool(legacy) and verify_session_cookie(legacy)
 
 
 def create_app() -> FastAPI:
@@ -194,16 +217,14 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def web_dashboard_auth_gate(request: Request, call_next):
-        cfg = get_web_auth_config()
-        if not cfg.enabled:
+        if not _web_gate_enabled():
             return await call_next(request)
 
         path = request.url.path
         if _is_public_path(path):
             return await call_next(request)
 
-        cookie = request.cookies.get(COOKIE_NAME)
-        if verify_session_cookie(cookie):
+        if await _request_has_web_session(request):
             return await call_next(request)
 
         accept = request.headers.get("accept", "")

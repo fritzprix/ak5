@@ -82,6 +82,37 @@ async def web_login(body: LoginBody, request: Request, response: Response) -> di
         path="/",
         max_age=SESSION_MAX_AGE_SECONDS,
     )
+    # Also mint identity.md web session so dashboard + /auth/me share one login.
+    try:
+        from ak5.server.auth.sessions import CSRF_COOKIE, SESSION_COOKIE, create_web_session_tokens
+        from ak5.server.auth.users import ensure_local_owner_user
+        from ak5.server.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            user = await ensure_local_owner_user(db)
+            session_cookie, csrf = await create_web_session_tokens(db, user.user_id)
+            await db.commit()
+        response.set_cookie(
+            key=SESSION_COOKIE,
+            value=session_cookie,
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            path="/",
+            max_age=SESSION_MAX_AGE_SECONDS,
+        )
+        response.set_cookie(
+            key=CSRF_COOKIE,
+            value=csrf,
+            httponly=False,
+            secure=secure,
+            samesite="lax",
+            path="/",
+            max_age=SESSION_MAX_AGE_SECONDS,
+        )
+    except Exception:
+        # Legacy cookie alone still unlocks the gate if DB session mint fails.
+        pass
     return {"success": True}
 
 
