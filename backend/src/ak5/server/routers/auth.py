@@ -94,25 +94,12 @@ async def _load_actor_for_subject(
 
 
 async def resolve_auth_context(token: str, db: AsyncSession) -> AuthContext:
-    """Decode Bearer token once → Actor + workspace (+ Principal when present)."""
-    try:
-        payload = jwt.decode(token, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM])
-        subject: str | None = payload.get("sub")
-        if not subject:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-    except jwt.PyJWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token is invalid or expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+    """Resolve Bearer token → Actor + workspace (+ Principal when present).
 
+    Opaque ``ak5_agt_…`` credentials are verified **before** JWT decode (#25).
+    """
     principal: Principal | None = None
-    if payload.get("principal_type") in ("user", "agent"):
+    if token.startswith("ak5_agt_"):
         principal = await verify_access_token(token, db)
         workspace_id = principal.workspace_id
         actor = await _load_actor_for_subject(
@@ -122,9 +109,37 @@ async def resolve_auth_context(token: str, db: AsyncSession) -> AuthContext:
         )
         lookup_label = principal.principal_id
     else:
-        workspace_id = LOCAL_WORKSPACE_ID
-        actor = await _load_actor_for_subject(db, subject_id=subject)
-        lookup_label = subject
+        try:
+            payload = jwt.decode(
+                token, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM]
+            )
+            subject: str | None = payload.get("sub")
+            if not subject:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token payload",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        except jwt.PyJWTError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token is invalid or expired",
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+
+        if payload.get("principal_type") in ("user", "agent"):
+            principal = await verify_access_token(token, db)
+            workspace_id = principal.workspace_id
+            actor = await _load_actor_for_subject(
+                db,
+                subject_id=actor_id_for_principal(principal.principal_id),
+                prefer_principal_id=principal.principal_id,
+            )
+            lookup_label = principal.principal_id
+        else:
+            workspace_id = LOCAL_WORKSPACE_ID
+            actor = await _load_actor_for_subject(db, subject_id=subject)
+            lookup_label = subject
 
     if not actor:
         raise HTTPException(

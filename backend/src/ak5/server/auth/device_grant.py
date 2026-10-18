@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.stages import Role
+from ak5.server.models.actor import Actor
 from ak5.server.models.oauth_device import OAuthDeviceCode
 from ak5.server.models.workspace import (
     LOCAL_WORKSPACE_ID,
@@ -322,17 +323,30 @@ async def mint_agent_from_approved_device(
     agent_id = f"agt_{uuid.uuid4().hex[:16]}"
     caps = row.requested_capabilities or "[]"
     scope = row.requested_board_scope or "[]"
+    name = row.requested_name or agent_id
+    workflow_role = row.requested_role or Role.WORKER.value
     agent = Agent(
         agent_id=agent_id,
         workspace_id=workspace_id,
-        name=row.requested_name or agent_id,
-        workflow_role=row.requested_role or Role.WORKER.value,
+        name=name,
+        workflow_role=workflow_role,
         capabilities=caps,
         board_scope=scope,
         created_by=row.approved_by_user_id,
         disabled_at=None,
     )
     db.add(agent)
+    # Principal-id Actor row so Bearer auth / FKs resolve (identity.md §9 / #23).
+    db.add(
+        Actor(
+            actor_id=agent_id,
+            actor_type="agent",
+            name=name,
+            role=workflow_role,
+            capabilities=caps,
+            status="idle",
+        )
+    )
     plaintext = f"ak5_agt_{secrets.token_urlsafe(32)}"
     cred = AgentCredential(
         credential_id=f"cred_{uuid.uuid4().hex[:16]}",

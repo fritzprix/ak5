@@ -236,11 +236,79 @@ async def test_agent_device_grant_and_revoke(
     assert principal.principal_type == "agent"
     assert principal.principal_id == agent_id
 
+    # Must reach general API auth (opaque before JWT decode) — 200 before revoke.
+    boards = await anon_client.get(
+        "/api/v1/boards",
+        headers={"Authorization": f"Bearer {opaque}"},
+    )
+    assert boards.status_code == 200, boards.text
+
     revoked = await anon_client.post("/oauth/revoke", json={"token": opaque})
     assert revoked.status_code == 200
 
+    boards_after = await anon_client.get(
+        "/api/v1/boards",
+        headers={"Authorization": f"Bearer {opaque}"},
+    )
+    assert boards_after.status_code == 401
+
     with pytest.raises(Exception):
         await verify_access_token(opaque, test_db)
+
+
+@pytest.mark.asyncio
+async def test_disabled_agent_token_rejected(
+    client: AsyncClient,
+    anon_client: AsyncClient,
+    test_db: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from datetime import UTC, datetime
+
+    from ak5.server.models.workspace import Agent
+
+    start = await anon_client.post(
+        "/oauth/device_authorization",
+        json={
+            "client_id": "ak5-cli",
+            "principal": "agent",
+            "name": "soon-disabled",
+            "workflow_role": "worker",
+        },
+    )
+    device_code = start.json()["device_code"]
+    user_code = start.json()["user_code"]
+    csrf = await _login(client, monkeypatch)
+    await client.post(
+        "/oauth/device/approve",
+        json={"user_code": user_code, "approved": True},
+        headers={CSRF_HEADER: csrf},
+    )
+    token = await anon_client.post(
+        "/oauth/token",
+        json={
+            "grant_type": DEVICE_GRANT,
+            "device_code": device_code,
+            "client_id": "ak5-cli",
+        },
+    )
+    opaque = token.json()["access_token"]
+    agent_id = token.json()["agent_id"]
+    assert (
+        await anon_client.get(
+            "/api/v1/boards", headers={"Authorization": f"Bearer {opaque}"}
+        )
+    ).status_code == 200
+
+    agent = await test_db.get(Agent, agent_id)
+    assert agent is not None
+    agent.disabled_at = datetime.now(UTC).replace(tzinfo=None)
+    await test_db.commit()
+
+    denied = await anon_client.get(
+        "/api/v1/boards", headers={"Authorization": f"Bearer {opaque}"}
+    )
+    assert denied.status_code == 401
 
 
 @pytest.mark.asyncio
