@@ -1490,10 +1490,23 @@ async def route_ticket(
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "route requires unclassified stage")
     if actor_role == Role.HUMAN:
         if ticket.blocked_kind == BlockedKind.NEEDS_HUMAN:
+            unblocked_kind = ticket.blocked_kind
             ticket.blocked_kind = None
             ticket.blocked_by = None
             ticket.blocked_since = None
             ticket.blocked_actor = None
+            await record_event(
+                db,
+                EventType.TICKET_UNBLOCKED,
+                board_id=ticket.board_id,
+                ticket_id=ticket.ticket_id,
+                actor_id=actor.actor_id,
+                data={
+                    "previous_kind": unblocked_kind,
+                    "via": "route",
+                    "board_id": ticket.board_id,
+                },
+            )
         else:
             _require_unblocked(ticket)
     else:
@@ -1501,6 +1514,15 @@ async def route_ticket(
             raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "claim_token is required for agent route")
         _require_own_claim(ticket, actor, claim_token)
         _require_unblocked(ticket)
+        if (
+            not (plan.refined_title or "").strip()
+            or not (plan.refined_spec or "").strip()
+            or not plan.acceptance_criteria
+        ):
+            raise WorkflowError(
+                ErrorCode.PAYLOAD_INVALID,
+                "triage route requires refined_title, refined_spec and acceptance_criteria (>=1)",
+            )
 
     if isinstance(plan.target, RouteTargetCreate):
         board = await _create_auto_board(

@@ -10,7 +10,12 @@ import click
 import httpx
 from ak5.cli.client_factory import json_flag_from_ctx, open_client
 from ak5.cli.config import get_api_url, require_auth_headers
-from ak5.client.claims import clear_claim_token, resolve_claim_token, save_claim_token
+from ak5.client.claims import (
+    clear_claim_token,
+    load_claim_token,
+    resolve_claim_token,
+    save_claim_token,
+)
 from ak5.client.errors import EXIT_USAGE, ClientError
 from ak5.client.output import handle_client_error, is_json_mode, print_result
 from ak5.client.payload import load_json_object
@@ -326,11 +331,8 @@ def route_cmd(ctx: click.Context, ticket_id: str, token: str | None, plan: str) 
     json_mode = _jm(ctx)
     try:
         plan_body = load_json_object(plan)
-        claim_token: str | None
-        try:
-            claim_token = resolve_claim_token(ticket_id, token)
-        except ClientError:
-            claim_token = token  # human route may omit token
+        # human route may omit the token
+        claim_token = token.strip() if token else load_claim_token(ticket_id)
         with open_client() as client:
             result = client.route(ticket_id, plan=plan_body, claim_token=claim_token)
         clear_claim_token(ticket_id)
@@ -471,13 +473,7 @@ def block_ticket_cmd(
     _ = mention
     json_mode = _jm(ctx)
     try:
-        claim_token = None
-        if token:
-            claim_token = token
-        else:
-            from ak5.client.claims import load_claim_token
-
-            claim_token = load_claim_token(ticket_id)
+        claim_token = token or load_claim_token(ticket_id)
         with open_client() as client:
             result = client.block(
                 ticket_id,

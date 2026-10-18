@@ -1064,7 +1064,7 @@ async def test_lease_reclaim_audits_as_system_actor(
 
 
 @pytest.mark.asyncio
-async def test_human_direct_route_from_inbox(client: AsyncClient, roles):
+async def test_human_direct_route_from_inbox(client: AsyncClient, roles, test_db: AsyncSession):
     """#39: Human can route unclassified tickets directly from inbox without claim_token."""
     human = _h(roles, "user_pm", "human")
     triage = _h(roles, "agent_triage")
@@ -1155,7 +1155,7 @@ async def test_human_direct_route_from_inbox(client: AsyncClient, roles):
         },
         headers=triage,
     )
-    assert old_claim_route.status_code in (409, 422)  # invalid transition or claim conflict
+    assert old_claim_route.status_code == 409
 
     # 5. Human can route a needs_human blocked inbox ticket directly (resolving the block)
     created3 = await client.post(
@@ -1194,5 +1194,46 @@ async def test_human_direct_route_from_inbox(client: AsyncClient, roles):
     assert data3["stage"] == "backlog"
     assert data3["status"] == "open"
     assert data3["blocked_kind"] is None
+    unblocked = (
+        (
+            await test_db.execute(
+                select(Event).where(Event.type == "TICKET_UNBLOCKED", Event.ticket_id == tid3)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(unblocked) == 1
+    payload = json.loads(unblocked[0].data_json)
+    assert payload["via"] == "route"
+    assert payload["previous_kind"] == "needs_human"
 
 
+@pytest.mark.asyncio
+async def test_triage_route_requires_refined_plan(client: AsyncClient, roles):
+    """#39 review: triage route keeps workflow.md §5.1 required fields."""
+    human = _h(roles, "user_pm", "human")
+    triage = _h(roles, "agent_triage")
+    created = await client.post(
+        "/api/v1/tickets", json=inbox_ticket("Needs refinement"), headers=human
+    )
+    tid = created.json()["ticket_id"]
+    claim = await client.post(f"/api/v1/tickets/{tid}/claim", headers=triage)
+    token = claim.json()["claim_token"]
+
+    for plan in (
+        {"target": {"board_id": "proj-core-engine"}},
+        {
+            "refined_title": "T",
+            "refined_spec": "S",
+            "acceptance_criteria": [],
+            "target": {"board_id": "proj-core-engine"},
+        },
+    ):
+        resp = await client.post(
+            f"/api/v1/tickets/{tid}/route",
+            json={"claim_token": token, "plan": plan},
+            headers=triage,
+        )
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["error"]["code"] == ErrorCode.PAYLOAD_INVALID.value
