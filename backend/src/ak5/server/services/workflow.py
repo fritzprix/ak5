@@ -28,7 +28,8 @@ from ak5.server.authz import (
     RoleForbiddenError,
     actor_has_capabilities,
     require_roles,
-    resolve_workflow_role,
+    same_subject,
+    workflow_role_of,
 )
 from ak5.server.config import settings
 from ak5.server.models.actor import Actor
@@ -673,7 +674,7 @@ async def _finish_transition(
 def _require_own_claim(ticket: Ticket, actor: Actor, token: str | None) -> None:
     if not is_claim_valid(ticket):
         raise WorkflowError(ErrorCode.STALE_CLAIM, "Claim token missing or lease expired")
-    if ticket.claimed_by != actor.actor_id:
+    if not same_subject(ticket.claimed_by, actor):
         raise WorkflowError(ErrorCode.STALE_CLAIM, "Claim is held by another actor")
     if not token or token != ticket.claim_token:
         raise WorkflowError(ErrorCode.STALE_CLAIM, "Claim token mismatch")
@@ -980,8 +981,9 @@ async def create_inbox(
     priority: str = "medium",
     labels: list[str] | None = None,
     parent_ticket_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> Ticket:
-    """T1 — create unclassified ticket on the global inbox."""
+    """T1 — create unclassified ticket on the workspace inbox."""
     try:
         require_roles(actor, Role.HUMAN)
     except RoleForbiddenError as exc:
@@ -994,11 +996,18 @@ async def create_inbox(
     inbox = await db.get(Board, INBOX_BOARD_ID)
     if inbox is None:
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Global inbox board is missing")
+    if workspace_id is not None and inbox.workspace_id != workspace_id:
+        raise WorkflowError(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Inbox is outside the caller's workspace",
+            details={"board_id": INBOX_BOARD_ID, "workspace_id": workspace_id},
+        )
 
     column = await _column_for_stage(db, INBOX_BOARD_ID, Stage.UNCLASSIFIED)
     ticket_id = await _generate_ticket_id(db)
     ticket = Ticket(
         ticket_id=ticket_id,
+        workspace_id=inbox.workspace_id,
         board_id=INBOX_BOARD_ID,
         column_id=column.column_id,
         parent_ticket_id=parent_ticket_id,
@@ -1050,6 +1059,7 @@ async def create_direct(
     labels: list[str] | None = None,
     parent_ticket_id: str | None = None,
     max_attempts: int | None = None,
+    workspace_id: str | None = None,
 ) -> Ticket:
     """T2 — create ticket directly onto a board backlog with revision r1."""
     # T2 is human/triage; parented create_direct (delegate, cli.md §5) allows any
@@ -1075,12 +1085,19 @@ async def create_direct(
         raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
     if board.kind == "inbox":
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot create_direct onto an inbox board")
+    if workspace_id is not None and board.workspace_id != workspace_id:
+        raise WorkflowError(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Board is outside the caller's workspace",
+            details={"board_id": board_id, "workspace_id": workspace_id},
+        )
 
     tmpl = get_template(board.template or "default")
     column = await _column_for_stage(db, board_id, Stage.BACKLOG)
     ticket_id = await _generate_ticket_id(db)
     ticket = Ticket(
         ticket_id=ticket_id,
+        workspace_id=board.workspace_id,
         board_id=board_id,
         column_id=column.column_id,
         parent_ticket_id=parent_ticket_id,
@@ -1164,7 +1181,7 @@ async def claim_ticket(
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
 
-    if stage == Stage.AGENT_REVIEW and ticket.submitted_by == actor.actor_id:
+    if stage == Stage.AGENT_REVIEW and same_subject(ticket.submitted_by, actor):
         raise WorkflowError(
             ErrorCode.SEPARATION_OF_DUTIES,
             "Submitter cannot claim their own submission for agent review",
@@ -1424,9 +1441,12 @@ async def _create_auto_board(
     if tmpl.name == "inbox":
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot auto-create the inbox template")
 
+    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+
     board_id = f"auto_{uuid.uuid4().hex[:10]}"
     board = Board(
         board_id=board_id,
+        workspace_id=LOCAL_WORKSPACE_ID,
         name=name,
         description=description,
         created_by=actor.actor_id,
@@ -1439,6 +1459,7 @@ async def _create_auto_board(
         db.add(
             Column(
                 column_id=f"{board_id}_{def_col['stage']}",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id=board_id,
                 name=def_col["name"],
                 stage=def_col["stage"],
@@ -1537,7 +1558,7 @@ async def verdict(
         except RoleForbiddenError as exc:
             raise WorkflowError(exc.code, exc.message) from exc
         _require_own_claim(ticket, actor, claim_token)
-        if ticket.submitted_by == actor.actor_id:
+        if same_subject(ticket.submitted_by, actor):
             raise WorkflowError(
                 ErrorCode.SEPARATION_OF_DUTIES,
                 "Submitter cannot review their own submission",
@@ -1910,8 +1931,8 @@ async def block_ticket(
             f"Cannot block ticket in stage '{stage.value}'",
         )
 
-    role = resolve_workflow_role(actor)
-    is_holder = is_claim_valid(ticket) and ticket.claimed_by == actor.actor_id
+    role = workflow_role_of(actor)
+    is_holder = is_claim_valid(ticket) and same_subject(ticket.claimed_by, actor)
     # Humans and claim holders may always block. Unclaimed tickets also accept
     # external/dependency blocks from any authenticated actor (MCP report-block).
     unclaimed = not is_claim_valid(ticket)
@@ -1981,7 +2002,7 @@ async def unblock_ticket(
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "Ticket is not blocked")
 
     kind = ticket.blocked_kind
-    role = resolve_workflow_role(actor)
+    role = workflow_role_of(actor)
     needs_human_resolution = kind in (
         BlockedKind.NEEDS_HUMAN.value,
         BlockedKind.ESCALATION.value,
@@ -2012,7 +2033,7 @@ async def unblock_ticket(
         db.add(rev)
     else:
         # dependency / external — blocker or human
-        if role != Role.HUMAN and ticket.blocked_actor != actor.actor_id:
+        if role != Role.HUMAN and not same_subject(ticket.blocked_actor, actor):
             raise WorkflowError(
                 ErrorCode.ROLE_FORBIDDEN,
                 "Only the blocking actor or a human can unblock dependency/external",
@@ -2080,7 +2101,7 @@ async def move_ticket_constrained(
         ) from exc
 
     if from_stage != to_stage:
-        role = resolve_workflow_role(actor)
+        role = workflow_role_of(actor)
         if role != Role.HUMAN:
             raise WorkflowError(
                 ErrorCode.INVALID_TRANSITION,
@@ -2216,7 +2237,7 @@ async def next_ticket(
     if board is None:
         raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
 
-    role = resolve_workflow_role(actor)
+    role = workflow_role_of(actor)
     if board_id == INBOX_BOARD_ID or board.kind == "inbox":
         stages = [Stage.UNCLASSIFIED.value]
     else:
@@ -2276,9 +2297,8 @@ async def next_ticket(
                     continue
             if required_caps and not actor_has_capabilities(actor, required_caps):
                 continue
-        if (
-            ticket_stage(ticket) == Stage.AGENT_REVIEW
-            and ticket.submitted_by == actor.actor_id
+        if ticket_stage(ticket) == Stage.AGENT_REVIEW and same_subject(
+            ticket.submitted_by, actor
         ):
             continue
         return ticket

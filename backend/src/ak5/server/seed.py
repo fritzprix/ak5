@@ -26,12 +26,22 @@ from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.server.models.ticket_postmortem import TicketPostmortem
 from ak5.server.models.ticket_review import TicketReview
 from ak5.server.models.ticket_revision import TicketRevision
+from ak5.server.models.workspace import (
+    LOCAL_WORKSPACE_ID,
+    Agent,
+    Membership,
+    User,
+    Workspace,
+)
 from ak5.server.services.templates import DEFAULT_TEMPLATE, INBOX_TEMPLATE, get_template
 from ak5.server.services.ticket_status import derive_status
 
 DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer", "system"}
 INBOX_BOARD_ID = "inbox"
 SYSTEM_ACTOR_ID = "system"
+LOCAL_USER_ID = "usr_local_pm"
+LOCAL_AGENT_WORKER_ID = "agt_image_worker"
+LOCAL_AGENT_REVIEWER_ID = "agt_code_reviewer"
 
 _CLAIMLESS_IN_PROGRESS_REASON = (
     "v2 migration: ticket was in in_progress without a valid claim; "
@@ -178,9 +188,239 @@ async def repair_claimless_in_progress_tickets(db: AsyncSession) -> None:
         )
 
 
+_AGENT_WORKFLOW_ROLES = frozenset({"triage", "worker", "gatekeeper"})
+
+
+def _agent_workflow_role(actor: Actor) -> str:
+    raw = (actor.role or "").strip().lower()
+    if raw in _AGENT_WORKFLOW_ROLES:
+        return raw
+    if "review" in raw or "gate" in raw:
+        return "gatekeeper"
+    if "triage" in raw:
+        return "triage"
+    return "worker"
+
+
+async def migrate_v1_actors_to_principals(db: AsyncSession) -> None:
+    """Map every v1 Actor into users/agents + bridge (identity.md §9)."""
+    from ak5.server.auth.bridge import principal_id_for_v1_actor, register_bridge
+
+    actors = list((await db.execute(select(Actor))).scalars().all())
+    for actor in actors:
+        if actor.actor_id in {"system", SYSTEM_ACTOR_ID}:
+            continue
+        # Skip principal-id alias rows (identity.md §9) so re-running migrate
+        # does not overwrite Principal→legacy bridge mappings.
+        if actor.actor_id.startswith(("usr_", "agt_")):
+            continue
+        if actor.actor_type == "human":
+            pid = principal_id_for_v1_actor(actor_id=actor.actor_id, actor_type="human")
+            register_bridge(pid, actor.actor_id)
+            if await db.get(User, pid) is None:
+                db.add(
+                    User(
+                        user_id=pid,
+                        email=None,
+                        display_name=actor.name or actor.actor_id,
+                    )
+                )
+            mem_id = f"mem_{LOCAL_WORKSPACE_ID}_{pid}"
+            if await db.get(Membership, mem_id) is None:
+                role = "owner" if pid == LOCAL_USER_ID else "member"
+                db.add(
+                    Membership(
+                        membership_id=mem_id,
+                        workspace_id=LOCAL_WORKSPACE_ID,
+                        user_id=pid,
+                        role=role,
+                    )
+                )
+        elif actor.actor_type == "agent":
+            pid = principal_id_for_v1_actor(actor_id=actor.actor_id, actor_type="agent")
+            register_bridge(pid, actor.actor_id)
+            if await db.get(Agent, pid) is None:
+                db.add(
+                    Agent(
+                        agent_id=pid,
+                        workspace_id=LOCAL_WORKSPACE_ID,
+                        name=actor.name or actor.actor_id,
+                        workflow_role=_agent_workflow_role(actor),
+                        capabilities=actor.capabilities or "[]",
+                        board_scope="[]",
+                        created_by=LOCAL_USER_ID,
+                    )
+                )
+    await db.flush()
+    await ensure_principal_actor_aliases(db)
+    await rewrite_actor_refs_to_principals(db)
+
+
+async def ensure_principal_actor_aliases(db: AsyncSession) -> None:
+    """Create Actor rows keyed by principal_id so FKs can store usr_/agt_ ids."""
+    from ak5.server.auth.bridge import PRINCIPAL_TO_ACTOR
+
+    for principal_id, actor_id in list(PRINCIPAL_TO_ACTOR.items()):
+        if principal_id == actor_id:
+            continue
+        if await db.get(Actor, principal_id) is not None:
+            continue
+        src = await db.get(Actor, actor_id)
+        if src is not None:
+            db.add(
+                Actor(
+                    actor_id=principal_id,
+                    actor_type=src.actor_type,
+                    name=src.name,
+                    role=src.role,
+                    description=src.description,
+                    capabilities=src.capabilities or "[]",
+                    status=src.status,
+                    avatar_url=src.avatar_url,
+                )
+            )
+            continue
+        user = await db.get(User, principal_id)
+        if user is not None:
+            db.add(
+                Actor(
+                    actor_id=principal_id,
+                    actor_type="human",
+                    name=user.display_name or principal_id,
+                    role="human",
+                    capabilities="[]",
+                    status="idle",
+                )
+            )
+            continue
+        agent = await db.get(Agent, principal_id)
+        if agent is not None:
+            db.add(
+                Actor(
+                    actor_id=principal_id,
+                    actor_type="agent",
+                    name=agent.name or principal_id,
+                    role=agent.workflow_role,
+                    capabilities=agent.capabilities or "[]",
+                    status="idle",
+                )
+            )
+    await db.flush()
+
+
+async def rewrite_actor_refs_to_principals(db: AsyncSession) -> None:
+    """Rewrite ticket/audit/board actor FK columns to principal_id (identity.md §9)."""
+    from ak5.server.auth.bridge import ACTOR_TO_PRINCIPAL
+
+    mapping = dict(ACTOR_TO_PRINCIPAL)
+    if not mapping:
+        return
+
+    # board_members: unique(board_id, actor_id) — drop legacy row if alias already present
+    members = list((await db.execute(select(BoardMember))).scalars().all())
+    existing = {(m.board_id, m.actor_id) for m in members}
+    for member in members:
+        new_id = mapping.get(member.actor_id)
+        if not new_id or new_id == member.actor_id:
+            continue
+        if (member.board_id, new_id) in existing:
+            await db.delete(member)
+            continue
+        existing.discard((member.board_id, member.actor_id))
+        member.actor_id = new_id
+        existing.add((member.board_id, new_id))
+
+    orm_updates: list[tuple[type, tuple[str, ...]]] = [
+        (Ticket, ("created_by", "assigned_to", "claimed_by", "submitted_by", "blocked_actor")),
+        (Board, ("created_by",)),
+        (AuditLog, ("actor_id",)),
+        (TicketComment, ("actor_id",)),
+        (TicketAttachment, ("actor_id",)),
+        (DeviceCode, ("actor_id",)),
+        (Subscription, ("created_by",)),
+        (Event, ("actor_id",)),
+        (TicketRevision, ("author",)),
+        (TicketReview, ("reviewer",)),
+        (TicketPostmortem, ("author",)),
+    ]
+    for model, columns in orm_updates:
+        rows = list((await db.execute(select(model))).scalars().all())
+        for row in rows:
+            for col in columns:
+                val = getattr(row, col, None)
+                if isinstance(val, str) and val in mapping:
+                    setattr(row, col, mapping[val])
+
+    await db.flush()
+
+
+async def ensure_local_tenancy(db: AsyncSession) -> None:
+    """Create ``ws_local`` workspace + mapped user/agents (identity.md §9 / #23)."""
+    ws = await db.get(Workspace, LOCAL_WORKSPACE_ID)
+    if ws is None:
+        db.add(Workspace(workspace_id=LOCAL_WORKSPACE_ID, name="Local", policy="{}"))
+
+    user = await db.get(User, LOCAL_USER_ID)
+    if user is None:
+        db.add(
+            User(
+                user_id=LOCAL_USER_ID,
+                email="local-pm@localhost",
+                display_name="Project Manager (David)",
+            )
+        )
+    membership_id = f"mem_{LOCAL_WORKSPACE_ID}_{LOCAL_USER_ID}"
+    if await db.get(Membership, membership_id) is None:
+        db.add(
+            Membership(
+                membership_id=membership_id,
+                workspace_id=LOCAL_WORKSPACE_ID,
+                user_id=LOCAL_USER_ID,
+                role="owner",
+            )
+        )
+
+    for agent_id, name, workflow_role, caps in (
+        (
+            LOCAL_AGENT_WORKER_ID,
+            "Image Worker Agent",
+            "worker",
+            ["image-resize", "webp", "ocr", "thumbnail"],
+        ),
+        (
+            LOCAL_AGENT_REVIEWER_ID,
+            "Code Reviewer Agent",
+            "gatekeeper",
+            ["code-review", "python", "rust", "security", "testing"],
+        ),
+    ):
+        if await db.get(Agent, agent_id) is None:
+            db.add(
+                Agent(
+                    agent_id=agent_id,
+                    workspace_id=LOCAL_WORKSPACE_ID,
+                    name=name,
+                    workflow_role=workflow_role,
+                    capabilities=json.dumps(caps),
+                    board_scope="[]",
+                    created_by=LOCAL_USER_ID,
+                )
+            )
+    await db.flush()
+    # Register seed bridges then migrate any remaining v1 actors.
+    from ak5.server.auth.bridge import register_bridge
+
+    register_bridge(LOCAL_USER_ID, "user_pm")
+    register_bridge(LOCAL_AGENT_WORKER_ID, "agent_image_worker")
+    register_bridge(LOCAL_AGENT_REVIEWER_ID, "agent_code_reviewer")
+    await migrate_v1_actors_to_principals(db)
+
+
 async def seed_initial_data() -> None:
     """Seed initial actors, global inbox, and default board if not present."""
     async with AsyncSessionLocal() as db:
+        await ensure_local_tenancy(db)
+
         # Check if default PM actor exists
         pm_actor = await db.get(Actor, "user_pm")
         if not pm_actor:
@@ -246,6 +486,7 @@ async def seed_initial_data() -> None:
         if not inbox:
             inbox = Board(
                 board_id=INBOX_BOARD_ID,
+                workspace_id=LOCAL_WORKSPACE_ID,
                 name="Global Inbox",
                 description="System inbox for unclassified work (triage)",
                 created_by="user_pm",
@@ -283,6 +524,7 @@ async def seed_initial_data() -> None:
             tmpl = DEFAULT_TEMPLATE
             board = Board(
                 board_id=settings.DEFAULT_BOARD_ID,
+                workspace_id=LOCAL_WORKSPACE_ID,
                 name=settings.DEFAULT_BOARD_NAME,
                 description="Default Kanban board for autonomous agent orchestration",
                 created_by="user_pm",
@@ -331,6 +573,10 @@ async def seed_initial_data() -> None:
 
         await recompute_all_ticket_statuses(db)
         await clear_assignees_without_claim(db)
+
+        # §9: principal-id Actor aliases + rewrite FK refs (idempotent).
+        await ensure_principal_actor_aliases(db)
+        await rewrite_actor_refs_to_principals(db)
 
         await db.commit()
 

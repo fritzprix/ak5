@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from ak5.cli.commands.serve import (
     _load_dotenv_files,
+    assert_dev_insecure_identify_safe,
     assert_safe_bind,
     auth_is_configured,
     is_loopback_bind,
@@ -78,6 +79,28 @@ def test_assert_safe_bind_allows_loopback_without_auth(monkeypatch: pytest.Monke
     monkeypatch.setattr("ak5.config.settings.AUTH_PASSWORD", "")
     monkeypatch.setattr("ak5.config.settings.IDENTIFY_SECRET", "")
     assert_safe_bind("127.0.0.1", insecure=False, tailscale_serve=False)
+
+
+def test_dev_insecure_identify_allows_loopback() -> None:
+    assert_dev_insecure_identify_safe(
+        "127.0.0.1", dev_insecure_identify=True, tailscale_serve=False
+    )
+
+
+def test_dev_insecure_identify_rejects_tailscale_serve() -> None:
+    with pytest.raises(SystemExit) as exc:
+        assert_dev_insecure_identify_safe(
+            "127.0.0.1", dev_insecure_identify=True, tailscale_serve=True
+        )
+    assert exc.value.code == 1
+
+
+def test_dev_insecure_identify_rejects_non_loopback() -> None:
+    with pytest.raises(SystemExit) as exc:
+        assert_dev_insecure_identify_safe(
+            "0.0.0.0", dev_insecure_identify=True, tailscale_serve=False
+        )
+    assert exc.value.code == 1
 
 
 def test_assert_safe_bind_rejects_tailscale_serve_on_loopback_without_auth(

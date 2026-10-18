@@ -12,9 +12,10 @@ from ak5.server.authz import is_admin, is_admin_or_owner
 from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
+from ak5.server.models.board import Board
 from ak5.server.models.event import Event
 from ak5.server.models.subscription import Subscription
-from ak5.server.routers.auth import get_current_actor
+from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.subscription import (
     LongPollEventsOut,
     SubscriptionAckIn,
@@ -94,12 +95,13 @@ def _require_owned_sub(
     return sub
 
 
-@router.post("", response_model=SubscriptionOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=None, status_code=status.HTTP_201_CREATED)
 async def create_subscription(
     sub_in: SubscriptionCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
-) -> SubscriptionOut:
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+) -> SubscriptionOut | JSONResponse:
     """Register a filter-only subscription (events.md §2). Hooks run on the client daemon."""
     sub_id = sub_in.subscription_id or f"sub-{uuid.uuid4().hex[:8]}"
 
@@ -111,6 +113,23 @@ async def create_subscription(
         )
 
     filt = sub_in.filter
+    if filt.board_id and filt.board_id not in ("*", "all"):
+        board = await db.get(Board, filt.board_id)
+        if board is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Board '{filt.board_id}' not found",
+            )
+        if board.workspace_id != workspace_id:
+            return JSONResponse(
+                status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+                content=error_body(
+                    ErrorCode.WORKSPACE_FORBIDDEN,
+                    "Board is outside the caller's workspace",
+                    details={"board_id": filt.board_id, "workspace_id": workspace_id},
+                ),
+            )
+
     events_str = None
     if filt.events:
         events_str = ",".join(e.strip().upper() for e in filt.events if e.strip())
@@ -128,6 +147,7 @@ async def create_subscription(
 
     subscription = Subscription(
         subscription_id=sub_id,
+        workspace_id=workspace_id,
         board_id=filt.board_id,
         events=events_str,
         role=filt.role,
@@ -146,10 +166,11 @@ async def create_subscription(
 async def list_subscriptions(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     board_id: Annotated[str | None, Query(description="Filter by board ID")] = None,
 ) -> list[SubscriptionOut]:
     """List subscriptions owned by the current actor (admins see all)."""
-    stmt = select(Subscription)
+    stmt = select(Subscription).where(Subscription.workspace_id == workspace_id)
     if not is_admin(current_actor):
         stmt = stmt.where(Subscription.created_by == current_actor.actor_id)
 
@@ -166,9 +187,20 @@ async def get_subscription(
     sub_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
-) -> SubscriptionOut:
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+) -> SubscriptionOut | JSONResponse:
     """Retrieve a subscription (owner or admin)."""
-    sub = _require_owned_sub(await db.get(Subscription, sub_id), sub_id, current_actor)
+    raw = await db.get(Subscription, sub_id)
+    if raw is not None and raw.workspace_id != workspace_id:
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+            content=error_body(
+                ErrorCode.WORKSPACE_FORBIDDEN,
+                "Subscription is outside the caller's workspace",
+                details={"subscription_id": sub_id, "workspace_id": workspace_id},
+            ),
+        )
+    sub = _require_owned_sub(raw, sub_id, current_actor)
     return _to_subscription_out(sub)
 
 

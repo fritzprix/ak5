@@ -79,6 +79,8 @@ def _isolate_runtime_secrets(monkeypatch):
     """Stable JWT for tests; identify gate off unless a test enables it."""
     monkeypatch.setenv("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
     monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
+    # identity.md §2 — insecure identify allowed for TestClient (loopback/testclient).
+    monkeypatch.setenv("AK5_DEV_INSECURE_IDENTIFY", "1")
     monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("AK5_JWT_SECRET_FILE", raising=False)

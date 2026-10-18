@@ -6,12 +6,16 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 
 class TicketPostmortem(Base):
     __tablename__ = "ticket_postmortems"
 
     postmortem_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     ticket_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("tickets.ticket_id", ondelete="CASCADE"),

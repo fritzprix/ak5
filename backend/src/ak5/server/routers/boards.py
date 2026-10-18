@@ -16,7 +16,7 @@ from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket
 from ak5.server.routers.actors import _to_actor_out
-from ak5.server.routers.auth import get_current_actor
+from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.actor import ActorOut
 from ak5.server.schemas.board import (
     BoardClaimOut,
@@ -145,14 +145,44 @@ def _to_board_ticket_out(
     )
 
 
+def _workspace_forbidden_board(board_id: str, workspace_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+        content=error_body(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Board is outside the caller's workspace",
+            details={"board_id": board_id, "workspace_id": workspace_id},
+        ),
+    )
+
+
+async def _load_board_in_workspace(
+    db: AsyncSession, board_id: str, workspace_id: str
+) -> Board | JSONResponse:
+    board = await db.get(Board, board_id)
+    if not board:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Board '{board_id}' not found",
+        )
+    if board.workspace_id != workspace_id:
+        return _workspace_forbidden_board(board_id, workspace_id)
+    return board
+
+
 @router.get("", response_model=list[BoardOut])
 async def list_boards(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
 ) -> list[BoardOut]:
-    """List all boards (summary without columns/tickets). Requires Bearer JWT."""
+    """List boards in the caller's workspace. Requires Bearer JWT."""
     _ = current_actor
-    stmt = select(Board).order_by(Board.created_at.asc(), Board.name.asc())
+    stmt = (
+        select(Board)
+        .where(Board.workspace_id == workspace_id)
+        .order_by(Board.created_at.asc(), Board.name.asc())
+    )
     result = await db.execute(stmt)
     boards = result.scalars().all()
     return [_to_board_out(b) for b in boards]
@@ -163,9 +193,13 @@ async def next_work_item(
     board_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     capabilities: str | None = None,
 ) -> TicketOut | JSONResponse:
     """Oldest unclaimed unblocked ticket for this board (incl. inbox). 204 if none."""
+    loaded = await _load_board_in_workspace(db, board_id, workspace_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
     caps = [c.strip() for c in capabilities.split(",") if c.strip()] if capabilities else None
     try:
         ticket = await wf.next_ticket(db, current_actor, board_id, capabilities=caps)
@@ -186,12 +220,13 @@ async def get_board(
     board_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     include_archived: bool = False,
     done_limit: int | None = 10,
-) -> BoardDetailOut:
+) -> BoardDetailOut | JSONResponse:
     """Retrieve full board details including columns and tickets ordered by rank.
 
-    Requires Bearer JWT.
+    Requires Bearer JWT. Cross-workspace access → ``WORKSPACE_FORBIDDEN``.
     """
     _ = current_actor
     stmt = (
@@ -206,6 +241,15 @@ async def get_board(
     board = result.scalar_one_or_none()
     if not board:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    if board.workspace_id != workspace_id:
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+            content=error_body(
+                ErrorCode.WORKSPACE_FORBIDDEN,
+                "Board is outside the caller's workspace",
+                details={"board_id": board_id, "workspace_id": workspace_id},
+            ),
+        )
 
     # One query for all children of tickets on this board (children may live on other boards).
     parent_ids = [t.ticket_id for t in board.tickets]
@@ -282,6 +326,7 @@ async def get_board(
 async def create_board(
     req: BoardCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> BoardOut | JSONResponse:
     """Create a new board and seed columns from the requested template.
@@ -324,6 +369,7 @@ async def create_board(
 
     board = Board(
         board_id=board_id,
+        workspace_id=workspace_id,
         name=req.name,
         description=req.description,
         created_by=current_actor.actor_id,
@@ -337,6 +383,7 @@ async def create_board(
         col_id = f"{board_id}_{def_col['stage']}"
         col = Column(
             column_id=col_id,
+            workspace_id=workspace_id,
             board_id=board_id,
             name=def_col["name"],
             stage=def_col["stage"],
@@ -389,6 +436,7 @@ async def _apply_template_columns(
         db.add(
             Column(
                 column_id=col_id,
+                workspace_id=board.workspace_id,
                 board_id=board.board_id,
                 name=spec.name,
                 stage=spec.stage,
@@ -405,12 +453,14 @@ async def update_board(
     board_id: str,
     req: BoardUpdate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> BoardOut | JSONResponse:
     """Update board name/description/template. Inbox is immutable (SYSTEM_BOARD)."""
-    board = await db.get(Board, board_id)
-    if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    loaded = await _load_board_in_workspace(db, board_id, workspace_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
+    board = loaded
     if _is_inbox(board):
         return _system_board_response("Cannot modify the system inbox board")
 
@@ -439,15 +489,18 @@ async def add_column(
     board_id: str,
     req: ColumnCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ColumnOut | JSONResponse:
     """Add a custom column to an existing board. Inbox rejects (SYSTEM_BOARD)."""
-    _ = current_actor
-    board = await db.get(Board, board_id)
-    if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    loaded = await _load_board_in_workspace(db, board_id, workspace_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
+    board = loaded
     if _is_inbox(board):
         return _system_board_response("Cannot add columns to the system inbox board")
+
+    await _assert_board_admin(board, current_actor, db)
 
     # Invariant 7: standard boards only host STANDARD_STAGES (not unclassified).
     if req.stage == Stage.UNCLASSIFIED.value or req.stage not in _STANDARD_STAGE_VALUES:
@@ -462,6 +515,7 @@ async def add_column(
 
     col = Column(
         column_id=req.column_id,
+        workspace_id=board.workspace_id,
         board_id=board_id,
         name=req.name,
         stage=req.stage,
@@ -474,17 +528,19 @@ async def add_column(
     return ColumnOut.model_validate(col)
 
 
-@router.get("/{board_id}/members", response_model=list[ActorOut])
+@router.get("/{board_id}/members", response_model=None)
 async def list_board_members(
     board_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
-) -> list[ActorOut]:
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+) -> list[ActorOut] | JSONResponse:
     """List all actors enrolled as members of the specified board. Requires Bearer JWT."""
     _ = current_actor
-    board = await db.get(Board, board_id)
-    if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    loaded = await _load_board_in_workspace(db, board_id, workspace_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
+    board = loaded
 
     stmt = (
         select(Actor)
@@ -501,7 +557,12 @@ async def list_board_members(
         creator = await db.get(Actor, board.created_by)
         if creator:
             try:
-                auto_mem = BoardMember(board_id=board_id, actor_id=creator.actor_id, role="admin")
+                auto_mem = BoardMember(
+                    board_id=board_id,
+                    workspace_id=board.workspace_id,
+                    actor_id=creator.actor_id,
+                    role="admin",
+                )
                 db.add(auto_mem)
                 await db.commit()
                 members = [creator]
@@ -570,12 +631,13 @@ async def _board_has_human_admin(board: Board, db: AsyncSession) -> bool:
     return res.scalar_one_or_none() is not None
 
 
-@router.post("/{board_id}/claim", response_model=BoardClaimOut)
+@router.post("/{board_id}/claim", response_model=None)
 async def claim_board(
     board_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> BoardClaimOut:
+) -> BoardClaimOut | JSONResponse:
     """Claim board admin as a human when no human admin exists yet.
 
     Preferred path is ``owner_actor_ids`` on ``POST /boards``. This endpoint is
@@ -587,9 +649,10 @@ async def claim_board(
             detail="Only human actors can claim a board",
         )
 
-    board = await db.get(Board, board_id)
-    if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    loaded = await _load_board_in_workspace(db, board_id, workspace_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
+    board = loaded
 
     if await _actor_is_board_admin(board, current_actor, db):
         return BoardClaimOut(
@@ -631,17 +694,19 @@ async def claim_board(
     )
 
 
-@router.post("/{board_id}/members", response_model=BoardMemberOut)
+@router.post("/{board_id}/members", response_model=None)
 async def add_board_member(
     board_id: str,
     req: BoardMemberCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> BoardMemberOut:
+) -> BoardMemberOut | JSONResponse:
     """Add an actor to a board (board administrator required)."""
-    board = await db.get(Board, board_id)
-    if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    loaded = await _load_board_in_workspace(db, board_id, workspace_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
+    board = loaded
 
     await _assert_board_admin(board, current_actor, db)
 
@@ -667,6 +732,7 @@ async def add_board_member(
 
     new_member = BoardMember(
         board_id=board_id,
+        workspace_id=board.workspace_id,
         actor_id=req.actor_id,
         role=req.role or "member",
     )
@@ -683,17 +749,19 @@ async def add_board_member(
     )
 
 
-@router.delete("/{board_id}/members/{actor_id}")
+@router.delete("/{board_id}/members/{actor_id}", response_model=None)
 async def remove_board_member(
     board_id: str,
     actor_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict:
+) -> dict | JSONResponse:
     """Remove an actor from a board (board administrator or self-removal required)."""
-    board = await db.get(Board, board_id)
-    if not board:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Board '{board_id}' not found")
+    loaded = await _load_board_in_workspace(db, board_id, workspace_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
+    board = loaded
 
     if actor_id == board.created_by:
         raise HTTPException(

@@ -358,6 +358,29 @@ def _prepare_database() -> None:
         raise SystemExit(1)
 
 
+def assert_dev_insecure_identify_safe(
+    host: str,
+    *,
+    dev_insecure_identify: bool,
+    tailscale_serve: bool,
+) -> None:
+    """Refuse ``--dev-insecure-identify`` outside pure loopback (identity.md §2)."""
+    if not dev_insecure_identify:
+        return
+    if tailscale_serve:
+        console.print(
+            "[bold red]✗ Refusing --dev-insecure-identify with --tailscale-serve.[/bold red]\n"
+            "Insecure identify is loopback-only; Tailscale Serve exposes the API to the tailnet."
+        )
+        raise SystemExit(1)
+    if not is_loopback_bind(host):
+        console.print(
+            "[bold red]✗ Refusing --dev-insecure-identify on non-loopback bind.[/bold red]\n"
+            f"Host [cyan]{host}[/cyan] is not loopback; omit the flag or bind 127.0.0.1."
+        )
+        raise SystemExit(1)
+
+
 def run_serve(
     *,
     host: str,
@@ -371,6 +394,7 @@ def run_serve(
     insecure: bool,
     no_browser: bool,
     daemon_command: list[str] | None = None,
+    dev_insecure_identify: bool = False,
 ) -> None:
     """Shared entry for ``ak5 serve`` and the deprecated ``ak5 web`` alias."""
     from ak5.cli.server_extra import require_server_extra
@@ -378,6 +402,15 @@ def run_serve(
     require_server_extra()
     _load_dotenv_files()
     assert_safe_bind(host, insecure=insecure, tailscale_serve=tailscale_serve)
+    assert_dev_insecure_identify_safe(
+        host, dev_insecure_identify=dev_insecure_identify, tailscale_serve=tailscale_serve
+    )
+    if dev_insecure_identify:
+        os.environ["AK5_DEV_INSECURE_IDENTIFY"] = "1"
+        console.print(
+            "[yellow]AK5_DEV_INSECURE_IDENTIFY=1[/yellow] "
+            "([cyan]--dev-insecure-identify[/cyan]; loopback only)."
+        )
     _prepare_database()
 
     if ui:
@@ -463,6 +496,11 @@ def run_serve(
     is_flag=True,
     help="Allow non-loopback bind or --tailscale-serve without auth (dangerous)",
 )
+@click.option(
+    "--dev-insecure-identify",
+    is_flag=True,
+    help="Allow POST /auth/identify on loopback (identity.md §2); refuse with --tailscale-serve",
+)
 @click.option("--no-browser", is_flag=True, help="Do not open a browser tab (with --ui)")
 def serve_command(
     host: str,
@@ -475,6 +513,7 @@ def serve_command(
     reload: bool,
     insecure: bool,
     no_browser: bool,
+    dev_insecure_identify: bool,
 ) -> None:
     """Start the AK5 Gateway REST API (and optionally the embedded web UI / daemon)."""
     run_serve(
@@ -488,4 +527,5 @@ def serve_command(
         reload=reload,
         insecure=insecure,
         no_browser=no_browser,
+        dev_insecure_identify=dev_insecure_identify,
     )
