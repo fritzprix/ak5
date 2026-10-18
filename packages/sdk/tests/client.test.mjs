@@ -408,3 +408,38 @@ describe("AK5Client v2 API", () => {
     assert.equal(body.original_request, "unclear ask");
   });
 });
+
+describe("subscribeToEvents (#81)", () => {
+  it("streams with an Authorization header, resumes with Last-Event-ID, and stops on unsubscribe", async () => {
+    const calls = [];
+    mockFetch(async (url, init) => {
+      calls.push({ url, headers: init.headers });
+      const body =
+        calls.length === 1
+          ? 'id: 5\nevent: WORK_AVAILABLE\ndata: {"ticket_id":"TK-1"}\n\n'
+          : 'id: 6\nevent: TICKET_CREATED\ndata: {"ticket_id":"TK-2"}\n\n';
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    });
+    const client = new AK5Client({ baseUrl: "http://x/api/v1", token: "ak5_agt_tok", skipVersionCheck: true });
+    const events = [];
+    const stop = client.subscribeToEvents((e) => events.push(e), undefined, { boardId: "b-1" });
+    const deadline = Date.now() + 5000;
+    while (events.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    stop();
+
+    assert.deepEqual(
+      events.map((e) => [e.eventType, e.data.ticket_id, e.id]),
+      [
+        ["WORK_AVAILABLE", "TK-1", "5"],
+        ["TICKET_CREATED", "TK-2", "6"],
+      ]
+    );
+    assert.equal(calls[0].url, "http://x/api/v1/events/stream?board_id=b-1");
+    assert.equal(calls[0].headers.Authorization, "Bearer ak5_agt_tok");
+    assert.equal(calls[1].headers["Last-Event-ID"], "5");
+    for (const c of calls) assert.ok(!c.url.includes("access_token"));
+    const n = calls.length;
+    await new Promise((r) => setTimeout(r, 1200));
+    assert.equal(calls.length, n, "no reconnect after unsubscribe");
+  });
+});

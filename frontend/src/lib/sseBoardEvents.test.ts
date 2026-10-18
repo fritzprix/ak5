@@ -28,26 +28,10 @@ describe("nextSseBackoffMs", () => {
 });
 
 describe("buildBoardStreamUrl", () => {
-  it("includes board_id and optional token", () => {
-    assert.equal(
-      buildBoardStreamUrl("http://x/api/v1", "board-a", null),
-      "http://x/api/v1/events/stream?board_id=board-a"
-    );
-    assert.match(
-      buildBoardStreamUrl("http://x/api/v1", "board-a", "tok"),
-      /board_id=board-a/
-    );
-    assert.match(
-      buildBoardStreamUrl("http://x/api/v1", "board-a", "tok"),
-      /access_token=tok/
-    );
-  });
-
-  it("includes last_event_id for reconnect resume", () => {
-    assert.match(
-      buildBoardStreamUrl("http://x/api/v1", "board-a", "tok", "42"),
-      /last_event_id=42/
-    );
+  it("carries only board_id — no token or cursor in the URL (#81)", () => {
+    const url = buildBoardStreamUrl("http://x/api/v1", "board-a");
+    assert.equal(url, "http://x/api/v1/events/stream?board_id=board-a");
+    assert.ok(!url.includes("access_token"));
   });
 });
 
