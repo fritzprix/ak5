@@ -27,7 +27,7 @@ from ak5.server.models.workspace import (
     Workspace,
 )
 from ak5.server.models.workspace_invite import WorkspaceInvite
-from ak5.server.seed import INBOX_BOARD_ID
+from ak5.server.seed import INBOX_BOARD_ID, LOCAL_USER_ID
 from ak5.server.services.templates import INBOX_TEMPLATE
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -298,12 +298,28 @@ async def update_member_role(
     workspace_id: str,
     user_id: str,
     new_role: str,
+    actor_role: str,
 ) -> Membership:
+    """Change a member's role.
+
+    Granting ``owner``, or demoting an existing owner, requires the caller to
+    already be an owner (#62). Admins may only manage ``admin`` / ``member``.
+    """
     if new_role not in _MEMBER_ROLES:
         raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, f"Invalid role '{new_role}'")
+    if actor_role not in _ADMIN_ROLES:
+        raise WorkspaceServiceError(
+            ErrorCode.ROLE_FORBIDDEN, "Workspace admin or owner required"
+        )
     row = await get_membership(db, workspace_id=workspace_id, user_id=user_id)
     if row is None:
         raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Membership not found")
+    owner_change = new_role == "owner" or row.role == "owner"
+    if owner_change and actor_role != "owner":
+        raise WorkspaceServiceError(
+            ErrorCode.ROLE_FORBIDDEN,
+            "Only a workspace owner can grant, demote, or change owner roles",
+        )
     if (
         row.role == "owner"
         and new_role != "owner"
@@ -318,11 +334,24 @@ async def update_member_role(
 
 
 async def remove_member(
-    db: AsyncSession, *, workspace_id: str, user_id: str
+    db: AsyncSession,
+    *,
+    workspace_id: str,
+    user_id: str,
+    actor_role: str,
 ) -> None:
+    """Remove a member. Removing an owner requires the caller to be an owner (#62)."""
+    if actor_role not in _ADMIN_ROLES:
+        raise WorkspaceServiceError(
+            ErrorCode.ROLE_FORBIDDEN, "Workspace admin or owner required"
+        )
     row = await get_membership(db, workspace_id=workspace_id, user_id=user_id)
     if row is None:
         raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Membership not found")
+    if row.role == "owner" and actor_role != "owner":
+        raise WorkspaceServiceError(
+            ErrorCode.ROLE_FORBIDDEN, "Only a workspace owner can remove an owner"
+        )
     if row.role == "owner" and await count_owners(db, workspace_id) <= 1:
         raise WorkspaceServiceError(
             ErrorCode.ROLE_FORBIDDEN, "Cannot remove the last owner"
@@ -399,13 +428,21 @@ async def accept_invite(
         raise WorkspaceServiceError(
             ErrorCode.ROLE_FORBIDDEN, "Invite email does not match signed-in user"
         )
-    # Require at least one verified identity when identities exist.
+    # Local seeded owner may accept without IdP; everyone else needs a verified identity (#62).
     identities = (
         await db.execute(select(UserIdentity).where(UserIdentity.user_id == user.user_id))
     ).scalars().all()
-    if identities and not any(i.email_verified for i in identities):
+    has_verified = any(i.email_verified for i in identities)
+    if user.user_id == LOCAL_USER_ID:
+        if identities and not has_verified:
+            raise WorkspaceServiceError(
+                ErrorCode.ROLE_FORBIDDEN,
+                "email_verified identity required to accept invite",
+            )
+    elif not has_verified:
         raise WorkspaceServiceError(
-            ErrorCode.ROLE_FORBIDDEN, "email_verified identity required to accept invite"
+            ErrorCode.ROLE_FORBIDDEN,
+            "email_verified identity required to accept invite",
         )
 
     existing = await get_membership(

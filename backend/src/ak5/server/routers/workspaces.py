@@ -260,11 +260,15 @@ async def patch_member(
 ) -> MemberOut | JSONResponse:
     try:
         principal = _require_user(ctx)
-        await require_workspace_admin(
+        actor = await require_workspace_admin(
             db, workspace_id=workspace_id, user_id=principal.principal_id
         )
         row = await update_member_role(
-            db, workspace_id=workspace_id, user_id=user_id, new_role=body.role
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            new_role=body.role,
+            actor_role=actor.role,
         )
         await db.commit()
         user = await _load_user(db, user_id)
@@ -288,10 +292,15 @@ async def delete_member(
 ) -> Response | JSONResponse:
     try:
         principal = _require_user(ctx)
-        await require_workspace_admin(
+        actor = await require_workspace_admin(
             db, workspace_id=workspace_id, user_id=principal.principal_id
         )
-        await remove_member(db, workspace_id=workspace_id, user_id=user_id)
+        await remove_member(
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            actor_role=actor.role,
+        )
         await db.commit()
         return Response(status_code=204)
     except WorkspaceServiceError as exc:
