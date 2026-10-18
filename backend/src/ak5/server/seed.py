@@ -340,15 +340,23 @@ async def rewrite_actor_refs_to_principals(db: AsyncSession) -> None:
         (TicketReview, ("reviewer",)),
         (TicketPostmortem, ("author",)),
     ]
+    # Core UPDATE per (column, old id): no row loads, and columns with ``onupdate``
+    # (``updated_at``) are pinned to their current value so a reference rewrite
+    # does not look like a user edit (#79).
     for model, columns in orm_updates:
-        rows = list((await db.execute(select(model))).scalars().all())
-        for row in rows:
-            for col in columns:
-                val = getattr(row, col, None)
-                if isinstance(val, str) and val in mapping:
-                    setattr(row, col, mapping[val])
+        table = model.__table__
+        preserve = {c.name: c for c in table.columns if c.onupdate is not None}
+        for col in columns:
+            for old_id, new_id in mapping.items():
+                if old_id == new_id:
+                    continue
+                await db.execute(
+                    update(table).where(table.c[col] == old_id).values({col: new_id, **preserve})
+                )
 
     await db.flush()
+    # Core UPDATEs bypass the identity map; drop cached rows so later seed steps reload.
+    db.expire_all()
 
 
 async def ensure_local_tenancy(db: AsyncSession) -> None:
