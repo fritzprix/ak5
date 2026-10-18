@@ -131,7 +131,6 @@ async def test_startup_clears_stale_assignee_with_audit(test_db):
         labels="[]",
         assigned_to="user_pm",
         created_by="user_pm",
-        status="open",
     )
     stale.column = col
     test_db.add(stale)

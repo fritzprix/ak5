@@ -190,7 +190,6 @@ async def test_reset_writes_skip_marker_and_snapshot_message():
                 rank="a",
                 labels="[]",
                 created_by="user_pm",
-                status="open",
             )
         )
         await db.commit()

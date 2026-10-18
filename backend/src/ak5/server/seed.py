@@ -34,7 +34,6 @@ from ak5.server.models.workspace import (
     Workspace,
 )
 from ak5.server.services.templates import DEFAULT_TEMPLATE, INBOX_TEMPLATE, get_template
-from ak5.server.services.ticket_status import derive_status
 
 DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer", "system"}
 INBOX_BOARD_ID = "inbox"
@@ -120,7 +119,7 @@ async def repair_claimless_in_progress_tickets(db: AsyncSession) -> None:
 
     v1 had no claims; tickets sitting in in_progress violate
     ``in_progress ⇔ valid claim``. Relocate to the board's backlog column,
-    leave an audit row + comment, and recompute ``status`` via derive_status.
+    leave an audit row + comment (``status`` is derived from the new stage).
     """
     tickets = (
         await db.execute(
@@ -157,9 +156,7 @@ async def repair_claimless_in_progress_tickets(db: AsyncSession) -> None:
 
         old_column_id = ticket.column_id
         ticket.column_id = backlog.column_id
-        # Refresh stage for derive_status without another join.
         ticket.column = backlog
-        ticket.status = derive_status(ticket)
 
         db.add(
             AuditLog(
@@ -565,13 +562,8 @@ async def seed_initial_data() -> None:
         # v1 → v2 data repairs (idempotent): missing stages + claimless tickets
         await backfill_standard_board_stages(db)
         await repair_claimless_in_progress_tickets(db)
-        # Recompute derived status for migrated tickets (orchestrator note on #10).
-        from ak5.server.services.workflow import (
-            clear_assignees_without_claim,
-            recompute_all_ticket_statuses,
-        )
+        from ak5.server.services.workflow import clear_assignees_without_claim
 
-        await recompute_all_ticket_statuses(db)
         await clear_assignees_without_claim(db)
 
         # §9: principal-id Actor aliases + rewrite FK refs (idempotent).

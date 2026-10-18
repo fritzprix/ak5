@@ -1,18 +1,24 @@
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    ColumnElement,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
+    and_,
+    case,
     func,
+    or_,
+    select,
 )
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ak5.server.models.base import Base, TimestampMixin
@@ -30,10 +36,6 @@ class Ticket(Base, TimestampMixin):
         CheckConstraint(
             "priority IN ('low', 'medium', 'high', 'urgent')",
             name="check_ticket_priority",
-        ),
-        CheckConstraint(
-            "status IN ('open', 'in_progress', 'blocked', 'done')",
-            name="check_ticket_status",
         ),
         Index("idx_tickets_board", "board_id"),
         Index("idx_tickets_column_rank", "column_id", "rank"),
@@ -76,7 +78,6 @@ class Ticket(Base, TimestampMixin):
         ForeignKey("actors.actor_id"),
         nullable=False,
     )
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     # Free-text block reason (not a ticket FK). Reused as blocked_reason (workflow.md §9).
     blocked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_context: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object
@@ -99,7 +100,8 @@ class Ticket(Base, TimestampMixin):
 
     # Relationships
     board: Mapped["Board"] = relationship("Board", back_populates="tickets")
-    column: Mapped["Column"] = relationship("Column", back_populates="tickets")
+    # Eager: ``status`` is derived from the column stage (workflow.md §2).
+    column: Mapped["Column"] = relationship("Column", back_populates="tickets", lazy="joined")
     creator: Mapped["Actor"] = relationship("Actor", foreign_keys=[created_by])
     assignee: Mapped["Actor | None"] = relationship("Actor", foreign_keys=[assigned_to])
 
@@ -127,6 +129,36 @@ class Ticket(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="TicketAttachment.created_at",
     )
+
+    @hybrid_property
+    def status(self) -> str:
+        """API ``status``, derived and never stored (workflow.md §2)."""
+        from ak5.server.services.ticket_status import derive_status
+
+        return derive_status(self)
+
+    @status.inplace.expression
+    @classmethod
+    def _status_expression(cls) -> ColumnElement[str]:
+        from ak5.server.models.column import Column
+
+        stage = select(Column.stage).where(Column.column_id == cls.column_id).scalar_subquery()
+        blocked = or_(
+            and_(cls.blocked_kind.is_not(None), cls.blocked_kind != ""),
+            and_(cls.blocked_by.is_not(None), cls.blocked_by != ""),
+        )
+        now = datetime.now(UTC).replace(tzinfo=None)  # lease_expires_at is naive UTC
+        claimed = and_(
+            cls.claim_token.is_not(None),
+            cls.claim_token != "",
+            or_(cls.lease_expires_at.is_(None), cls.lease_expires_at > now),
+        )
+        return case(
+            (stage == "done", "done"),
+            (blocked, "blocked"),
+            (claimed, "in_progress"),
+            else_="open",
+        )
 
     @property
     def label_list(self) -> list[str]:

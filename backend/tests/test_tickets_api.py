@@ -113,7 +113,6 @@ async def test_patch_status_cannot_desync_from_column(client: AsyncClient, auth_
     """PATCH status must not leave workflow status disagreeing with column stage."""
     from ak5.models.column import Column
     from ak5.models.ticket import Ticket
-    from ak5.services.ticket_status import derive_status
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
@@ -137,7 +136,6 @@ async def test_patch_status_cannot_desync_from_column(client: AsyncClient, auth_
     assert done_col is not None
     ticket.column_id = done_col.column_id
     ticket.column = done_col
-    ticket.status = derive_status(ticket)
     await test_db.commit()
 
     bad_patch = await client.patch(
@@ -340,7 +338,6 @@ async def test_human_move_from_human_review_to_done(client: AsyncClient, auth_he
     """§8 human move pairs: human_review → done allowed."""
     from ak5.models.column import Column
     from ak5.models.ticket import Ticket
-    from ak5.services.ticket_status import derive_status
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
@@ -361,7 +358,6 @@ async def test_human_move_from_human_review_to_done(client: AsyncClient, auth_he
     assert hr is not None
     ticket.column_id = hr.column_id
     ticket.column = hr
-    ticket.status = derive_status(ticket)
     await test_db.commit()
 
     to_done = await client.patch(

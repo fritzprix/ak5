@@ -88,8 +88,7 @@ async def test_agent_principal_cannot_reopen_done_ticket(
     # Force done stage for reopen gate (role check is first).
     ticket = await test_db.get(Ticket, tid)
     assert ticket is not None
-    ticket.status = "done"
-    # Move to done column if present
+    # status is derived from the column stage (#35): move to the done column.
     from ak5.server.models.column import Column
     from sqlalchemy import select
 
@@ -100,9 +99,9 @@ async def test_agent_principal_cannot_reopen_done_ticket(
                 Column.stage == "done",
             )
         )
-    ).scalar_one_or_none()
-    if done_col is not None:
-        ticket.column_id = done_col.column_id
+    ).scalar_one()
+    ticket.column_id = done_col.column_id
+    ticket.column = done_col
     await test_db.commit()
 
     bad = await client.post(
@@ -198,7 +197,6 @@ async def test_migrate_rewrites_ticket_and_board_refs_to_principal_ids(
         labels="[]",
         created_by="user_pm",
         claimed_by="agent_image_worker",
-        status="open",
     )
     test_db.add(ticket)
     await test_db.commit()
