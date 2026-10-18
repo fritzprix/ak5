@@ -9,14 +9,18 @@ import click
 import httpx
 from ak5.cli.client_factory import json_flag_from_ctx, open_client
 from ak5.cli.commands.boards import _adopt_board_impl, _create_board_impl, render_boards_table
-from ak5.cli.config import get_api_url
-from ak5.client.errors import ClientError
+from ak5.cli.config import get_api_url, require_auth_headers
+from ak5.client.errors import EXIT_AUTH, EXIT_DAEMON, EXIT_GENERIC, ClientError
 from ak5.client.output import handle_client_error, is_json_mode, print_result
+from ak5.contracts.errors import ErrorCode
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+# Back-compat alias for tests/callers monkeypatching get_auth_headers
+get_auth_headers = require_auth_headers
 
 console = Console()
 
@@ -144,16 +148,77 @@ async def watch_board_live(
     board_id: str,
     include_archived: bool = False,
     done_limit: int | None = 10,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> None:
     """Stream SSE events and re-render board on changes."""
+    try:
+        headers = get_auth_headers(api_url)
+    except SystemExit as exc:
+        raw = exc.code if isinstance(exc.code, int) else EXIT_AUTH
+        if raw == 1:
+            raw = EXIT_AUTH
+        if raw == EXIT_DAEMON:
+            raise ClientError(
+                "ak5 daemon is not running",
+                code=ErrorCode.DAEMON_UNAVAILABLE,
+                exit_code=EXIT_DAEMON,
+            ) from exc
+        raise ClientError(
+            "Authentication required",
+            code=ErrorCode.UNAUTHENTICATED,
+            exit_code=raw,
+        ) from exc
+
+    if not headers or not headers.get("Authorization"):
+        raise ClientError(
+            "Authentication required",
+            code=ErrorCode.UNAUTHENTICATED,
+            exit_code=EXIT_AUTH,
+            http_status=401,
+        )
+
     console.print(f"[bold cyan]Connecting to real-time event stream for board '{board_id}'...[/bold cyan]")
     board_data = fetch_board(api_url, board_id, include_archived=include_archived, done_limit=done_limit)
 
+    params: dict[str, str] = {"board_id": board_id}
     with Live(render_board_view(board_data), console=console, refresh_per_second=4) as live:
         async with (
-            httpx.AsyncClient(timeout=None) as client,
-            client.stream("GET", f"{api_url}/events/stream") as stream,
+            httpx.AsyncClient(timeout=None, transport=transport) as client,
+            client.stream(
+                "GET",
+                f"{api_url}/events/stream",
+                headers=headers,
+                params=params,
+            ) as stream,
         ):
+            if stream.status_code == 401:
+                raise ClientError(
+                    "Authentication required",
+                    code=ErrorCode.UNAUTHENTICATED,
+                    exit_code=EXIT_AUTH,
+                    http_status=401,
+                )
+            if stream.status_code == 403:
+                raise ClientError(
+                    "Forbidden",
+                    code=ErrorCode.ROLE_FORBIDDEN,
+                    exit_code=4,
+                    http_status=403,
+                )
+            if stream.status_code == 404:
+                raise ClientError(
+                    f"Board '{board_id}' not found",
+                    code=ErrorCode.NOT_FOUND,
+                    exit_code=4,
+                    http_status=404,
+                )
+            if stream.status_code >= 400:
+                raise ClientError(
+                    f"Event stream failed (HTTP {stream.status_code})",
+                    exit_code=EXIT_GENERIC,
+                    http_status=stream.status_code,
+                )
             async for line in stream.aiter_lines():
                 if line.startswith("event:"):
                     event_type = line.split(":", 1)[1].strip()
