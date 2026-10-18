@@ -1,546 +1,513 @@
-# AK5 — 시스템 사용방법 매뉴얼 (User & Operator Manual)
+# AK5 — 사용·운영 매뉴얼 (v2)
 
-> **문서 버전:** v1.0  
-> **대상:** PM, 개발자, AI 에이전트 하네스 운영자, 에이전트 개발자  
-> **시스템 명칭:** AK5 (Agent Kanban — K5 = Kanban)
-
----
-
-## 1. 시스템 개요 및 아키텍처
-
-AK5는 **인간 사용자(PM/엔지니어)와 자율 AI 에이전트가 단일 칸반 보드 위에서 대등한 행위자(Actor)로 상호작용하고, 하위 작업을 발견·위임(Delegation)하며 실시간으로 진척을 추적**하는 차세대 칸반 오케스트레이션 플랫폼입니다.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                 AK5 ECOSYSTEM                               │
-│                                                                             │
-│   ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐ │
-│   │    Web Frontend     │  │      AK5 CLI        │  │ External AI Agents  │ │
-│   │     (Next.js 15)    │  │   (Python Click)    │  │(Antigravity/Claude) │ │
-│   └──────────┬──────────┘  └──────────┬──────────┘  └──────────┬──────────┘ │
-│              │                        │                        │            │
-│              │ HTTP / SSE             │ HTTP / JSON            │ MCP Stdio  │
-│              │                        │                        │ / SSE      │
-│              ▼                        ▼                        ▼            │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                      AK5 Gateway (FastAPI / Uvicorn)                │   │
-│   │  - REST Routers (/auth, /actors, /boards, /tickets)                 │   │
-│   │  - Embedded MCP Bridge (/mcp/sse, /mcp/messages)                    │   │
-│   │  - Real-time EventBus (/api/v1/events/stream)                       │   │
-│   └──────────────────────────────────┬──────────────────────────────────┘   │
-│                                      ▼                                      │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │               Data Layer (SQLite WAL + SQLAlchemy 2.0)              │   │
-│   │  - actors | boards | columns | tickets | ticket_comments | audit_logs│  │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 1.1 핵심 메커니즘
-1. **단일 액터 추상화 (Unified Actor Model):** 인간과 에이전트는 모두 고유 `actor_id`, `name`, `role`, `capabilities`를 가지며 동일한 JWT 인증 체계로 티켓을 생성·수정·위임합니다.
-2. **역량 기반 발견 및 계층형 위임 (Capability-driven Discovery & Subtasking):** 에이전트는 특정 도메인(예: `image-resize`, `code-review`)의 전문 에이전트를 검색하고, 복잡한 상위 티켓(Parent Ticket)을 쪼개어 하위 티켓(Subtask)으로 할당합니다.
-3. **Lexorank 순서 정렬 (Base36):** 카드 드래그 이동 시 인접 카드 사이의 중간 문자열을 계산하여 정렬 인덱스 충돌 없이 무한 보간 삽입이 가능합니다.
-4. **상태 자동 동기화:** 티켓이 컬럼(To Do, In Progress, Review, Done) 간 이동할 때 컬럼의 스테이지에 맞춰 티켓 상태(`status`)가 자동으로 동기화됩니다.
+> **대상:** AK5 서버를 운영하는 사람, 웹 UI로 요청을 넣고 최종 승인하는 사람, agent harness를 붙이는 개발자
+> **정본:** 동작의 정의는 `docs/spec/`의 spec 문서([workflow](spec/workflow.md) · [events](spec/events.md) · [cli](spec/cli.md) · [client](spec/client.md) · [identity](spec/identity.md))이다. 이 매뉴얼은 사용법을 설명하며, 둘이 다르면 spec이 맞다.
 
 ---
 
-## 2. 빠른 시작 (Quick Start)
+## 1. 개요
 
-### 2.1 무설치 즉시 실행 (Zero-Install: `uvx`)
-패키지 설치나 코드 복제 없이 바로 체험할 수 있습니다:
-```bash
-# 1. 단일 포트 게이트웨이 + 웹 대시보드 실행 (:8000, 권장 엔트리포인트)
-uvx ak5 web
+AK5는 **agent 루프가 붙어 일하고, 사람이 최종 승인하는 칸반 플랫폼**이다.
 
-# 2. API 전용 게이트웨이 및 임베디드 MCP 서버 실행 (헤드리스)
-uvx ak5 serve
+- **서버는 기록하고 강제한다.** stage, claim(lease), role별 허용 전이, 이력을 서버가 관리한다. 클라이언트는 stage를 직접 쓰지 못하고, 정해진 명령(동사)으로만 티켓을 진행시킨다.
+- **agent는 일을 끌어간다 (pull).** `ak5 next`로 할 일을 찾고 `ak5 ticket claim`으로 가져간다. 담당자를 미리 지정하는 push 할당은 없다.
+- **done은 사람만 만든다.** gatekeeper agent의 승인 뒤에도 사람의 최종 verdict가 있어야 `done`이 된다.
+- **client daemon이 실행한다.** agent 머신의 `ak5 daemon`이 credential을 보관하고, 서버 이벤트를 받아 로컬 hook(harness 깨우기)을 실행한다. 서버는 클라이언트 명령을 실행하지 않는다.
 
-# 3. 실시간 터미널 칸반 보드 뷰어
-uvx ak5 board --watch
-
-# 4. AI 협업 시뮬레이션 데모 실행
-uvx ak5 demo
 ```
-* **웹 대시보드:** `http://127.0.0.1:8000/` (Next.js 웹 UI가 내장되어 Node.js/npm 설치 불필요)
-* **Swagger API 문서:** `http://127.0.0.1:8000/docs`
-* **SSE 이벤트 스트림:** `http://127.0.0.1:8000/api/v1/events/stream`
-* **MCP SSE 브릿지:** `http://127.0.0.1:8000/mcp/sse`
-
-### 2.2 패키지 설치 (`pip` / `uv`)
-```bash
-pip install ak5
-# 또는
-uv tool install ak5
+┌──────────────── agent 머신 (OS 사용자 단위) ────────────────┐
+│                                                              │
+│  Agent harness ──(skill)──► ak5 CLI ── HTTPS ────────────────┼──► AK5 서버 (ak5 serve)
+│  (claude, cursor, 스크립트)     │ ▲                           │     ├ REST API (/api/v1)
+│                                ▼ │ access token (UDS)        │     ├ 웹 대시보드
+│                           ak5 daemon ── long-poll (profile당 1) ──┤ ├ OAuth device grant / OIDC
+│                            ├ credential (profile별)          │     └ SQLite (WAL)
+│                            ├ event spool                     │
+│                            └ local subscriber → hook exec    │
+└──────────────────────────────────────────────────────────────┘
+          브라우저(사람): 웹 UI 로그인, agent 등록 승인, 최종 승인
 ```
 
-### 2.3 저장소 소스코드 개발 환경 실행
-* **요구사항:** Python 3.11+, uv, Node.js 18+ (정적 빌드 시)
-```bash
-# 1. 의존성 설치 및 로컬 패키지 동기화
-uv sync
-uv pip install -e backend
-
-# 2. 임베디드 웹 UI 정적 빌드 (Python 패키지에 Next.js 에셋 포함)
-./scripts/build_web_ui.sh
-
-# 3. 단일 포트 게이트웨이 + 웹 UI 실행 (:8000)
-uv run ak5 web --reload
-
-# 4. API 전용 게이트웨이 기동
-uv run ak5 serve --reload
-```
-* 서버가 정상 기동되면 OS 표준 앱 로컬 스토리지(Linux: `~/.local/share/ak5/`, macOS: `~/Library/Application Support/ak5/`, Windows: `%LOCALAPPDATA%\ak5\`)에 SQLite WAL DB (`ak5.db`)가 자동 생성/로드되며, 기본 보드(`proj-core-engine`)와 기본 액터(`user_pm`, `agent_image_worker`, `agent_code_reviewer`)가 자동 시딩됩니다. 실행 디렉토리(CWD)를 바꾸더라도 전역적으로 동일한 데이터가 보존됩니다. (`AK5_DATA_DIR` 환경변수로 저장 경로 커스텀 가능)
-* **레거시 로컬 DB 이전:** 예전에 CWD에 두었던 `./ak5.db` / `./data/attachments`는 자동으로 옮기지 않습니다. 프로젝트 디렉터리에서 아래 명령으로 전역 스토리지로 이전하세요.
-  ```bash
-  # 로컬 CWD의 ak5.db 및 attachments를 전역 앱 로컬 스토리지로 이전
-  uv run ak5 migrate-legacy
-
-  # 이미 전역 DB가 존재하는 경우 덮어쓰기
-  uv run ak5 migrate-legacy --force
-  ```
-  (또는 기동 시 `AK5_MIGRATE_LEGACY=1`을 설정하면 동일하게 옵트인 이전을 수행합니다.)
-* **Swagger API 문서:** `http://127.0.0.1:8000/docs`
-* **MCP SSE 브릿지:** `http://127.0.0.1:8000/mcp/sse`
-
-### 2.4 프론트엔드 핫 리로드 개발 환경 (Next.js 15 Web UI)
-프론트엔드 소스코드를 실시간으로 수정하며 개발할 때 사용하는 듀얼 포트 모드입니다:
-```bash
-# 터미널 A: 백엔드 게이트웨이 기동 (:8000)
-uv run ak5 serve --reload
-
-# 터미널 B: Next.js 개발 서버 기동 (:3000, /api/* 요청을 게이트웨이로 프록시)
-cd frontend
-npm install
-npm run dev
-```
-* 브라우저에서 `http://localhost:3000`에 접속하여 실시간 칸반 보드를 확인합니다.
+| 구성 요소 | 하는 일 |
+|---|---|
+| `ak5 serve` | API 서버 + 웹 대시보드 (같은 포트). `ak5[server]` extra 필요 |
+| 웹 UI | 요청 등록, 보드 보기, 최종 verdict, blocked 처리, workspace·멤버·agent 관리, device 승인 |
+| `ak5` CLI | 모든 동사의 단일 진입점. 명령 1회 실행 후 종료 (무상태) |
+| `ak5 daemon` | profile별 credential 보관과 토큰 발급, 이벤트 수신·spool·fan-out, hook 실행 |
+| skill | agent가 CLI를 올바르게 쓰는 방법 ([skills/ak5/SKILL.md](../skills/ak5/SKILL.md)) |
 
 ---
 
-## 3. 웹 UI (Next.js 15) 사용 가이드
+## 2. 설치와 빠른 시작
 
-### 3.1 보드 구성 및 컬럼
-* 표준 4단계 컬럼:
-  * **To Do (Open):** 대기 중인 신규 작업
-  * **In Progress (진행 중):** 담당자/에이전트가 작업 중인 티켓
-  * **Review (검토):** 결과물 검증 및 보안/코드 감사 단계
-  * **Done (완료):** 해결 완료된 작업
-* **WIP Limit 감지:** 컬럼 상단에 작업량 제한(`WIP: 2/3`)이 표시되며, 초과 시 `WIP Exceeded` 경고 배지가 표시됩니다.
+### 2.1 설치
 
-### 3.2 티켓 생성
-1. 보드 상단 우측의 `+ New Ticket` 버튼을 클릭합니다.
-2. 제목(Title), 상세 설명(Description), 우선순위(Low, Medium, High, Urgent), 담당자(Assignee)를 지정합니다.
-3. `Create`를 누르면 즉시 To Do 컬럼 최하단에 티켓이 추가되고, 실시간 SSE를 통해 터미널 및 모든 접속자에게 전파됩니다.
+| 설치 | 포함 | 쓰는 곳 |
+|---|---|---|
+| `pip install ak5` | CLI + client daemon | agent 머신, 원격 서버 사용자 |
+| `pip install 'ak5[server]'` | + 서버(FastAPI, SQLite), 내장 웹 대시보드 | 서버를 띄우는 머신 |
+| `pip install 'ak5[mcp]'` | + MCP 어댑터 (선택, §8) | MCP만 쓸 수 있는 호스트 |
 
-### 3.3 드래그 앤 드롭 (`@dnd-kit`) 및 순서 정렬
-* 카드를 마우스로 끌어 다른 컬럼으로 옮기거나 같은 컬럼 내에서 카드의 순서를 변경할 수 있습니다.
-* 카드를 놓는 순간 백엔드가 인접 카드의 `rank` 값을 기반으로 새 Lexorank를 계산하여 위치를 고정합니다.
+`uv tool install 'ak5[server]'`도 같다. 설치 없이 실행하려면 `uvx --from 'ak5[server]' ak5 serve --ui`.
 
-### 3.4 계층형 서브태스크 및 진척도 확인
-* 에이전트가 상위 티켓으로부터 하위 작업을 분해한 경우, 카드 내부에 **진척도 바(Progress Bar)** (`Subtasks: 1/2 Done - 50%`)가 나타납니다.
-* 화살표(`▶`)를 클릭하면 아코디언이 펼쳐지며 소속된 하위 서브태스크들의 목록과 상태를 카드 안에서 바로 확인할 수 있습니다.
+### 2.2 서버 시작
 
-### 3.5 에이전트 액티비티 글러우 (Activity Glow)
-* AI 에이전트가 티켓을 할당받아 `In Progress` 상태로 작업을 수행 중일 때, 카드 테두리에 은은한 보라색/시안색 펄스 애니메이션(`animate-agent-pulse`)이 활성화되어 현재 어떤 에이전트가 활동 중인지 한눈에 파악할 수 있습니다.
+```bash
+export AK5_AUTH_PASSWORD='원하는-비밀번호'   # 내장 local owner 계정 (loopback 로그인 전용)
+ak5 serve --ui                               # http://127.0.0.1:8000 (API + 대시보드)
+```
 
-### 3.6 웹 UI에서 서브태스크 위임 (Delegate)
-* 카드 우측 하단의 `+` (위임 아이콘)을 클릭하면 **Delegate Subtask to Agent** 모달이 열립니다.
-* 시스템에 등록된 에이전트 목록(역량 태그 표기) 중 대상을 선택하고, 하위 작업 제목과 지시사항을 입력하여 위임합니다.
+- 브라우저에서 위 비밀번호로 로그인한다. OIDC를 설정하지 않았다면 이 local owner가 유일한 사람 계정이다.
+- 첫 실행 시 `local` workspace, 시스템 **inbox** 보드, `proj-core-engine` 보드(템플릿 `default`)가 만들어진다.
+- 데이터는 OS 앱 데이터 디렉터리에 저장된다: Linux `~/.local/share/ak5/`, macOS `~/Library/Application Support/ak5/`, Windows `%LOCALAPPDATA%\ak5\`. `AK5_DATA_DIR`로 바꿀 수 있다.
+- `ak5 serve --daemon`은 같은 머신의 client daemon을 함께 띄운다 (서버와 agent를 한 머신에서 돌릴 때).
+
+API 문서는 `http://127.0.0.1:8000/docs`에 있다.
+
+### 2.3 사람과 agent 로그인
+
+한 머신 안의 신원마다 **profile**을 하나씩 만든다. `ak5 login`은 코드와 승인 URL(`http://127.0.0.1:8000/device?code=…`)을 출력한다. 로그인된 브라우저에서 그 URL을 열고 승인하면 CLI가 끝난다.
+
+```bash
+ak5 login --profile me                                   # 사람 (user principal)
+ak5 login --agent triage-1 --role triage
+ak5 login --agent worker-1 --role worker --caps py,web
+ak5 login --agent gk-1     --role gatekeeper
+ak5 profile list
+```
+
+- agent 승인 화면에서 workspace, workflow role, capabilities, board 범위를 확인·수정한다. 승인자는 workspace `admin` 이상이어야 한다.
+- 원격 서버라면 `--url https://ak5.example.com/api/v1`을 붙인다 (기본값 `http://127.0.0.1:8000/api/v1`).
+- daemon은 필요할 때 자동으로 시작된다 (`ak5 daemon status`). credential은 `~/.ak5/credentials/`에 저장되고 harness 환경에는 노출되지 않는다.
+
+### 2.4 루프 한 번 돌려 보기
+
+```bash
+# 사람: 요청 등록 → inbox
+AK5_PROFILE=me ak5 ticket create "리포트 페이지에 CSV 내보내기 추가"
+
+# triage: 구체화해서 보드로 보낸다
+export AK5_PROFILE=triage-1
+ak5 next --inbox --json
+ak5 ticket claim TK-001
+ak5 ticket route TK-001 --plan @route.json
+
+# worker: 가져가서 일하고 제출
+export AK5_PROFILE=worker-1
+ak5 next --board proj-core-engine --wait 25
+ak5 ticket claim TK-001
+ak5 ticket submit TK-001 --deliverable @deliverable.json
+
+# gatekeeper: 검토
+export AK5_PROFILE=gk-1
+ak5 ticket claim TK-001
+ak5 ticket verdict TK-001 --approve --findings @findings.json
+
+# 사람: 최종 승인 (웹 UI의 티켓 상세에서도 가능)
+AK5_PROFILE=me ak5 ticket verdict TK-001 --approve --reason "확인"
+```
+
+payload JSON의 형식은 §5.4에 있다. 실제 운영에서는 각 agent harness가 자기 부분의 루프를 반복한다.
 
 ---
 
-## 4. CLI 도구 (`ak5`) 사용 가이드
+## 3. 워크플로우
 
-터미널 환경에서 개발자 및 에이전트가 직접 AK5 보드를 조작할 수 있는 표준 명령어 집합입니다.
+### 3.1 Role
 
-```bash
-# 기본 도움말 확인
-uv run ak5 --help
+| role | 주체 | 할 수 있는 일 |
+|---|---|---|
+| `human` | 사람 (user principal) | inbox에 요청 등록, 보드에 직접 등록, 최종 verdict, reopen, reroute, `needs_human`/`escalation` 해제 |
+| `triage` | agent | inbox 티켓 claim, 구체화 후 보드로 route (필요하면 보드 생성) |
+| `worker` | agent | backlog 티켓 claim, heartbeat, submit, release, bounce |
+| `gatekeeper` | agent | `agent_review` 검토(verdict), 사람이 반려한 티켓의 postmortem 작성 |
+
+role은 토큰으로 판정한다: 사람은 workspace 멤버면 `human`, agent는 등록 시 승인된 `workflow_role`이다. 권한이 없는 동사는 서버가 거부한다 (exit 4).
+
+### 3.2 Stage와 전이
+
+```
+                         ┌───────────────── reject (gatekeeper) ─────────────────┐
+                         ▼                                                        │
+ inbox ───route───► backlog ───claim───► in_progress ───submit───► agent_review ──┴──approve──► human_review ──approve──► done
+ (사람이 등록)      (triage)     ▲      (worker)                     (gatekeeper)                   (사람)
+                                │                                                                     │ reject
+                                └──────── postmortem (gatekeeper) ◄──── postmortem_pending ◄──────────┘
 ```
 
-### 4.1 액터 로그인 (`ak5 login`)
-에이전트 또는 인간 사용자로 인증 세션을 생성합니다. 세션은 **프로젝트 루트**의 `.ak5/`에 actor별로 저장됩니다.
+| 명령 | 누가 | 결과 |
+|---|---|---|
+| `ticket create "<요청>"` | 사람 | inbox의 `unclassified` (원래 요청은 바뀌지 않게 보존) |
+| `ticket create --board <id> --spec … --criteria …` | 사람, triage | 해당 보드 `backlog` |
+| `ticket route --plan` | triage (claim 보유) | 대상 보드 `backlog` |
+| `ticket claim` | worker | `backlog` → `in_progress` (claim token, 5분 lease) |
+| `ticket heartbeat` / `release` | worker | lease 연장 / `backlog`로 반납 |
+| `ticket submit --deliverable` | worker | `agent_review` |
+| `ticket bounce` | worker | inbox로 되돌림 (잘못 온 작업) |
+| `ticket verdict --approve/--reject --findings` | gatekeeper | `human_review` / `backlog` (자기가 제출한 티켓은 검토 불가) |
+| `ticket verdict --reject --misrouted` | gatekeeper | inbox |
+| `ticket verdict --approve` | 사람 | `done` (done으로 가는 유일한 경로) |
+| `ticket verdict --reject --reason` | 사람 | `postmortem_pending` |
+| `ticket postmortem --body` | gatekeeper | 수정된 spec으로 `backlog` |
+| `ticket reopen` | 사람 | `done` → `postmortem_pending` |
+| `ticket reroute --to inbox\|<board>` | 사람 | inbox 또는 다른 보드 `backlog` |
 
-- JWT: `.ak5/sessions/<actor_id>.json`
-- Identity claim(힌트, 토큰 없음): `.ak5/identity/<actor_id>.json`
+- lease가 만료되면 서버가 claim을 회수하고 티켓을 다시 큐에 넣는다.
+- gatekeeper 반려나 postmortem이 `max_attempts`(기본 3)에 이르면 서버가 `escalation`으로 블록한다. 사람이 해제해야 한다.
+- `ak5 ticket move`는 같은 stage 안의 순서 조정이나 사람에게 허용된 이동만 한다. 워크플로우 진행 수단이 아니다.
 
-공유 디렉토리에서 여러 agent가 동시에 쓸 때는 `export AK5_ACTOR_ID=<id>`로 프로세스를 바인딩하세요. env가 없고 claim이 여러 개면 CLI는 자동 선택하지 않고 hint만 보여 줍니다.
+### 3.3 Blocked
 
-게이트웨이에 `AK5_IDENTIFY_SECRET`이 설정된 경우, **로그인 명령은 동일**하며 CLI/MCP가 환경변수에서 시크릿을 읽어 `X-AK5-Identify-Secret` 헤더로 자동 전달합니다. 에이전트 호스트에도 같은 값을 export하세요.
+stage와 별개인 오버레이다. 블록되면 claim이 즉시 풀리고(`in_progress`였다면 `backlog`로), `next`에 나오지 않는다.
 
-```bash
-# 에이전트로 식별
-uv run ak5 login \
-  --id "agent_code_reviewer" \
-  --role "Senior Reviewer" \
-  --caps "python,rust,security,code-review" \
-  --type agent
-export AK5_ACTOR_ID=agent_code_reviewer
-
-# 인간 PM으로 식별
-uv run ak5 login \
-  --id "user_pm" \
-  --role "Lead PM" \
-  --caps "planning,review" \
-  --type human
-```
-
-#### 인증·인가 범위 (요약)
-
-| 계층 | 설정 | 효과 |
-| :--- | :--- | :--- |
-| 웹 대시보드 게이트 | `AK5_AUTH_USERNAME` / `AK5_AUTH_PASSWORD` | 브라우저 UI 접근 (쿠키 `ak5_auth`) |
-| JWT 서명 | `AK5_JWT_SECRET` (없으면 앱 로컬 스토리지 `jwt_secret` 자동 생성) | Bearer 토큰 서명/검증 |
-| Identify 게이트 | `AK5_IDENTIFY_SECRET` (선택) | `/auth/identify` 사칭 방지; 웹 로그인 쿠키로도 통과 |
-| 쓰기 API | Bearer JWT | 티켓/보드/코멘트/첨부 등 변경 |
-| Actor PATCH | JWT + self/admin | 타인 프로필 수정 불가 |
-
-### 4.2 역량 기반 에이전트 검색 (`ak5 agents`)
-특정 태그나 자연어 검색어로 적합한 에이전트를 탐색합니다.
+| kind | 거는 사람 | 푸는 사람 |
+|---|---|---|
+| `needs_human` | claim 보유 agent, 사람 | 사람 (`--resolution` 필수) |
+| `dependency`, `external` | claim 보유 agent, 사람 | 블록한 actor 또는 사람 |
+| `escalation` | 서버 (자동) | 사람 (`--resolution` 필수) |
 
 ```bash
-# 이미지 변환 역량을 가진 에이전트 검색
-uv run ak5 agents --cap "image-resize"
-
-# 자연어 검색
-uv run ak5 agents --query "보안 취약점 코드 감사"
-
-# 대기 상태(idle) 에이전트만 필터링
-uv run ak5 agents --status idle
+ak5 ticket block TK-001 --kind needs_human --reason "CSV 구분자를 쉼표로 할까요, 탭으로 할까요?"
+AK5_PROFILE=me ak5 ticket unblock TK-001 --resolution "쉼표"
 ```
 
-### 4.3 하위 작업 위임 실행 (`ak5 delegate`)
-상위 티켓에 종속되는 하위 서브태스크를 생성하여 대상 에이전트에게 할당합니다.
+`human_review`와 `done`에서는 블록할 수 없다 (사람은 반려를 쓴다).
+
+### 3.4 보드와 템플릿
+
+보드는 템플릿으로 만든다. 템플릿은 stage별 컬럼, worker가 갖춰야 할 capability, 기본 acceptance criteria, gatekeeper 리뷰 체크리스트를 정한다.
+
+| 내장 템플릿 | worker capability | 기본 기준 |
+|---|---|---|
+| `default` | 없음 | `done` |
+| `coding` | `python`, `git` | tests pass, ruff clean, diff scoped to ticket |
+| `research` | `research` | sources cited, summary complete |
 
 ```bash
-uv run ak5 delegate TK-001 \
-  --to agent_image_worker \
-  --title "WebP 썸네일 변환 모듈 작성" \
-  --desc "200x200 픽셀 리사이징 함수 및 단위 테스트 작성" \
-  --priority high
+ak5 template list
+ak5 board create proj-web --template coding --name "Web"
+ak5 template apply proj-web coding        # 빠진 stage 컬럼만 추가, 삭제 없음
 ```
 
-### 4.4 칸반 보드 목록 및 실시간 터미널 뷰 (`ak5 boards`, `ak5 board`)
-
-#### 1) 사용 가능한 보드 목록 조회 (`ak5 boards` 또는 `ak5 board list`)
-시스템에 등록된 전체 프로젝트 보드 목록을 조회합니다:
-```bash
-# 전체 보드 목록 출력
-uv run ak5 boards
-
-# 특정 키워드로 필터링
-uv run ak5 boards -q harbor
-
-# 또는 ak5 board 서브커맨드/플래그로도 조회 가능
-uv run ak5 board list
-uv run ak5 board -l
-```
-
-#### 2) 터미널 칸반 보드 뷰 (`ak5 board`)
-터미널 안에서 4개 컬럼 칸반 뷰를 미려한 Rich 테이블로 확인합니다.
-```bash
-# 기본 보드 출력 (현재 활성 보드 안내 팁 표시)
-uv run ak5 board
-
-# 특정 보드 지정 (위치 인자 또는 --board-id 옵션 지원)
-uv run ak5 board proj-harbor-eval
-uv run ak5 board --board-id proj-core-engine
-
-# 실시간 SSE 감시 모드 (--watch)
-# 에이전트가 작업을 이동하거나 새 티켓이 생기면 화면이 실시간 갱신됩니다.
-uv run ak5 board proj-harbor-eval --watch
-```
-
-### 4.5 티켓 생명주기 관리 (`ak5 ticket`, `ak5 move`, `ak5 comment`)
-사람(PM 또는 개발자)이 터미널에서 티켓의 생성, 조회, 이동, 코멘트, 블록, 수정을 온전히 수행할 수 있습니다.
-
-#### 1) 신규 루트/마스터 티켓 생성
-```bash
-# 기본 보드(proj-core-engine)의 To Do 컬럼에 신규 티켓 생성
-uv run ak5 ticket create \
-  --title "로그인 인증 모듈 구현" \
-  --desc "JWT 기반 Access Token 검증 및 단위 테스트" \
-  --priority high \
-  --assign user_pm \
-  --labels "auth,backend"
-
-# 특정 보드 지정 생성
-uv run ak5 ticket create --board proj-harbor-eval --title "벤치마크 루프 검증"
-```
-
-#### 2) 티켓 세부 컨텍스트 및 코멘트 조회
-```bash
-uv run ak5 ticket view TK-001
-```
-
-#### 3) 티켓 컬럼 이동 (작업 진행 및 완료)
-컬럼 이름("In Progress", "Done", "Review", "To Do") 또는 스테이지("open", "done" 등)를 지정할 수 있습니다.
-```bash
-# 작업 착수
-uv run ak5 ticket move TK-001 "In Progress" --note "개발 착수"
-
-# 빠른 단축 명령어 (ak5 move)
-uv run ak5 move TK-001 "Done" --note "PR 머지 및 배포 완료"
-```
-
-#### 4) 코멘트 및 피드백 작성
-```bash
-uv run ak5 ticket comment TK-001 "단위 테스트 커버리지 95% 달성 확인"
-
-# 빠른 단축 명령어 (ak5 comment)
-uv run ak5 comment TK-001 "코드 리뷰 승인 완료 (LGTM)"
-```
-
-#### 5) 의존성 이슈로 인한 티켓 블록 (Block)
-```bash
-uv run ak5 ticket block TK-001 --reason "클라우드 스토리지 API 키 발급 대기 중" --mention user_pm
-```
-
-#### 6) 티켓 속성 수정
-```bash
-uv run ak5 ticket update TK-001 --priority urgent --assign agent_code_reviewer
-```
-
-#### 7) 산출물 및 파일 첨부 / 다운로드
-```bash
-# 산출물/파일 첨부
-uv run ak5 ticket attach TK-001 ./benchmark_results.json
-
-# 산출물/파일 다운로드
-uv run ak5 ticket download-attachment TK-001 att_abc123 --output ./downloaded.json
-```
-
-### 4.6 신규 프로젝트 보드 개설 (`ak5 create-board`)
-새로운 프로젝트 전용 칸반 보드를 4개 표준 컬럼(To Do, In Progress, Review, Done)과 함께 즉시 개설합니다.
-
-에이전트가 보드를 만들 때는 **`--owner`로 human admin을 함께 지정**하는 것이 권장됩니다. 이미 만들어진 agent-only 보드는 human이 `ak5 claim-board`로 admin을 차지할 수 있습니다(보드에 human admin이 없을 때만).
-
-```bash
-# Human이 보드 개설
-uv run ak5 create-board proj-mobile-app --name "Mobile App Development" --desc "iOS/Android 클라이언트 프로젝트"
-
-# Agent가 보드 개설 시 human owner(admin) 동시 등록 (권장)
-uv run ak5 create-board proj-agent-owned --name "Agent Project" --owner user_pm
-
-# 여러 human owner
-uv run ak5 create-board proj-shared --name "Shared" --owner user_pm --owner user_other
-
-# 기존 agent-only 보드: human이 admin claim (human admin이 이미 있으면 409)
-uv run ak5 claim-board proj-agent-owned
-```
-
-### 4.7 현재 인증 세션 확인 (`ak5 whoami`)
-현재 바인딩된 액터 ID, 역할, 세션 소스, 게이트웨이 연결 상태를 확인합니다.
-
-해석 순서: `AK5_ACTOR_TOKEN` → `AK5_SESSION_FILE` → `AK5_ACTOR_ID` → identity claim이 **정확히 1개**면 그 actor → 여러 개면 **모호(hint 출력, exit 1)**.
-
-```bash
-uv run ak5 whoami
-
-# ephemeral shell / history 유실 후 복구
-# 1) whoami → hint의 role/caps와 자기 역할 매칭
-# 2) export AK5_ACTOR_ID=<id> && ak5 whoami
-# 3) JWT 없으면 ak5 login --id <id> --role "..." --caps "..."
-```
-
-### 4.8 자율 멀티 에이전트 협업 데모 시뮬레이션 (`ak5 demo`)
-인간 PM의 상위 티켓 발행부터 오케스트레이터 에이전트의 역량 검색, 작업 분해, 위임, 작업 수행 및 완료까지 전 과정을 실시간으로 시뮬레이션합니다.
-
-```bash
-uv run ak5 demo
-```
-
-### 4.9 실시간 보드 이벤트 구독 및 셸 명령 실행 (`ak5 subscribe`)
-외부 자율 에이전트 CLI, 웹훅 전송기(`curl`), 알림 스크립트, 로컬 배치 등이 특정 칸반 보드의 상태 변화(SSE 이벤트)를 실시간으로 관측(observe)하고, 이벤트 발생 시 사전에 정의한 셸 명령을 동적으로 실행합니다.
-
-> [!IMPORTANT]
-> **에이전트 연동 아키텍처 원칙 (Register & Return)**:
-> 상시 구동 중인 AK5 Gateway 서버 환경에서 자율 에이전트가 호출하는 구독 명령은 포그라운드에서 무한 대기하지 않고 서버에 규칙을 등록한 뒤 즉시 종료(`exit 0`)되어야 합니다. 상세 내용은 [`docs/postmortem-20260927-subscribe-architecture.md`](postmortem-20260927-subscribe-architecture.md) 및 [`.agents/rules/cli-nonblocking-rule.md`](../.agents/rules/cli-nonblocking-rule.md)를 참고하세요.
->
-> **`--exec` 계약:** 명령은 **에이전트 런타임(하네스)을 깨워야** 합니다 (`$AK5_*` / stdin으로 이벤트 전달). 칸반 claim / move / 작업 / 코멘트는 **깨운 세션 안**에서 수행합니다.  
-> Anti-pattern: `echo …`, `ak5 ticket view`만, harness wake 없는 move-only curl. Gateway가 돌리는 `--exec`의 stdout은 에이전트 채팅이 아닙니다.
-
-```bash
-# 1. 구독 훅 등록 (Non-blocking: 서버에 훅 등록 후 즉시 exit 0)
-#    --exec = WAKE_COMMAND (하네스 깨우기). claim/move/work 는 깨운 뒤 세션에서.
-uv run ak5 subscribe create <BOARD_ID> --exec "<WAKE_COMMAND>" [OPTIONS]
-# (단축 별칭: ak5 subscribe add ...)
-
-# 예시 1: env로 이벤트 요약을 외부 AI 에이전트 CLI에 전달 (wake)
-uv run ak5 subscribe create proj-core-engine \
-  --events TICKET_MOVED,TICKET_DELEGATED \
-  --exec 'agent -p "$AK5_SUMMARY"'
-
-# 예시 2: curl 웹훅으로 이벤트 페이로드 전달 (stdin JSON → -d @-)
-uv run ak5 subscribe create proj-core-engine \
-  --exec 'curl -X POST https://example.com/webhook -H "Content-Type: application/json" -d @-'
-
-# 예시 3: 특정 에이전트 할당 이벤트만 필터링 + debounce + 로컬 스크립트
-uv run ak5 subscribe create proj-core-engine \
-  --for-agent cursor-agent \
-  --debounce 2.0 \
-  --exec './scripts/on_board_event.sh'
-
-# 2. 등록된 구독 훅 목록 조회
-uv run ak5 subscribe list
-# (단축 별칭: ak5 subscribe ls)
-
-# 3. 등록된 구독 훅 해제/삭제
-uv run ak5 subscribe remove <SUBSCRIPTION_ID>
-# (단축 별칭: ak5 subscribe rm <SUBSCRIPTION_ID>)
-
-# 4. 개발자 터미널 실시간 스트리밍 모니터링 (Human only — blocking)
-#    에이전트는 사용 금지. 구독 자동화는 위의 create 만 사용.
-uv run ak5 events watch proj-core-engine --exec 'notify-send "$AK5_TITLE"'
-# 데모: uv run ak5 events watch proj-core-engine --demo-echo --once
-```
-
-> **구독 성공 정의:** (1) `ak5 subscribe ls`에 훅이 보이고, (2) `--exec`가 하네스를 깨우도록 설계됨. 로컬 `watch` PID / stdout echo / ticket-view-only는 구독 연동이 아닙니다.  
-> 등록 후 claim·작업은 **깨운 세션**에서 수행합니다 (`--exec` 본문에 넣지 않음).
-
-#### 훅 데이터 전달 (env + stdin — placeholder 없음)
-이벤트 발생 시 등록한 `--exec` 명령을 **그대로** 실행합니다. 내용은 환경 변수와 stdin JSON으로만 전달됩니다.
-
-| 환경 변수 | 설명 |
-| :--- | :--- |
-| `AK5_EVENT` / `AK5_EVENT_TYPE` | 이벤트 타입 (`TICKET_CREATED`, `TICKET_MOVED`, …) |
-| `AK5_BOARD_ID` | 대상 보드 ID |
-| `AK5_TICKET_ID` | 대상 티켓 ID (예: `TK-001`) |
-| `AK5_TITLE` | 티켓 제목 |
-| `AK5_ACTOR_ID` | 깨운 훅의 세션 바인딩 ID (`--for-agent` 또는 구독 등록자). `.ak5/sessions/<id>.json` 선택에 사용 |
-| `AK5_EVENT_ACTOR_ID` | 이벤트를 발생시킨 액터 ID |
-| `AK5_STATUS` | 현재 티켓 상태 |
-| `AK5_SUMMARY` | 사람이 읽기 쉬운 이벤트 요약 |
-| `AK5_DATA_JSON` | 이벤트 원본 JSON 문자열 |
-
-stdin에는 `{"event": "...", "data": {...}}` 형태의 JSON이 파이프됩니다 (예: `curl … -d @-`).
+capability가 맞지 않는 worker에게는 `next`가 그 보드 티켓을 주지 않고, claim은 거부된다.
 
 ---
 
-## 5. AI 에이전트 및 MCP (Model Context Protocol) 연동
+## 4. 웹 UI
 
-Claude Desktop, Cursor, Antigravity, LibrAgent 등의 자율 AI 에이전트가 AK5 툴을 도구 호출(Tool Call)로 사용할 수 있도록 표준 MCP 인터페이스를 제공합니다.
+| 화면 | 용도 |
+|---|---|
+| `/login` | local owner 비밀번호 또는 OIDC provider로 로그인 |
+| 보드 (`/board/<id>`) | stage별 컬럼, 티켓 카드, blocked 큐. 티켓 상세에서 verdict, reopen, block/unblock |
+| `/device` | `ak5 login`이 출력한 코드 승인 (agent의 role·capabilities·board 범위 확인) |
+| Settings → Members | workspace 멤버와 초대 (owner/admin) |
+| Settings → Agents | agent 목록, 토큰 발급·폐기 (발급 토큰은 한 번만 표시) |
 
-### 5.1 MCP 클라이언트 설정 예시
+상단 workspace 전환기로 workspace를 바꾼다. 화면은 이벤트 스트림으로 실시간 갱신된다.
 
-#### 무설치 실행 (Zero-Install: `uvx` 권장)
-Claude Desktop (`claude_desktop_config.json`) 또는 Cursor, Antigravity, Windsurf:
+---
+
+## 5. CLI
+
+모든 명령은 `--json`을 지원하고 (`AK5_OUTPUT=json`으로 기본값 변경), `ak5 <명령> --help`로 옵션을 볼 수 있다.
+
+### 5.1 신원과 profile
+
+```bash
+ak5 login --profile me [--workspace ws_…] [--url …]
+ak5 login --agent <이름> --role triage|worker|gatekeeper [--caps a,b] [--profile <이름>]
+ak5 whoami [--profile <이름>]
+ak5 profile list | show [<이름>] | use <이름>
+ak5 logout --profile <이름>          # 서버에서 credential 폐기 + 로컬 삭제
+```
+
+- profile 선택 순서: `--profile` > `AK5_PROFILE` > 기본 profile (`ak5 profile use`).
+- harness에는 `AK5_PROFILE=<이름>`만 넘긴다.
+- daemon 없는 환경(CI 등)에서는 웹 UI에서 발급한 agent 토큰을 `AK5_TOKEN`으로 넣는다.
+- `ak5 login --id …` 형식은 v1 호환용이며 서버가 `--dev-insecure-identify`로 떠 있을 때만 동작한다.
+
+### 5.2 사람이 쓰는 명령
+
+```bash
+ak5 ticket create "<요청>"                                         # inbox
+ak5 ticket create "<제목>" --board <id> --spec "…" --criteria "a,b" # 보드에 직접
+ak5 ticket verdict <id> --approve [--reason "…"]                   # human_review → done
+ak5 ticket verdict <id> --reject --reason "…"                      # → postmortem_pending
+ak5 ticket unblock <id> --resolution "…"
+ak5 ticket reopen <id> --reason "…"
+ak5 ticket reroute <id> --to inbox|<board> --reason "…"
+ak5 ticket view|list|history|update|comment|attach|download-attachment|archive|unarchive …
+ak5 delegate <부모 id> --title "…" [--desc "…"] [--board <id>]      # 하위 티켓을 backlog에 생성
+ak5 boards · ak5 board <id> [--watch] · ak5 board create <id> --template <t> · ak5 board adopt <id>
+```
+
+### 5.3 agent 루프 명령
+
+```bash
+ak5 next [--board <id> | --inbox] [--caps …] [--wait <초>]   # claim하지 않음. 없으면 exit 6
+ak5 ticket claim <id> [--caps …]                              # claim token은 ~/.ak5/claims/<id>
+ak5 ticket heartbeat <id>
+ak5 ticket release <id> --reason "…"
+ak5 ticket submit <id> --deliverable @file.json|-
+ak5 ticket bounce <id> --reason "…"
+ak5 ticket route <id> --plan @route.json|-
+ak5 ticket verdict <id> --approve|--reject [--misrouted] --findings @f.json|- [--reason "…"]
+ak5 ticket postmortem <id> --body @pm.json|-
+```
+
+`--token`을 생략하면 claim 때 저장한 로컬 token을 쓴다.
+
+### 5.4 Payload 형식
+
+```jsonc
+// route --plan
+{ "refined_title": "…", "refined_spec": "…", "acceptance_criteria": ["…"],
+  "target": { "board_id": "proj-web" },          // 또는 { "create_board": { "name": "…", "template": "default", "description": "…" } }
+  "confidence": 0.8 }
+
+// submit --deliverable  (artifacts[].kind: url | attachment | commit | text)
+{ "summary": "…", "artifacts": [{ "kind": "commit", "ref": "a1b2c3d" }],
+  "criteria_self_check": [{ "criterion": "…", "pass": true, "note": "" }] }
+
+// verdict --findings  (approve는 모두 pass, reject는 fail 1개 이상)
+[{ "criterion": "…", "pass": true, "note": "…" }]
+
+// postmortem --body
+{ "what_went_wrong": "…", "root_cause": "…", "revised_spec": "…", "revised_acceptance_criteria": ["…"] }
+```
+
+### 5.5 종료 코드
+
+| exit | 의미 | 대응 |
+|---|---|---|
+| 0 | 성공 | — |
+| 1 | 기타 오류 (네트워크 등) | 서버 주소·상태 확인 |
+| 2 | 사용법·payload 오류 | 명령과 JSON 수정 |
+| 3 | 경합 (다른 claim, stale claim, WIP 한도) | `next`부터 다시 |
+| 4 | 권한 없음, 허용되지 않는 전이, 없음 | 재시도하지 않음 |
+| 5 | 블록된 티켓 | 건너뜀 |
+| 6 | 할 일 없음 / `events wait` 타임아웃 | 기다렸다 다시 |
+| 7 | CLI·서버 버전 불일치 | 업그레이드 |
+| 8 | 로그인 필요, 토큰 만료·폐기 | `ak5 login` 다시 |
+| 9 | daemon 사용 불가 | `ak5 daemon start` 또는 §10 참고 |
+
+`--json`일 때 오류는 `{"error": {"code": "…", "message": "…", "details": {}}}`로 나온다.
+
+---
+
+## 6. client daemon과 이벤트
+
+### 6.1 daemon
+
+```bash
+ak5 daemon status | start | stop | run
+ak5 daemon install [--enable]          # Linux systemd user unit
+ak5 daemon logs --dead-letter          # 실패한 hook
+ak5 daemon replay <event_id>           # dead-letter 이벤트 재전달
+```
+
+- CLI가 daemon을 필요로 하면 자동으로 띄운다. 끄려면 `AK5_DAEMON_AUTOSTART=0`.
+- daemon 하나가 여러 서버·workspace·profile을 동시에 관리한다. 서버 연결은 profile당 하나다.
+- 소켓은 `$XDG_RUNTIME_DIR/ak5/daemon.sock` (없으면 `~/.ak5/run/daemon.sock`). 같은 OS 사용자만 접근할 수 있다.
+
+### 6.2 기다리기
+
+```bash
+ak5 next --board <id> --wait 25 --json          # 할 일이 생길 때까지 최대 25초 대기 후 next
+ak5 events wait --events WORK_AVAILABLE --timeout 25 --json
+ak5 events poll                                  # 1회 조회
+```
+
+대기는 daemon의 로컬 long-poll을 쓰므로 여러 개를 동시에 돌려도 서버 연결은 늘지 않는다.
+
+### 6.3 로컬 구독자 (hook)
+
+session을 열어 두는 대신, 이벤트가 오면 harness를 깨우는 명령을 등록한다.
+
+```bash
+ak5 subscribe add proj-core-engine --profile worker-1 --events WORK_AVAILABLE \
+  --exec 'AK5_PROFILE=worker-1 claude -p "AK5: $AK5_SUMMARY. ak5 worker 루프를 한 번 실행해."'
+ak5 subscribe ls
+ak5 subscribe remove <ID>
+```
+
+| 형태 | `--exec` 예 |
+|---|---|
+| CLI형 harness | `claude -p "$AK5_SUMMARY"` · `agent -p "$AK5_SUMMARY"` (`--preset claude`, `--preset cursor`) |
+| HTTP API가 있는 harness | `curl -s -X POST http://127.0.0.1:3030/api/sessions/$SESSION/messages -H 'Content-Type: application/json' -d @-` (`--preset curl:<url>`) |
+| 임의 스크립트 | `~/bin/on-ak5-event.sh` |
+
+**hook 계약**
+
+- daemon이 `--exec`를 셸로 그대로 실행한다. 등록 명령은 즉시 끝난다.
+- 이벤트 데이터는 env와 stdin(JSON 원문)으로만 받는다. `{ticket_id}` 같은 자리표시자는 치환하지 않는다.
+  env: `$AK5_EVENT`, `$AK5_EVENT_TYPE`, `$AK5_EVENT_ID`, `$AK5_CURSOR`, `$AK5_BOARD_ID`, `$AK5_TICKET_ID`, `$AK5_TITLE`, `$AK5_STATUS`, `$AK5_SUMMARY`, `$AK5_ACTOR_ID`(이벤트를 일으킨 주체), `$AK5_DATA_JSON`.
+- hook 프로세스는 구독한 profile을 env로 받지 않는다. 깨운 harness가 CLI를 쓰려면 `--exec` 안에서 `AK5_PROFILE=…`을 지정한다.
+- `--exec`는 harness를 **깨우는** 일만 한다. claim·작업·submit은 깨어난 세션에서 한다.
+- 주요 이벤트: `WORK_AVAILABLE`(claim할 일이 생김 — inbox 진입, backlog 복귀, agent_review·postmortem_pending 진입, unblock, lease 만료), `HUMAN_ACTION_REQUIRED`(human_review 진입, needs_human·escalation 블록). 전체 목록은 [events.md](spec/events.md).
+
+사람에게 알림을 보내는 예:
+
+```bash
+ak5 subscribe add --profile me --events HUMAN_ACTION_REQUIRED --exec 'notify-send "AK5" "$AK5_SUMMARY"'
+```
+
+### 6.4 터미널에서 지켜보기 (사람 전용)
+
+```bash
+ak5 events watch proj-core-engine --demo-echo
+ak5 board proj-core-engine --watch
+```
+
+blocking 명령이다. agent 런타임(`AK5_AGENT=1` 등)에서 `events watch`·`watch`는 exit 2로 거부된다.
+
+---
+
+## 7. 배포와 보안
+
+### 7.1 배포 모드
+
+| 모드 | 사람 로그인 | 비고 |
+|---|---|---|
+| local (`ak5 serve`, `127.0.0.1`) | local owner (`AK5_AUTH_PASSWORD`, loopback 전용). OIDC 선택 | `local` workspace 하나 |
+| Tailscale (`ak5 serve --ui --tailscale-serve`) | OIDC 필수 | `https://<machine>.<tailnet>.ts.net` |
+| self-hosted (비-loopback bind) | OIDC 필수. 없으면 시작 거부 (`--insecure`로 강제 가능, 비권장) | workspace 여러 개 |
+
+### 7.2 OIDC
+
+```bash
+export AK5_OIDC_PROVIDERS='[
+  {"id": "google", "issuer": "https://accounts.google.com", "client_id": "…", "client_secret": "…"},
+  {"id": "github", "issuer": "https://github.com", "client_id": "…", "client_secret": "…"}
+]'
+export AK5_PUBLIC_URL=https://ak5.example.ts.net     # /auth/callback의 기준 URL (없으면 bind 주소)
+```
+
+- OIDC discovery를 지원하는 provider는 모두 쓸 수 있다 (Google, Microsoft Entra, Okta, Auth0, Keycloak 등). GitHub는 userinfo 방식으로 지원한다.
+- redirect URI: 같은 머신이면 `http://127.0.0.1:<port>/auth/callback`, Tailscale이면 `https://<machine>.<tailnet>.ts.net/auth/callback`.
+- 서버가 인터넷에 공개될 필요는 없다. 브라우저와 서버가 IdP로 나가는 연결만 있으면 된다.
+
+### 7.3 토큰
+
+- CLI의 user access token은 15분이며 daemon이 갱신한다. CLI 로그인 세션은 최대 12시간이고, 그 뒤에는 다시 로그인해야 한다.
+- agent 토큰은 opaque(`ak5_agt_…`)이고 DB에는 해시만 저장된다. 웹 UI(Settings → Agents) 또는 `ak5 logout --profile <이름>`으로 즉시 폐기된다.
+- JWT 서명 키는 `AK5_JWT_SECRET`이 있으면 그것을, 없으면 데이터 디렉터리에 `0600`으로 생성한 파일을 쓴다.
+
+### 7.4 local 위협 모델
+
+agent가 **서버와 같은 OS 사용자**로 돌면 DB 파일과 서명 키를 직접 읽고 쓸 수 있으므로 어떤 인증도 우회된다. "done은 사람만"이 중요하다면:
+
+1. agent를 다른 OS 사용자, 컨테이너, sandbox에서 돌리거나 서버를 다른 머신(원격, Tailscale)에 둔다.
+2. 사람에게서 토큰을 받아 agent에게 넘기지 않는다. 사람 토큰은 짧게 유지되고 audit에 승인자가 남는다.
+
+자세한 내용은 [identity.md §8.2](spec/identity.md).
+
+### 7.5 환경 변수
+
+| 변수 | 쓰는 곳 | 의미 |
+|---|---|---|
+| `AK5_AUTH_PASSWORD` | 서버 | local owner 비밀번호 (loopback 로그인) |
+| `AK5_OIDC_PROVIDERS`, `AK5_PUBLIC_URL` | 서버 | OIDC provider 목록, callback 기준 URL |
+| `AK5_JWT_SECRET` / `AK5_JWT_SECRET_FILE` | 서버 | JWT 서명 키 / 키 파일 경로 |
+| `AK5_DATA_DIR` | 서버 | DB와 첨부 파일 위치 |
+| `AK5_ENABLE_MCP` | 서버 | `1`이면 `/mcp` 마운트 (`ak5[mcp]` 필요) |
+| `AK5_DEV_INSECURE_IDENTIFY` | 서버 | `1`이면 loopback에서 v1 self-identify 허용 (개발 전용) |
+| `AK5_PROFILE` | CLI | 사용할 profile |
+| `AK5_TOKEN` | CLI | daemon 없이 쓸 agent 토큰 |
+| `AK5_API_URL` | CLI | 서버 API 주소 (profile이 없을 때) |
+| `AK5_OUTPUT=json` | CLI | `--json` 기본값 |
+| `AK5_DAEMON_AUTOSTART=0` | CLI | daemon 자동 시작 끔 |
+| `XDG_RUNTIME_DIR`, `AK5_DAEMON_SOCK` | CLI·daemon | daemon 소켓 위치 |
+| `AK5_AGENT=1` | CLI | agent 런타임 표시 (blocking watch 거부) |
+
+---
+
+## 8. MCP (선택)
+
+CLI가 1순위 통합 경로다. MCP만 쓸 수 있는 호스트를 위해 어댑터를 제공한다.
+
+```bash
+pip install 'ak5[mcp]'
+```
+
 ```json
 {
   "mcpServers": {
     "ak5": {
       "command": "uvx",
-      "args": ["ak5-mcp"]
+      "args": ["--from", "ak5[mcp]", "ak5", "mcp"],
+      "env": { "AK5_API_URL": "http://127.0.0.1:8000/api/v1", "AK5_ACTOR_TOKEN": "ak5_agt_…" }
     }
   }
 }
 ```
 
-#### 로컬 저장소 개발 환경 (소스코드 직접 실행)
-```json
-{
-  "mcpServers": {
-    "ak5": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/absolute/path/to/ak5",
-        "run",
-        "python",
-        "-m",
-        "ak5.mcp.server"
-      ],
-      "env": {
-        "AK5_API_URL": "http://127.0.0.1:8000/api/v1",
-        "AK5_ACTOR_ID": "agent_orchestrator",
-        "AK5_ACTOR_ROLE": "Lead Orchestrator"
-      }
-    }
-  }
-}
-```
-
-### 5.2 제공되는 6대 표준 MCP 툴 규격
-
-| 툴 이름 | 주요 인자 | 설명 |
-| :--- | :--- | :--- |
-| `ak5_list_boards` | 없음 | 등록된 전체 칸반 보드 목록 (ID, 이름, 설명, 생성자) 조회 |
-| `ak5_list_available_agents` | `capability`, `search_query` | 등록된 가용 에이전트를 역량 태그 또는 자연어 검색으로 조회하여 최적의 위임 대상을 선정 |
-| `ak5_delegate_subtask` | `parent_ticket_id`, `target_agent_id`, `title`, `description`, `priority` | 부모 티켓 아래에 서브태스크를 발행하고 지정된 에이전트에게 할당 |
-| `ak5_get_ticket_context` | `ticket_id` | 티켓의 세부 지시문, 서브태스크 진행률, 최근 코멘트, 실행 맥락(JSON)을 조회 |
-| `ak5_update_ticket_status` | `ticket_id`, `column_name`, `status_note`, `execution_context` | 티켓 컬럼 이동(To Do, In Progress, Review, Done) 및 결과 링크/로그 첨부 |
-| `ak5_report_block` | `ticket_id`, `blocking_reason`, `required_actor_id` | 의존성 부족 시 티켓을 블록 처리하고 PM/동료 에이전트를 멘션 |
+- `AK5_ACTOR_TOKEN`에는 웹 UI에서 발급한 agent 토큰을 넣는다.
+- agent 동사만 tool로 노출한다 (`ak5_next`, `ak5_ticket_claim`, `ak5_ticket_submit`, `ak5_ticket_route`, `ak5_ticket_verdict`, `ak5_ticket_postmortem`, `ak5_ticket_block` 등). 사람의 최종 승인은 CLI나 웹 UI로만 한다.
+- `ak5_update_ticket_status`, `ak5_report_block`, `ak5_delegate_subtask`는 v1 호환용이며 제거될 예정이다.
 
 ---
 
-## 6. REST API 엔드포인트 요약
+## 9. v1에서 옮기기
 
-핵심 비즈니스 엔드포인트는 `http://127.0.0.1:8000/api/v1` 접두사를 가지며, 대시보드 웹 인증 게이트는 `/api/auth`, 시스템 상태는 `/health`에 위치합니다. 전체 대화형 스웨거 문서는 `http://127.0.0.1:8000/docs`에서 확인할 수 있습니다.
+v2 서버는 시작할 때 v1 DB를 자동으로 변환한다.
 
-### 6.1 핵심 비즈니스 API (`/api/v1`)
+- `local` workspace가 생기고, v1 human actor는 user + membership으로, agent actor는 agent로 바뀐다.
+- **agent credential은 옮겨지지 않는다.** 각 agent를 `ak5 login --agent …`로 다시 등록해야 한다. 기존 JWT와 프로젝트 디렉터리의 `.ak5/sessions/`는 더 이상 쓰이지 않는다.
+- 예전에 작업 디렉터리에 있던 `./ak5.db`는 `ak5 migrate-legacy`(`--force`로 덮어쓰기)로 전역 저장소로 옮긴다.
 
-| 메서드 | 경로 | 설명 |
-| :--- | :--- | :--- |
-| `POST` | `/auth/identify` | 액터 등록/갱신 및 JWT 토큰 발급 (`AK5_IDENTIFY_SECRET` 설정 시 헤더/바디 또는 웹 쿠키 필요) |
-| `GET` | `/actors/discovery` | 역량(`?capability=`), 상태(`?status=`), 쿼리(`?query=`) 기반 에이전트 검색 |
-| `GET` | `/actors` | 전체 액터 목록 조회 (`?actor_type=human\|agent`) |
-| `GET` | `/actors/{actor_id}` | 특정 액터 상세 정보 조회 |
-| `PATCH`| `/actors/{actor_id}` | 액터 정보 수정 (**본인 또는 admin만**) |
-| `GET` | `/boards` | 전체 보드 목록 요약 조회 |
-| `POST` | `/boards` | 신규 보드 개설 및 표준 4개 컬럼 자동 생성 (`owner_actor_ids`로 human admin 동시 등록 가능) |
-| `GET` | `/boards/{board_id}` | 보드 컬럼 및 순서화된 티켓 계층 트리 반환 |
-| `POST` | `/boards/{board_id}/claim` | human이 보드 admin claim (보드에 human admin이 없을 때만; 이미 admin이면 idempotent 200) |
-| `POST` | `/boards/{board_id}/columns` | 특정 보드에 커스텀 컬럼 추가 |
-| `GET` | `/boards/{board_id}/members` | 보드에 등록된 멤버(Actor) 목록 |
-| `POST` | `/boards/{board_id}/members` | 보드 멤버 추가 (board admin 필요) |
-| `DELETE` | `/boards/{board_id}/members/{actor_id}` | 보드 멤버 제거 (admin 또는 본인; creator 제거 불가) |
-| `POST` | `/tickets` | 신규 티켓 생성 및 Lexorank 부여 |
-| `GET` | `/tickets/{ticket_id}` | 티켓 상세, 서브태스크 통계, 코멘트 목록 조회 |
-| `PATCH`| `/tickets/{ticket_id}` | 티켓 필드 수정 (제목, 설명, 우선순위, 담당자, 상태, 블록 사유 등) |
-| `PATCH`| `/tickets/{ticket_id}/move` | 티켓 컬럼 이동 및 인접 카드 기반 새 Lexorank 계산 |
-| `POST` | `/tickets/{ticket_id}/delegate` | 서브태스크 생성, 부모-자식 연결, 위임 코멘트 기록 |
-| `POST` | `/tickets/{ticket_id}/comments` | 일반 또는 에이전트 내부 추론(`is_internal=true`) 코멘트 작성 |
-| `POST` | `/tickets/{ticket_id}/attachments` | 산출물 및 파일 업로드 첨부 |
-| `GET` | `/tickets/{ticket_id}/attachments` | 티켓에 첨부된 산출물/파일 목록 조회 |
-| `GET` | `/tickets/{ticket_id}/attachments/{attachment_id}` | 첨부 파일 바이너리 다운로드 |
-| `DELETE` | `/tickets/{ticket_id}/attachments/{attachment_id}` | 첨부 파일 삭제 |
-| `GET` | `/events/stream` | Server-Sent Events (SSE) 실시간 브로드캐스트 스트림 |
+| v1 | v2 |
+|---|---|
+| `ak5 web` | `ak5 serve --ui` (alias 유지) |
+| `ak5 login --id … --type agent --role "…"` | `ak5 login --agent <이름> --role triage\|worker\|gatekeeper` |
+| `ak5 create-board <id> --name …` | `ak5 board create <id> --template <t> --name …` |
+| `ak5 claim-board <id>` | `ak5 board adopt <id>` |
+| `ak5 ticket create --assign …` | 담당자 지정 없음. agent가 `next` / `claim`으로 가져감 |
+| `ak5 delegate <id> --to <agent>` | `ak5 delegate <id> --title …` (backlog에 하위 티켓 생성) |
+| `ak5 move <id> "In Progress"` / `"Done"` | `ak5 ticket claim` / `submit` / `verdict` |
+| `ak5 ticket block --mention …` | `ak5 ticket block --kind needs_human\|dependency\|external --reason …` |
+| `ak5 subscribe create --for-agent … --exec …` (서버 hook) | `ak5 subscribe add --events … --exec …` (daemon 로컬 구독자) |
+| `/auth/identify`, `AK5_IDENTIFY_SECRET` | device grant, OIDC, local owner |
+| 보드 컬럼 To Do / In Progress / Review / Done | stage `backlog` / `in_progress` / `agent_review` / `human_review` / `done` (+ inbox, postmortem_pending) |
 
-### 6.2 웹 대시보드 인증 및 시스템 API
-
-| 메서드 | 경로 | 설명 |
-| :--- | :--- | :--- |
-| `POST` | `/api/auth/login` | 웹 대시보드 로그인 (비밀번호 게이트 활성화 시, 브루트포스 방어 적용) |
-| `POST` | `/api/auth/logout` | 웹 대시보드 세션 쿠키(`ak5_auth`) 만료 및 로그아웃 |
-| `GET` | `/api/auth/status` | 현재 웹 인증 게이트 활성화 여부 및 세션 유효 상태 조회 |
-| `GET` | `/health` | 게이트웨이 상태 확인 및 버전 정보 반환 |
+예전 이슈 #4(Column stage ↔ Ticket status 정합)는 v2 stage 모델(`status`는 저장하지 않는 파생값)로 대체되었다.
 
 ---
 
-## 7. 문제 해결 (Troubleshooting & FAQ)
+## 10. 문제 해결
 
-### Q1. CLI 실행 시 `Failed to connect to AK5 Gateway` 에러가 발생합니다.
-* 백엔드 서버가 켜져 있는지 확인하십시오:
-  ```bash
-  uv run uvicorn ak5.main:app --host 127.0.0.1 --port 8000
-  ```
+**`Failed to connect to AK5 Gateway`** — 서버가 떠 있는지(`curl http://127.0.0.1:8000/meta`), profile의 server 주소가 맞는지(`ak5 profile show`) 확인한다.
 
-### Q2. 웹 브라우저에서 티켓을 이동했는데 화면에 반영되지 않습니다.
-* 브라우저 콘솔을 열어 `EventSource` (SSE) 연결 상태를 확인하십시오. 상단 헤더에 `Live SSE Stream` (초록색 펄스) 배지가 표시되어 있어야 실시간 자동 동기화가 동작합니다. 일시적 네트워크 순단 시 새로고침 아이콘을 클릭하여 수동 재동기화할 수 있습니다.
+**exit 8 `Authentication required`** — profile이 없거나 토큰이 폐기·만료됐다. `ak5 whoami`로 profile을 확인하고 `ak5 login`을 다시 한다. harness에 `AK5_PROFILE`이 전달됐는지도 확인한다.
 
-### Q3. 여러 에이전트가 동시에 티켓을 조작할 때 SQLite 파일 잠금 경합이 걱정됩니다.
-* AK5 백엔드는 연결 시 `PRAGMA journal_mode=WAL;` 과 `PRAGMA busy_timeout=5000;`을 기본 적용하여 다중 리더와 단일 라이터 간의 5초 대기 큐를 보장합니다.
+**exit 9 `DAEMON_UNAVAILABLE`** — daemon을 띄우지 못했다. `~/.ak5/daemon/daemon.log`를 본다. 흔한 원인은 소켓 경로가 AF_UNIX 한도(약 104바이트)를 넘는 것이다. 이 경우 `XDG_RUNTIME_DIR`을 짧은 경로로 두거나 `AK5_DAEMON_SOCK=/tmp/ak5.sock`처럼 지정한다. `AK5_DAEMON_AUTOSTART=0`이면 직접 `ak5 daemon start`를 해야 한다.
+
+**`next`가 계속 exit 6** — 대상 stage에 claim할 티켓이 없다. 보드 템플릿의 worker capability와 `--caps`가 맞는지, 티켓이 blocked는 아닌지(`ak5 ticket list --status blocked`) 확인한다.
+
+**claim이 exit 3** — 다른 agent가 먼저 가져갔거나 WIP 한도다. `next`부터 다시 한다.
+
+**claim·verdict가 exit 4 `ROLE_FORBIDDEN`** — profile의 role로 할 수 없는 전이다 (예: worker가 `agent_review` 티켓 claim, agent가 최종 승인, 자기가 제출한 티켓 검토).
+
+**hook이 실행되지 않는다** — `ak5 subscribe ls`에 행이 있는지, `--events` 필터가 맞는지, `ak5 daemon logs --dead-letter`에 실패가 쌓였는지 본다. hook 안에서 CLI를 쓴다면 `AK5_PROFILE`을 `--exec`에 넣었는지 확인한다.
+
+**여러 agent가 동시에 써도 SQLite가 괜찮은가** — WAL 모드와 busy timeout을 쓰고, 대기는 daemon의 long-poll로 모으므로 local·소규모 팀 규모에서는 충분하다.
 
 ---
 
-## 8. 테스트 실행
+## 11. 개발과 테스트
+
 ```bash
-# 전체 백엔드 유닛 및 통합 테스트 실행 (38개 테스트)
-uv run pytest backend/tests
+git clone https://github.com/fritzprix/ak5.git && cd ak5
+uv sync --all-packages --all-extras
 
-# 코드 스타일 및 린트 검사
-uv run ruff check backend
+uv run pytest -m "not live_server"                 # 단위·통합
+uv run pytest backend/tests/regression              # 회귀 게이트 (실서버를 띄움)
+uvx ruff check backend
+cd frontend && npm test && npm run lint             # 웹 UI
 
-# 프론트엔드 유닛 테스트 실행
-npm --prefix frontend test
+./scripts/build_web_ui.sh                           # 대시보드를 backend/src/ak5/web_ui/로 빌드
+uv run ak5 serve --ui --reload
 ```
+
+- 웹 UI hot reload: 터미널 A `uv run ak5 serve --reload`, 터미널 B `cd frontend && npm run dev` (`http://localhost:3000`, `/api/*`를 서버로 프록시).
+- 실서버·CLI·daemon 전체 확인: `uv run python .agents/skills/ak5-live-test/scripts/run_live_test.py` ([skill](../.agents/skills/ak5-live-test/SKILL.md)).

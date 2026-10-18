@@ -104,11 +104,11 @@ def _whoami_from_profile(profile_name: str, *, json_mode: bool) -> bool:
 def whoami_command(ctx: click.Context, profile: str | None) -> None:
     """Show the active daemon profile or project-bound actor session.
 
+    \b
     Agents:
-      - Prefer whoami over inventing a new --id.
-      - Copy the plain Actor ID (no leading @) into AK5_ACTOR_ID.
-      - If ambiguous, match role/caps under .ak5/identity/, then export + whoami.
-      - Next after a healthy session: ak5 subscribe create … && ak5 subscribe ls
+      - Run with your AK5_PROFILE; "Daemon token ok" means you can call the API.
+      - Not logged in: ask a human to run/approve `ak5 login --agent <name> --role …`.
+      - Next: ak5 next --wait 25 --json, or ak5 subscribe add … && ak5 subscribe ls
     """
     json_mode = is_json_mode(flag=json_flag_from_ctx(ctx))
     profile_name = resolve_profile_name(profile)
@@ -212,6 +212,6 @@ def whoami_command(ctx: click.Context, profile: str | None) -> None:
     console.print(Panel(table, title="Current AK5 Session", expand=False))
     console.print(
         f"[dim]Bind shells:[/dim] export AK5_ACTOR_ID={actor_id}\n"
-        "[dim]Next (agents):[/dim] ak5 subscribe create <BOARD> "
-        f"--for-agent {actor_id} --exec '<YOUR_HARNESS_WAKE>' && ak5 subscribe ls"
+        "[dim]Next (agents):[/dim] ak5 subscribe add <BOARD> --events WORK_AVAILABLE "
+        "--exec '<YOUR_HARNESS_WAKE>' && ak5 subscribe ls"
     )

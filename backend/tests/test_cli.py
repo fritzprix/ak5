@@ -103,7 +103,8 @@ def test_cli_whoami_help():
     result = runner.invoke(cli, ["whoami", "--help"])
     assert result.exit_code == 0
     assert "whoami" in result.output.lower()
-    assert "AK5_ACTOR_ID" in result.output or "plain" in result.output.lower()
+    assert "AK5_PROFILE" in result.output
+    assert "ak5 login --agent" in result.output
 
 
 def test_cli_create_board_help():
@@ -173,7 +174,7 @@ def test_cli_root_help_agent_happy_path():
     runner = CliRunner()
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert "next --json" in result.output
+    assert "next --wait 25 --json" in result.output
     assert "subscribe add" in result.output
     assert "ticket claim" in result.output
 

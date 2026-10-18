@@ -5,6 +5,8 @@ Executes headless tasks via Cursor Agent CLI and synchronizes results back to AK
 """
 
 import argparse
+import contextlib
+import json
 import os
 import shutil
 import subprocess
@@ -34,14 +36,37 @@ def find_cursor_agent_bin() -> str | None:
     return None
 
 
-def run_cmd(cmd: list[str], check: bool = False, capture: bool = True) -> subprocess.CompletedProcess:
+def run_cmd(
+    cmd: list[str], check: bool = False, capture: bool = True, stdin: str | None = None
+) -> subprocess.CompletedProcess:
     """Helper to run subprocess safely."""
     return subprocess.run(
         cmd,
         text=True,
         capture_output=capture,
         check=check,
+        input=stdin,
     )
+
+
+def find_ak5_bin() -> str | None:
+    ak5_bin = shutil.which("ak5")
+    if ak5_bin:
+        return ak5_bin
+    venv_ak5 = Path.cwd() / ".venv" / "bin" / "ak5"
+    return str(venv_ak5) if venv_ak5.is_file() else None
+
+
+def build_deliverable(title: str, output: str, attachment_id: str | None) -> dict:
+    """AK5 deliverable payload (workflow.md §5.2) from the Cursor run."""
+    first_line = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
+    summary = (first_line or title or "Cursor Agent run completed")[:500]
+    artifacts = []
+    if attachment_id:
+        artifacts.append({"kind": "attachment", "ref": attachment_id})
+    else:
+        artifacts.append({"kind": "text", "ref": output.strip()[:4000]})
+    return {"summary": summary, "artifacts": artifacts, "criteria_self_check": []}
 
 
 def craft_prompt(mode: str, title: str, ticket_id: str, custom_prompt: str | None) -> str:
@@ -127,9 +152,19 @@ def main() -> int:
         help="Attach the full Cursor Agent output report to the AK5 ticket",
     )
     parser.add_argument(
+        "--claim",
+        action="store_true",
+        help="Claim the ticket (worker profile) before running; stop if someone else holds it",
+    )
+    parser.add_argument(
+        "--submit",
+        action="store_true",
+        help="Submit the run as the ticket deliverable (→ agent_review); needs a claim by this profile",
+    )
+    parser.add_argument(
         "--move-to",
         default=None,
-        help="Kanban column ID to move the ticket to after completion (e.g. col_review, col_done)",
+        help=argparse.SUPPRESS,  # v1; stage changes go through --submit (workflow.md §3)
     )
     parser.add_argument(
         "--dry-run",
@@ -138,6 +173,10 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    if args.move_to:
+        parser.error("--move-to was removed in v2: use --claim/--submit (stages change only via workflow verbs)")
+    if (args.claim or args.submit) and not args.ticket_id:
+        parser.error("--claim/--submit need --ticket-id (or $AK5_TICKET_ID)")
 
     agent_bin = find_cursor_agent_bin()
     if not agent_bin:
@@ -171,6 +210,17 @@ def main() -> int:
         print(" ".join(f'"{c}"' if " " in c or "\n" in c else c for c in cmd))
         return 0
 
+    if args.claim:
+        ak5_bin = find_ak5_bin()
+        if not ak5_bin:
+            sys.stderr.write("Error: --claim needs the 'ak5' CLI in PATH or .venv.\n")
+            return 1
+        claim = run_cmd([ak5_bin, "ticket", "claim", args.ticket_id])
+        if claim.returncode != 0:
+            # 3 = claimed by someone else, 4 = wrong role/stage, 5 = blocked: nothing to do.
+            sys.stderr.write(f"[!] Could not claim {args.ticket_id} (exit {claim.returncode}):\n{claim.stdout}{claim.stderr}")
+            return claim.returncode
+
     print(f"[*] Dispatching task to Cursor Agent ({agent_bin})...")
     print(f"[*] Mode: {args.mode} | Ticket: {args.ticket_id or 'N/A'}")
 
@@ -192,12 +242,7 @@ def main() -> int:
 
     # Sync with AK5 if ticket_id is present
     if args.ticket_id:
-        ak5_bin = shutil.which("ak5")
-        if not ak5_bin:
-            # Check venv
-            venv_ak5 = Path.cwd() / ".venv" / "bin" / "ak5"
-            if venv_ak5.is_file():
-                ak5_bin = str(venv_ak5)
+        ak5_bin = find_ak5_bin()
 
         if ak5_bin:
             # Save output to a temp file for attachment or comments
@@ -224,14 +269,26 @@ def main() -> int:
                     run_cmd([ak5_bin, "comment", args.ticket_id, comment_summary])
 
                 # 2. Attach Report
+                attachment_id = None
                 if args.attach:
                     print(f"[*] Attaching report to ticket {args.ticket_id}...")
-                    run_cmd([ak5_bin, "ticket", "attach", args.ticket_id, temp_report_path])
+                    attached = run_cmd([ak5_bin, "--json", "ticket", "attach", args.ticket_id, temp_report_path])
+                    if attached.returncode == 0:
+                        with contextlib.suppress(json.JSONDecodeError):
+                            attachment_id = json.loads(attached.stdout).get("attachment_id")
 
-                # 3. Move Column
-                if args.move_to:
-                    print(f"[*] Moving ticket {args.ticket_id} to column '{args.move_to}'...")
-                    run_cmd([ak5_bin, "move", args.ticket_id, args.move_to])
+                # 3. Submit deliverable (worker T9: in_progress → agent_review)
+                if args.submit:
+                    print(f"[*] Submitting deliverable for {args.ticket_id}...")
+                    payload = json.dumps(build_deliverable(args.title, stdout_output, attachment_id))
+                    submitted = run_cmd(
+                        [ak5_bin, "ticket", "submit", args.ticket_id, "--deliverable", "-"], stdin=payload
+                    )
+                    if submitted.returncode != 0:
+                        sys.stderr.write(
+                            f"[!] Submit failed (exit {submitted.returncode}):\n{submitted.stdout}{submitted.stderr}"
+                        )
+                        return submitted.returncode
             finally:
                 if os.path.exists(temp_report_path):
                     os.unlink(temp_report_path)
