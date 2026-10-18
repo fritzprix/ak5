@@ -488,3 +488,115 @@ async def test_subscription_routes_reject_other_workspace(
         res = await client.request(method, path, headers=other, json=body)
         assert res.status_code == 403, (method, path, res.text)
         assert "WORKSPACE_FORBIDDEN" in res.text, (method, path, res.text)
+
+
+async def _stop_wait(_timeout: float = 0) -> bool:
+    import asyncio
+
+    raise asyncio.CancelledError
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_is_scoped_to_caller_workspace(
+    client: AsyncClient,
+    anon_client: AsyncClient,
+    auth_headers,
+    test_db: AsyncSession,
+    monkeypatch,
+):
+    """#84: /events/stream never replays another workspace's event log."""
+    from datetime import UTC, datetime
+
+    from ak5.server.auth.bridge import register_bridge
+    from ak5.server.models.actor import Actor
+    from ak5.server.models.workspace import Agent
+
+    await ensure_local_tenancy(test_db)
+    await _ensure_other_workspace(test_db)
+    for actor_id, actor_type in (("usr_other", "human"), ("agt_other_off", "agent")):
+        if await test_db.get(Actor, actor_id) is None:
+            test_db.add(
+                Actor(
+                    actor_id=actor_id,
+                    actor_type=actor_type,
+                    name=actor_id,
+                    role="human" if actor_type == "human" else "worker",
+                    capabilities="[]",
+                    status="idle",
+                )
+            )
+        register_bridge(actor_id, actor_id)
+    test_db.add(
+        Agent(
+            agent_id="agt_other_off",
+            workspace_id="ws_other",
+            name="disabled",
+            workflow_role="worker",
+            capabilities="[]",
+            board_scope="[]",
+            created_by="usr_other",
+            disabled_at=datetime.now(UTC).replace(tzinfo=None),
+        )
+    )
+    await test_db.commit()
+
+    made = await client.post(
+        "/api/v1/tickets",
+        json={
+            "board_id": "proj-core-engine",
+            "title": "LOCAL-SECRET-TITLE",
+            "spec": "s",
+            "acceptance_criteria": ["a"],
+        },
+        headers=auth_headers("user_pm", "human"),
+    )
+    assert made.status_code == 201, made.text
+    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _stop_wait)
+
+    def bearer(principal: Principal) -> dict[str, str]:
+        return {"Authorization": f"Bearer {issue_access_token(principal)}"}
+
+    other = bearer(
+        Principal(
+            principal_id="usr_other",
+            principal_type="user",
+            workspace_id="ws_other",
+            workflow_role=Role.HUMAN,
+            membership_role="owner",
+        )
+    )
+    foreign = await anon_client.get(
+        "/api/v1/events/stream", params={"last_event_id": 0}, headers=other, timeout=10.0
+    )
+    assert foreign.status_code == 200
+    assert "CONNECTED" in foreign.text
+    assert "proj-core-engine" not in foreign.text and made.json()["ticket_id"] not in foreign.text
+
+    own = await anon_client.get(
+        "/api/v1/events/stream",
+        params={"last_event_id": 0},
+        headers=auth_headers("user_pm", "human"),
+        timeout=10.0,
+    )
+    assert own.status_code == 200
+    assert "TICKET_CREATED" in own.text and "proj-core-engine" in own.text
+
+    scoped_foreign = await anon_client.get(
+        "/api/v1/events/stream", params={"board_id": "proj-core-engine"}, headers=other, timeout=10.0
+    )
+    assert scoped_foreign.status_code == 403
+    assert scoped_foreign.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+    disabled = await anon_client.get(
+        "/api/v1/events/stream",
+        headers=bearer(
+            Principal(
+                principal_id="agt_other_off",
+                principal_type="agent",
+                workspace_id="ws_other",
+                workflow_role=Role.WORKER,
+            )
+        ),
+        timeout=10.0,
+    )
+    assert disabled.status_code == 401

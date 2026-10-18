@@ -3,11 +3,8 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
-import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -16,44 +13,13 @@ from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.inbox import resolve_board_alias
 from ak5.server.models.actor import Actor
+from ak5.server.models.board import Board
 from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.event import EventOut, EventsPollOut
-from ak5.server.security import get_jwt_secret
 from ak5.server.services.event_bus import event_bus
 from ak5.server.services.subscription_service import SubscriptionServiceError, subscription_service
 
 router = APIRouter(prefix="/events", tags=["events"])
-_security = HTTPBearer(auto_error=False)
-
-
-async def _actor_from_bearer(
-    db: AsyncSession,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> Actor:
-    """Bearer header only: clients stream with fetch, so no ``?access_token=`` (#81)."""
-    token = credentials.credentials if credentials else None
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization: Bearer header required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        payload = jwt.decode(token, get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM])
-        actor_id = payload.get("sub")
-        if not actor_id:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-    except jwt.PyJWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token is invalid or expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-
-    actor = (await db.execute(select(Actor).where(Actor.actor_id == actor_id))).scalar_one_or_none()
-    if not actor:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Actor '{actor_id}' not found")
-    return actor
 
 
 @router.get("", response_model=None)
@@ -89,11 +55,12 @@ async def poll_events(
     )
 
 
-@router.get("/stream")
+@router.get("/stream", response_model=None)
 async def sse_event_stream(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_security)],
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     board_id: Annotated[
         str | None, Query(description="Limit stream to one board (Web UI / observation)")
     ] = None,
@@ -104,9 +71,25 @@ async def sse_event_stream(
             description="Resume cursor when EventSource reconnects without Last-Event-ID header"
         ),
     ] = None,
-) -> EventSourceResponse:
-    """SSE observation stream sourced from the persistent event log (events.md §6)."""
-    await _actor_from_bearer(db, credentials)
+) -> EventSourceResponse | JSONResponse:
+    """SSE observation stream sourced from the persistent event log (events.md §6).
+
+    Auth goes through the same Principal verification as every other API route
+    (membership, revocation, disabled agents) and the stream only ever reads the
+    caller's workspace (#84).
+    """
+    _ = current_actor
+    if board_id:
+        board = await db.get(Board, board_id)
+        if board is None or board.workspace_id != workspace_id:
+            return JSONResponse(
+                status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+                content=error_body(
+                    ErrorCode.WORKSPACE_FORBIDDEN,
+                    "Board is outside the caller's workspace",
+                    details={"board_id": board_id, "workspace_id": workspace_id},
+                ),
+            )
 
     # Without Last-Event-ID / last_event_id, start at tip — do not replay retention history.
     tip_seq = await subscription_service.max_event_seq(db)
@@ -138,6 +121,7 @@ async def sse_event_stream(
                             board_id=board_id,
                             since=last_seq,
                             limit=100,
+                            workspace_id=workspace_id,
                         )
                         await session.commit()
                     except SubscriptionServiceError as exc:
