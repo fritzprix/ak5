@@ -152,6 +152,24 @@ def append_dead_letter(
         os.fsync(fh.fileno())
 
 
+# Daemon-process credentials must not leak into hooks: the CLI prefers these over
+# AK5_PROFILE, so a woken harness would act as the wrong principal (#78).
+_HOOK_ENV_DROP = ("AK5_TOKEN", "AK5_ACTOR_TOKEN", "AK5_ACTOR_ID")
+
+
+def hook_env_for_subscriber(sub: LocalSubscriber, event: dict[str, Any]) -> dict[str, str]:
+    """Event env plus ``AK5_PROFILE`` of the subscriber's profile (client.md §4.3, #78).
+
+    A shell assignment inside ``--exec`` (``AK5_PROFILE=x cmd``) still overrides it.
+    """
+    env = hook_env_for_event(event)
+    for key in _HOOK_ENV_DROP:
+        env.pop(key, None)
+    env["AK5_PROFILE"] = sub.profile
+    env["AK5_SUBSCRIBER_ID"] = sub.id
+    return env
+
+
 async def run_subscriber_hook(sub: LocalSubscriber, event: dict[str, Any]) -> int:
     """Run hook in a worker thread so the daemon event loop stays responsive.
 
@@ -159,7 +177,7 @@ async def run_subscriber_hook(sub: LocalSubscriber, event: dict[str, Any]) -> in
     uvicorn/UDS (WriteUnixTransport closed); ``subprocess.run`` in
     ``asyncio.to_thread`` avoids that while keeping hooks off the loop.
     """
-    env = hook_env_for_event(event)
+    env = hook_env_for_subscriber(sub, event)
     stdin = json.dumps(event, ensure_ascii=False).encode("utf-8")
     timeout = _hook_timeout()
     command = sub.exec_command

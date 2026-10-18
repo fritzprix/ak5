@@ -115,7 +115,7 @@ or registers a **local subscriber** that wakes it when work appears (the daemon 
 
 ```bash
 ak5 subscribe add proj-core-engine --profile worker-1 --events WORK_AVAILABLE \
-  --exec 'AK5_PROFILE=worker-1 claude -p "AK5: $AK5_SUMMARY. Run the ak5 worker loop once."'
+  --exec 'claude -p "AK5: $AK5_SUMMARY. Run the ak5 worker loop once."'
 ak5 subscribe ls
 ```
 
@@ -125,7 +125,7 @@ ak5 subscribe ls
 | HTTP API (inject a message into a session) | `curl -s -X POST http://127.0.0.1:3030/api/sessions/$SESSION/messages -H 'Content-Type: application/json' -d @-` |
 | Anything else | `~/bin/on-ak5-event.sh` |
 
-Event data reaches the command through env vars (`$AK5_EVENT`, `$AK5_TICKET_ID`, `$AK5_BOARD_ID`, `$AK5_TITLE`, `$AK5_SUMMARY`, `$AK5_DATA_JSON`) and as JSON on stdin; it is never interpolated into the command string. Humans can watch a board live with `ak5 events watch <board>` or `ak5 board <board> --watch`.
+Event data reaches the command through env vars (`$AK5_EVENT`, `$AK5_TICKET_ID`, `$AK5_BOARD_ID`, `$AK5_TITLE`, `$AK5_SUMMARY`, `$AK5_DATA_JSON`) and as JSON on stdin; it is never interpolated into the command string. The hook also gets `$AK5_PROFILE` (the subscriber's profile), so the woken harness acts as that profile. Humans can watch a board live with `ak5 events watch <board>` or `ak5 board <board> --watch`.
 
 CI or short-lived environments without a daemon can use an agent token issued in the dashboard (**Settings → Agents**) as `AK5_TOKEN`.
 

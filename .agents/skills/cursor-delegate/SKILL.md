@@ -183,12 +183,12 @@ Register a **local daemon subscriber** once. The daemon runs `--exec` whenever t
 ak5 subscribe add proj-core-engine \
   --profile cursor-1 \
   --events WORK_AVAILABLE \
-  --exec 'AK5_PROFILE=cursor-1 python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py --ticket-id "$AK5_TICKET_ID" --title "$AK5_TITLE" --mode review --claim --comment --attach --submit'
+  --exec 'python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py --ticket-id "$AK5_TICKET_ID" --title "$AK5_TITLE" --mode review --claim --comment --attach --submit'
 ak5 subscribe ls
 ```
 
 > [!IMPORTANT]
-> **Hook contract**: `--exec` is run **literally** by the daemon. Event data arrives as **`$AK5_TICKET_ID`**, **`$AK5_TITLE`**, **`$AK5_SUMMARY`**, **`$AK5_BOARD_ID`**, or stdin JSON. Curly-brace tokens like `{title}` are **not** expanded. The hook does not inherit your shell's `AK5_PROFILE`, so set it inside `--exec`.
+> **Hook contract**: `--exec` is run **literally** by the daemon. Event data arrives as **`$AK5_TICKET_ID`**, **`$AK5_TITLE`**, **`$AK5_SUMMARY`**, **`$AK5_BOARD_ID`**, or stdin JSON. Curly-brace tokens like `{title}` are **not** expanded. The daemon sets `AK5_PROFILE` to the subscriber's profile (`cursor-1` here), so the script's `ak5` calls act as that profile.
 >
 > `WORK_AVAILABLE` also fires for stages a worker cannot claim (for example `agent_review`); `--claim` then exits 4 and the run stops without calling Cursor.
 

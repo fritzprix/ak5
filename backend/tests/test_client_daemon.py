@@ -411,3 +411,54 @@ def test_overlapping_dispatch_runs_each_seq_once(daemon_home, monkeypatch):
         assert lines.count("TK-B") == 1, lines
     finally:
         state.close()
+
+
+def test_hook_env_carries_subscriber_profile_not_daemon_token(daemon_home, monkeypatch):
+    """#78: each hook gets its own AK5_PROFILE; daemon-process tokens never leak in."""
+    sock: Path = daemon_home["sock"]
+    monkeypatch.setenv("AK5_TOKEN", "daemon-shell-token")  # would override profiles in the CLI
+    out = daemon_home["home"]
+    for name, role in (("worker-1", "worker"), ("gk-1", "gatekeeper")):
+        upsert_profile(Profile(name=name, server="http://127.0.0.1:9/api/v1", role=role))
+        save_credential(name, ProfileCredential(access_token=f"tok-{name}", actor_id=name, status="active"))
+    start_daemon_background(sock=sock)
+
+    record = 'printf "%s|%s|%s" "$AK5_PROFILE" "${AK5_TOKEN-unset}" "$AK5_SUBSCRIBER_ID"'
+    with _uds_client(sock) as client:
+        for name in ("worker-1", "gk-1"):
+            res = client.post(
+                "/v1/subscribers",
+                json={
+                    "id": f"sub-{name}",
+                    "profile": name,
+                    "events": ["WORK_AVAILABLE"],
+                    "exec_command": f"{record} > {out}/{name}.env",
+                },
+            )
+            assert res.status_code == 200, res.text
+        # Explicit assignment in --exec still wins over the injected profile.
+        res = client.post(
+            "/v1/subscribers",
+            json={
+                "id": "sub-override",
+                "profile": "worker-1",
+                "events": ["WORK_AVAILABLE"],
+                "exec_command": f'AK5_PROFILE=custom sh -c \'printf "%s" "$AK5_PROFILE"\' > {out}/override.env',
+            },
+        )
+        assert res.status_code == 200, res.text
+        for name in ("worker-1", "gk-1"):
+            spooled = client.post(
+                "/v1/spool",
+                json={"profile": name, "type": "WORK_AVAILABLE", "data": {}},
+                timeout=30.0,
+            )
+            assert spooled.status_code == 200, spooled.text
+
+    deadline = time.time() + 15
+    files = {n: out / f"{n}.env" for n in ("worker-1", "gk-1", "override")}
+    while time.time() < deadline and not all(f.is_file() and f.read_text() for f in files.values()):
+        time.sleep(0.1)
+    assert files["worker-1"].read_text() == "worker-1|unset|sub-worker-1"
+    assert files["gk-1"].read_text() == "gk-1|unset|sub-gk-1"
+    assert files["override"].read_text() == "custom"
