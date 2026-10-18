@@ -1061,3 +1061,138 @@ async def test_lease_reclaim_audits_as_system_actor(
     assert reclaim, [(a.actor_id, a.payload) for a in rows[:5]]
     assert all(a.actor_id == SYSTEM_ACTOR_ID for a in reclaim)
     assert all(a.actor_id != "user_pm" for a in reclaim)
+
+
+@pytest.mark.asyncio
+async def test_human_direct_route_from_inbox(client: AsyncClient, roles):
+    """#39: Human can route unclassified tickets directly from inbox without claim_token."""
+    human = _h(roles, "user_pm", "human")
+    triage = _h(roles, "agent_triage")
+
+    # 1. Create an unclassified inbox ticket
+    created = await client.post(
+        "/api/v1/tickets",
+        json=inbox_ticket("Direct route by human", original_request="Route this directly"),
+        headers=human,
+    )
+    assert created.status_code == 201
+    tid = created.json()["ticket_id"]
+    assert created.json()["board_id"] == "inbox"
+    assert created.json()["stage"] == "unclassified"
+
+    # 2. Agent cannot route without claim_token
+    agent_fail = await client.post(
+        f"/api/v1/tickets/{tid}/route",
+        json={
+            "plan": {
+                "refined_title": "Directly Routed",
+                "target": {"board_id": "proj-core-engine"},
+            },
+        },
+        headers=triage,
+    )
+    assert agent_fail.status_code == 409
+
+    # 3. Human can route directly without claim_token
+    routed = await client.post(
+        f"/api/v1/tickets/{tid}/route",
+        json={
+            "plan": {
+                "refined_title": "Directly Routed Human Task",
+                "refined_spec": "Human refined spec",
+                "acceptance_criteria": ["Human verified"],
+                "target": {"board_id": "proj-core-engine"},
+                "confidence": 1.0,
+            },
+        },
+        headers=human,
+    )
+    assert routed.status_code == 200, routed.text
+    data = routed.json()
+    assert data["board_id"] == "proj-core-engine"
+    assert data["stage"] == "backlog"
+    assert data["title"] == "Directly Routed Human Task"
+    assert data["description"] == "Human refined spec"
+
+    history = await client.get(f"/api/v1/tickets/{tid}/history", headers=human)
+    assert history.status_code == 200
+    revs = history.json().get("revisions", [])
+    assert len(revs) >= 1
+    assert revs[-1]["spec"] == "Human refined spec"
+    assert revs[-1]["acceptance_criteria"] == ["Human verified"]
+
+    # 4. Human can also route an unclassified ticket that has an active triage claim, clearing it
+    created2 = await client.post(
+        "/api/v1/tickets",
+        json=inbox_ticket("Claimed then human routed", original_request="Claim then route"),
+        headers=human,
+    )
+    tid2 = created2.json()["ticket_id"]
+    claim_resp = await client.post(f"/api/v1/tickets/{tid2}/claim", headers=triage)
+    assert claim_resp.status_code == 200
+    triage_token = claim_resp.json()["claim_token"]
+
+    routed2 = await client.post(
+        f"/api/v1/tickets/{tid2}/route",
+        json={
+            "plan": {
+                "refined_title": "Overridden by human",
+                "target": {"board_id": "proj-core-engine"},
+            },
+        },
+        headers=human,
+    )
+    assert routed2.status_code == 200, routed2.text
+    assert routed2.json()["board_id"] == "proj-core-engine"
+    assert routed2.json()["stage"] == "backlog"
+
+    # Old claim token is now cleared/invalidated
+    old_claim_route = await client.post(
+        f"/api/v1/tickets/{tid2}/route",
+        json={
+            "claim_token": triage_token,
+            "plan": {"target": {"board_id": "proj-core-engine"}},
+        },
+        headers=triage,
+    )
+    assert old_claim_route.status_code in (409, 422)  # invalid transition or claim conflict
+
+    # 5. Human can route a needs_human blocked inbox ticket directly (resolving the block)
+    created3 = await client.post(
+        "/api/v1/tickets",
+        json=inbox_ticket("Blocked needs human", original_request="Ambiguous requirement"),
+        headers=human,
+    )
+    tid3 = created3.json()["ticket_id"]
+    claim3 = await client.post(f"/api/v1/tickets/{tid3}/claim", headers=triage)
+    t3_token = claim3.json()["claim_token"]
+    # Triage blocks it with needs_human
+    block_resp = await client.post(
+        f"/api/v1/tickets/{tid3}/block",
+        json={"kind": "needs_human", "reason": "Need DB choice", "claim_token": t3_token},
+        headers=triage,
+    )
+    assert block_resp.status_code == 200
+    assert block_resp.json()["status"] == "blocked"
+
+    # Human routes it directly, clearing needs_human block
+    routed3 = await client.post(
+        f"/api/v1/tickets/{tid3}/route",
+        json={
+            "plan": {
+                "refined_title": "Resolved DB Choice: PostgreSQL",
+                "refined_spec": "Use PostgreSQL 16",
+                "acceptance_criteria": ["DB migration runs"],
+                "target": {"board_id": "proj-core-engine"},
+            },
+        },
+        headers=human,
+    )
+    assert routed3.status_code == 200, routed3.text
+    data3 = routed3.json()
+    assert data3["board_id"] == "proj-core-engine"
+    assert data3["stage"] == "backlog"
+    assert data3["status"] == "open"
+    assert data3["blocked_kind"] is None
+
+

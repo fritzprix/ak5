@@ -18,10 +18,12 @@ import {
 import {
   addComment,
   deleteAttachment,
+  fetchBoards,
   fetchTicket,
   fetchTicketHistory,
   downloadAttachment,
   reopenTicket,
+  routeTicket,
   submitVerdict,
   unblockTicket,
   updateTicket,
@@ -47,7 +49,7 @@ import {
   unblockRequiresResolution,
   type TimelineEntry,
 } from "@/lib/ticketHistory";
-import { Actor, Column, Ticket, TicketComment, TicketPriority } from "@/lib/types";
+import { Actor, BoardSummary, Column, Ticket, TicketComment, TicketPriority } from "@/lib/types";
 import { preferReaderFocus, trapTabKey } from "@/lib/focusTrap";
 import { ActorBadge } from "../actor/ActorBadge";
 
@@ -92,6 +94,10 @@ export function TicketDetailDrawer({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [unblockResolution, setUnblockResolution] = useState("");
   const [unblocking, setUnblocking] = useState(false);
+  const [boards, setBoards] = useState<BoardSummary[]>([]);
+  const [selectedBoardId, setSelectedBoardId] = useState("");
+  const [routing, setRouting] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const commentFieldId = useId();
   const titleFieldId = useId();
@@ -102,6 +108,12 @@ export function TicketDetailDrawer({
   const panelRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  useEffect(() => {
+    fetchBoards()
+      .then(setBoards)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!ticketId) {
@@ -378,11 +390,38 @@ export function TicketDetailDrawer({
     }
   };
 
+  const handleRoute = async () => {
+    if (!ticketId || !selectedBoardId || routing || saving) return;
+    setRouting(true);
+    setRouteError(null);
+    try {
+      await routeTicket(ticketId, {
+        target: { board_id: selectedBoardId },
+        refined_title: edit?.title?.trim() || undefined,
+        refined_spec: edit?.description?.trim() || undefined,
+      });
+      onUpdated?.();
+      onReviewDecision?.();
+      onClose();
+    } catch (err) {
+      setRouteError(err instanceof Error ? err.message : "Routing failed");
+    } finally {
+      setRouting(false);
+    }
+  };
+
   if (!ticketId || !detail || !edit) return null;
 
   const stage = resolveTicketStage(columns, detail);
   const isReview = isHumanReviewStage(stage);
   const isDone = isDoneStage(stage);
+  const isUnclassified =
+    stage === "unclassified" ||
+    detail.stage === "unclassified" ||
+    detail.board_id === "inbox";
+  const destinationBoards = boards.filter(
+    (b) => b.kind !== "inbox" && b.board_id !== "inbox"
+  );
   const isHumanBlocked =
     detail.status === "blocked" &&
     unblockRequiresResolution(detail.blocked_kind ?? null);
@@ -474,6 +513,48 @@ export function TicketDetailDrawer({
             <p className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)]">
               Done — reopen with a reason to send back to postmortem (T17).
             </p>
+          ) : null}
+
+          {isUnclassified ? (
+            <div className="space-y-2.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-muted)] p-3.5">
+              <div className="flex items-center gap-2">
+                <Send className="h-4 w-4 text-[var(--accent)]" />
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--accent)]">
+                  Route to Board
+                </h3>
+              </div>
+              <p className="text-xs text-[var(--muted)]">
+                Directly route this unclassified inbox ticket to a project board. You can also edit the title and description below before routing.
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <label htmlFor="route-board-select" className="sr-only">
+                  Target Board
+                </label>
+                <select
+                  id="route-board-select"
+                  className="ak-input flex-1 py-1.5 text-xs"
+                  value={selectedBoardId}
+                  onChange={(e) => setSelectedBoardId(e.target.value)}
+                  disabled={routing || saving}
+                >
+                  <option value="">Select target board…</option>
+                  {destinationBoards.map((b) => (
+                    <option key={b.board_id} value={b.board_id}>
+                      {b.name} ({b.board_id})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="ak-btn-primary shrink-0 py-1.5 px-3 text-xs"
+                  disabled={routing || saving || !selectedBoardId}
+                  onClick={() => void handleRoute()}
+                >
+                  {routing ? "Routing…" : "Route to Board"}
+                </button>
+              </div>
+              {routeError ? <p className="text-xs text-[var(--danger)]">{routeError}</p> : null}
+            </div>
           ) : null}
 
           {isHumanBlocked ? (

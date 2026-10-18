@@ -322,13 +322,17 @@ def bounce_cmd(ctx: click.Context, ticket_id: str, token: str | None, reason: st
 @click.option("--plan", required=True, help="Route plan JSON: @file.json or -")
 @click.pass_context
 def route_cmd(ctx: click.Context, ticket_id: str, token: str | None, plan: str) -> None:
-    """Route unclassified inbox ticket to a board (triage)."""
+    """Route unclassified inbox ticket to a board (triage or human)."""
     json_mode = _jm(ctx)
     try:
         plan_body = load_json_object(plan)
-        claim_token = resolve_claim_token(ticket_id, token)
+        claim_token: str | None
+        try:
+            claim_token = resolve_claim_token(ticket_id, token)
+        except ClientError:
+            claim_token = token  # human route may omit token
         with open_client() as client:
-            result = client.route(ticket_id, claim_token=claim_token, plan=plan_body)
+            result = client.route(ticket_id, plan=plan_body, claim_token=claim_token)
         clear_claim_token(ticket_id)
         _ok(
             result,

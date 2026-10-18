@@ -25,7 +25,7 @@ AK5는 **agent 루프가 붙어 일하는 칸반 플랫폼**이다. agent 루프
 | `triage` | inbox 읽기, 티켓 구체화, board 라우팅 / 생성 |
 | `worker` | board backlog claim, 제출, bounce |
 | `gatekeeper` | agent_review verdict, postmortem 작성 (겸임) |
-| `human` | human_review verdict, 오버라이드, needs_human / escalation 해제 |
+| `human` | human_review verdict, inbox 직접 라우팅, 오버라이드, needs_human / escalation 해제 |
 
 ## 2. 상태 모델
 
@@ -74,7 +74,7 @@ status   : API 하위호환용 파생 필드 (저장하지 않음)
 | T1 | `create` | — | unclassified @inbox | human | `original_request` | `original_request` 불변 |
 | T2 | `create_direct` | — | backlog | human, triage | spec, acceptance_criteria, board_id | revision r1 |
 | T3 | `claim` | unclassified | unclassified (claimed) | triage | — | claim_token, lease 발급 |
-| T4 | `route` | unclassified (본인 claim) | backlog @대상 board | triage | route 스키마 (§5.1) | board 이동, 필요하면 board 생성 (같은 트랜잭션), revision, claim 해제 |
+| T4 | `route` | unclassified (agent: 본인 claim, human: claim 불요) | backlog @대상 board | triage, human | route 스키마 (§5.1) | board 이동, 필요하면 board 생성 (같은 트랜잭션), revision, claim 해제 |
 | T5 | `claim` | backlog | in_progress | worker | capabilities | claim_token 발급, WIP 검사, 최신 spec과 postmortem 이력 반환 |
 | T6 | `heartbeat` | in_progress (본인 claim) | 동일 | worker | token | lease 연장 |
 | T7 | `release` | in_progress (본인 claim) | backlog | worker | token, reason | claim 해제 |
@@ -118,6 +118,7 @@ status   : API 하위호환용 파생 필드 (저장하지 않음)
 }
 ```
 요청이 모호하면 route 대신 `block(kind=needs_human, reason=<질문>)`을 사용한다.
+사람의 직접 라우팅(human route) 시 `refined_title`, `refined_spec`, `acceptance_criteria`는 선택 사항이며(생략 시 티켓 기본 필드 유지), `confidence`는 기본값 1.0으로 간주된다.
 
 ### 5.2 deliverable
 ```json

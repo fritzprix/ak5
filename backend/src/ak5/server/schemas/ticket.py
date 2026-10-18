@@ -263,7 +263,7 @@ class BounceRequest(BaseModel):
 
 
 class RouteRequest(BaseModel):
-    claim_token: str = Field(..., min_length=1)
+    claim_token: str | None = None
     plan: RoutePlan
 
 
