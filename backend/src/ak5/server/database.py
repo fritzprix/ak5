@@ -380,6 +380,7 @@ def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
             """
             CREATE TABLE subscriptions__mig (
                 subscription_id VARCHAR(128) NOT NULL PRIMARY KEY,
+                workspace_id VARCHAR(128) NOT NULL DEFAULT 'ws_local',
                 board_id VARCHAR(128),
                 events TEXT,
                 role VARCHAR(64),
@@ -394,6 +395,7 @@ def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
             """
         )
     )
+    select_ws = "workspace_id" if "workspace_id" in src_cols else "'ws_local'"
     select_events = "events" if "events" in src_cols else "NULL AS events"
     select_role = "role" if "role" in src_cols else "NULL AS role"
     select_caps = "capabilities" if "capabilities" in src_cols else "NULL AS capabilities"
@@ -410,12 +412,12 @@ def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
         text(
             f"""
             INSERT INTO subscriptions__mig (
-                subscription_id, board_id, events, role, capabilities, for_agent,
+                subscription_id, workspace_id, board_id, events, role, capabilities, for_agent,
                 created_by, created_at,
                 ack_cursor, consumer_id, consumer_lease_expires_at
             )
             SELECT
-                subscription_id, board_id, {select_events}, {select_role}, {select_caps},
+                subscription_id, {select_ws}, board_id, {select_events}, {select_role}, {select_caps},
                 {select_for}, created_by, created_at,
                 {select_ack}, {select_consumer}, {select_lease}
             FROM subscriptions
@@ -426,6 +428,11 @@ def migrate_sqlite_subscription_filter_only(sync_conn: Connection) -> None:
     sync_conn.execute(text("ALTER TABLE subscriptions__mig RENAME TO subscriptions"))
     sync_conn.execute(
         text("CREATE INDEX IF NOT EXISTS ix_subscriptions_board_id ON subscriptions (board_id)")
+    )
+    sync_conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_subscriptions_workspace_id ON subscriptions (workspace_id)"
+        )
     )
 
 
@@ -476,11 +483,14 @@ def migrate_sqlite_column_stages(sync_conn: Connection) -> None:
         return
 
     # Rebuild with remapping in the INSERT — old CHECK rejects in-place UPDATEs.
+    # Preserve workspace_id when present (issue #23); otherwise default ws_local.
+    col_names = _table_column_names(sync_conn, "columns")
     sync_conn.execute(
         text(
             """
             CREATE TABLE columns__mig_stages (
                 column_id VARCHAR(128) NOT NULL PRIMARY KEY,
+                workspace_id VARCHAR(128) NOT NULL DEFAULT 'ws_local',
                 board_id VARCHAR(128) NOT NULL,
                 name VARCHAR(128) NOT NULL,
                 stage VARCHAR(32) NOT NULL,
@@ -499,16 +509,17 @@ def migrate_sqlite_column_stages(sync_conn: Connection) -> None:
         )
     )
     # columns may lack updated_at depending on vintage.
-    col_names = _table_column_names(sync_conn, "columns")
     created = "created_at" if "created_at" in col_names else "CURRENT_TIMESTAMP AS created_at"
+    ws_src = "workspace_id" if "workspace_id" in col_names else "'ws_local'"
     sync_conn.execute(
         text(
             f"""
             INSERT INTO columns__mig_stages (
-                column_id, board_id, name, stage, position, wip_limit, created_at
+                column_id, workspace_id, board_id, name, stage, position, wip_limit, created_at
             )
             SELECT
                 column_id,
+                {ws_src},
                 board_id,
                 name,
                 CASE stage
@@ -525,6 +536,11 @@ def migrate_sqlite_column_stages(sync_conn: Connection) -> None:
     )
     sync_conn.execute(text("DROP TABLE columns"))
     sync_conn.execute(text("ALTER TABLE columns__mig_stages RENAME TO columns"))
+    sync_conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_columns_workspace_id ON columns (workspace_id)"
+        )
+    )
 
 
 async def _run_sqlite_table_rebuild(
@@ -569,6 +585,10 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
 
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_subscription_filter_only)
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_column_stages)
+
+    # Table rebuilds may drop workspace_id — re-apply ADD COLUMN for any gaps.
+    async with async_engine.begin() as conn:
+        await conn.run_sync(migrate_sqlite_workspace_id_columns)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:

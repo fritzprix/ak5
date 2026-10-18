@@ -204,13 +204,12 @@ async def test_claim_and_comment_reject_cross_workspace_ticket(
 
 
 def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
-    from sqlalchemy import select
-
     from ak5.contracts.stages import Role
     from ak5.server.auth.principal import Principal
     from ak5.server.auth.scope import ScopeError, scoped
     from ak5.server.models.ticket import TicketComment
     from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+    from sqlalchemy import select
 
     principal = Principal(
         principal_id="usr_x",
@@ -225,13 +224,12 @@ def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
 
 
 def test_scoped_applies_workspace_filter_for_column():
-    from sqlalchemy import select
-
     from ak5.contracts.stages import Role
     from ak5.server.auth.principal import Principal
     from ak5.server.auth.scope import scoped
     from ak5.server.models.column import Column
     from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+    from sqlalchemy import select
 
     principal = Principal(
         principal_id="usr_x",
