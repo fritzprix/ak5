@@ -20,7 +20,7 @@ import {
   deleteAttachment,
   fetchTicket,
   fetchTicketHistory,
-  getAttachmentDownloadUrl,
+  downloadAttachment,
   reopenTicket,
   submitVerdict,
   unblockTicket,
@@ -344,6 +344,16 @@ export function TicketDetailDrawer({
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+    }
+  };
+
+  const handleDownloadAttachment = async (attachmentId: string, filename: string) => {
+    if (!ticketId) return;
+    setAttachmentError(null);
+    try {
+      await downloadAttachment(ticketId, attachmentId, filename);
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : "Failed to download file");
     }
   };
 
@@ -689,8 +699,6 @@ export function TicketDetailDrawer({
                       : att.file_size >= 1024
                       ? `${(att.file_size / 1024).toFixed(1)} KB`
                       : `${att.file_size} B`;
-                  const downloadUrl = getAttachmentDownloadUrl(ticketId, att.attachment_id);
-
                   return (
                     <li
                       key={att.attachment_id}
@@ -708,16 +716,14 @@ export function TicketDetailDrawer({
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <a
-                          href={downloadUrl}
-                          download={att.filename}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          type="button"
                           className="ak-btn-ghost p-1 text-[var(--accent)] hover:text-[var(--accent-hover)]"
+                          onClick={() => handleDownloadAttachment(att.attachment_id, att.filename)}
                           title="Download file"
                         >
                           <Download className="h-3.5 w-3.5" />
-                        </a>
+                        </button>
                         <button
                           type="button"
                           className="ak-btn-ghost p-1 text-[var(--danger)] hover:bg-[var(--danger)]/10"
