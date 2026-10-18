@@ -255,3 +255,80 @@ async def test_board_create_rejects_inbox_style_ids(client: AsyncClient, test_db
         )
         assert res.status_code == 403, (board_id, res.text)
         assert json.loads(res.text)["error"]["code"] == "SYSTEM_BOARD"
+
+
+@pytest.mark.asyncio
+async def test_scoped_agent_keeps_access_to_its_own_workspace_inbox(
+    client: AsyncClient, auth_headers, test_db: AsyncSession
+):
+    """#82 review: board_scope always exempts the agent's *own* workspace inbox."""
+    b = await _workspace_b(test_db)
+    scoped_id = "agt_b_scoped_triage"
+    test_db.add(
+        Agent(
+            agent_id=scoped_id,
+            workspace_id=b["ws"],
+            name=scoped_id,
+            workflow_role=Role.TRIAGE.value,
+            capabilities="[]",
+            board_scope=json.dumps(["b-x"]),  # does not list the inbox
+            created_by="usr_b_owner",
+        )
+    )
+    await _actor_alias(test_db, scoped_id, "agent", Role.TRIAGE.value)
+    await test_db.commit()
+    scoped = {
+        "Authorization": "Bearer "
+        + issue_access_token(
+            Principal(
+                principal_id=scoped_id,
+                principal_type="agent",
+                workspace_id=b["ws"],
+                workflow_role=Role.TRIAGE,
+            )
+        )
+    }
+
+    local = await client.post(
+        "/api/v1/tickets", json=inbox_ticket("Local inbox"), headers=auth_headers("user_pm", "human")
+    )
+    assert local.status_code == 201, local.text
+    mine = await client.post("/api/v1/tickets", json=inbox_ticket("B inbox"), headers=b["owner"])
+    assert mine.status_code == 201, mine.text
+    mine_id = mine.json()["ticket_id"]
+
+    nxt = await client.get("/api/v1/boards/inbox/next", headers=scoped)
+    assert nxt.status_code == 200, nxt.text
+    assert nxt.json()["ticket_id"] == mine_id
+
+    claimed = await client.post(f"/api/v1/tickets/{mine_id}/claim", headers=scoped)
+    assert claimed.status_code == 200, claimed.text
+
+    foreign = await client.post(
+        f"/api/v1/tickets/{local.json()['ticket_id']}/claim", headers=scoped
+    )
+    assert foreign.status_code == 403, foreign.text
+
+
+@pytest.mark.asyncio
+async def test_boot_warns_about_inbox_like_standard_board(test_db: AsyncSession, caplog):
+    """#82 review (optional): pre-#82 boards named *__inbox are flagged at boot."""
+    from ak5.server.models.board import Board
+    from ak5.server.seed import warn_inbox_like_standard_boards
+
+    await ensure_local_tenancy(test_db)
+    test_db.add(
+        Board(
+            board_id="legacy__inbox",
+            workspace_id="ws_local",
+            name="Old",
+            created_by="user_pm",
+            kind="standard",
+            template="default",
+        )
+    )
+    await test_db.commit()
+    with caplog.at_level("WARNING", logger="ak5.server.seed"):
+        flagged = await warn_inbox_like_standard_boards(test_db)
+    assert flagged == ["legacy__inbox"]
+    assert "legacy__inbox" in caplog.text
