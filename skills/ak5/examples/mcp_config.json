@@ -4,8 +4,7 @@
       "command": "uvx",
       "args": ["--from", "ak5[mcp]", "ak5", "mcp"],
       "env": {
-        "AK5_API_URL": "http://127.0.0.1:8000/api/v1",
-        "AK5_ACTOR_TOKEN": "ak5_agt_… (agent token issued in the web UI)"
+        "AK5_PROFILE": "worker-1"
       }
     }
   }

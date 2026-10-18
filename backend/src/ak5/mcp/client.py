@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -34,6 +35,26 @@ class AK5APIError(Exception):
         return error_body(self.code, self.message, details=self.details)
 
 
+_DEFAULT_API_URL = "http://127.0.0.1:8000/api/v1"
+
+
+def _default_api_url() -> str:
+    """``AK5_API_URL`` > active profile's server > local default (same order as the CLI)."""
+    env = os.getenv("AK5_API_URL", "").strip()
+    if env:
+        return env
+    try:
+        from ak5.daemon.profiles import get_profile, resolve_profile_name
+
+        name = resolve_profile_name(None)
+        profile = get_profile(name) if name else None
+        if profile is not None and profile.server.strip():
+            return profile.server.strip()
+    except Exception:  # noqa: BLE001 — no profile store: fall back to local
+        pass
+    return _DEFAULT_API_URL
+
+
 class AK5Client:
     def __init__(
         self,
@@ -41,15 +62,18 @@ class AK5Client:
         actor_id: str | None = None,
         actor_role: str | None = None,
     ) -> None:
-        self.base_url = base_url or os.getenv("AK5_API_URL", "http://127.0.0.1:8000/api/v1")
+        self.base_url = base_url or _default_api_url()
         self.actor_id = actor_id or os.getenv("AK5_ACTOR_ID", "agent_orchestrator")
         self.actor_role = actor_role or os.getenv("AK5_ACTOR_ROLE", "worker")
         self._token: str | None = os.getenv("AK5_ACTOR_TOKEN")
+        # Tokens pinned via AK5_ACTOR_TOKEN / use_bearer are never re-resolved.
+        self._token_pinned = self._token is not None
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
 
     def use_bearer(self, token: str, *, actor_id: str | None = None, actor_role: str | None = None) -> None:
         """Switch the active JWT (and optional identity hints) without re-identify."""
         self._token = token
+        self._token_pinned = True
         if actor_id is not None:
             self.actor_id = actor_id
         if actor_role is not None:
@@ -58,9 +82,30 @@ class AK5Client:
     def _api(self, path: str) -> str:
         return f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
 
+    @staticmethod
+    def _resolve_profile_token() -> str | None:
+        """``AK5_TOKEN`` / ``AK5_PROFILE`` → daemon ``/v1/token`` (client.md §7, #35)."""
+        from ak5.client.auth import resolve_access_token
+        from ak5.client.errors import ClientError
+
+        try:
+            return resolve_access_token()
+        except ClientError as exc:
+            try:
+                code = ErrorCode(str(exc.code)) if exc.code else ErrorCode.DAEMON_UNAVAILABLE
+            except ValueError:
+                code = ErrorCode.DAEMON_UNAVAILABLE
+            raise AK5APIError(code, exc.message, details=getattr(exc, "details", None)) from exc
+
     async def ensure_token(self) -> str:
         if self._token:
             return self._token
+        # Same resolution as the CLI; IPC is blocking, so keep it off the event loop.
+        token = await asyncio.to_thread(self._resolve_profile_token)
+        if token:
+            self._token = token
+            return token
+        # Dev-only fallback: /auth/identify answers only with AK5_DEV_INSECURE_IDENTIFY.
         resp = await self._http.post(
             self._api("auth/identify"),
             json={
@@ -122,6 +167,17 @@ class AK5Client:
             json=json,
             params=params,
         )
+        if resp.status_code == 401 and not self._token_pinned:
+            # Daemon-issued user JWTs are short-lived: re-resolve once (#35).
+            self._token = None
+            headers = await self._headers()
+            resp = await self._http.request(
+                method,
+                self._api(path),
+                headers=headers,
+                json=json,
+                params=params,
+            )
         self._raise_for_response(resp)
         return resp
 

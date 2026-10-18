@@ -464,3 +464,31 @@ def test_hook_env_carries_subscriber_profile_not_daemon_token(daemon_home, monke
     assert files["worker-1"].read_text() == "worker-1|unset|sub-worker-1|usr_worker-1"
     assert files["gk-1"].read_text() == "gk-1|unset|sub-gk-1|usr_gk-1"
     assert files["override"].read_text() == "custom"
+
+
+@pytest.mark.asyncio
+async def test_mcp_adapter_gets_token_from_daemon_profile(daemon_home, monkeypatch):
+    """client.md §7 (#35): MCP authenticates via AK5_PROFILE → daemon /v1/token."""
+    from ak5.mcp.client import AK5Client
+
+    sock: Path = daemon_home["sock"]
+    upsert_profile(Profile(name="worker-1", server="http://127.0.0.1:9/api/v1", role="worker"))
+    save_credential(
+        "worker-1",
+        ProfileCredential(access_token="tok-from-daemon", actor_id="agent_w1", status="active"),
+    )
+    start_daemon_background(sock=sock)
+    monkeypatch.setenv("AK5_PROFILE", "worker-1")
+    for key in ("AK5_TOKEN", "AK5_ACTOR_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    seen: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization", ""))
+        return httpx.Response(200, json=[])
+
+    client = AK5Client(base_url="http://test/api/v1")
+    client._http = httpx.AsyncClient(base_url="http://test/api/v1", transport=httpx.MockTransport(_handler))
+    await client._request("GET", "boards")
+    assert seen == ["Bearer tok-from-daemon"]

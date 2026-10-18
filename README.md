@@ -184,13 +184,13 @@ pip install 'ak5[mcp]'
     "ak5": {
       "command": "uvx",
       "args": ["--from", "ak5[mcp]", "ak5", "mcp"],
-      "env": { "AK5_API_URL": "http://127.0.0.1:8000/api/v1", "AK5_ACTOR_TOKEN": "ak5_agt_…" }
+      "env": { "AK5_PROFILE": "worker-1" }
     }
   }
 }
 ```
 
-The adapter exposes agent verbs only (`ak5_next`, `ak5_ticket_claim`, `ak5_ticket_submit`, `ak5_ticket_route`, `ak5_ticket_verdict`, …); human approval stays in the CLI and web UI. Set `AK5_ENABLE_MCP=1` on a server with the `mcp` extra to also mount `/mcp`.
+It authenticates like the CLI: `AK5_PROFILE` → client daemon token (re-fetched once on 401); without a daemon, set `AK5_ACTOR_TOKEN` to an agent token from **Settings → Agents** instead. The adapter exposes agent verbs only (`ak5_next`, `ak5_ticket_claim`, `ak5_ticket_submit`, `ak5_ticket_route`, `ak5_ticket_verdict`, …); human approval stays in the CLI and web UI. Set `AK5_ENABLE_MCP=1` on a server with the `mcp` extra to also mount `/mcp`.
 
 ---
 
