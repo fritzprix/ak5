@@ -26,6 +26,7 @@ from ak5.server.security import (
     extract_identify_secret,
     get_jwt_secret,
     is_dev_insecure_identify_allowed,
+    is_dev_insecure_identify_enabled,
     is_identify_authorized,
 )
 
@@ -186,6 +187,15 @@ async def identify_actor(
     Requires ``AK5_DEV_INSECURE_IDENTIFY=1`` and a loopback client. Optionally
     also ``AK5_IDENTIFY_SECRET`` / web-auth cookie when configured.
     """
+    # identity.md §2 — identify is removed outside the local insecure path.
+    if not is_dev_insecure_identify_enabled():
+        return JSONResponse(
+            status_code=404,
+            content=error_body(
+                ErrorCode.UNAUTHENTICATED,
+                "POST /auth/identify has been removed; use OIDC or device grant (identity.md §2)",
+            ),
+        )
     if not is_dev_insecure_identify_allowed(request):
         return JSONResponse(
             status_code=HTTP_STATUS[ErrorCode.UNAUTHENTICATED],
@@ -196,7 +206,16 @@ async def identify_actor(
         )
 
     provided = extract_identify_secret(request, req.identify_secret)
-    if not is_identify_authorized(request, provided):
+    authorized = is_identify_authorized(request, provided)
+    if not authorized:
+        # Allow a valid DB web session in place of the identify secret.
+        from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
+
+        session_cookie = request.cookies.get(SESSION_COOKIE)
+        if session_cookie:
+            resolved = await resolve_web_session(db, session_cookie)
+            authorized = resolved is not None
+    if not authorized:
         return JSONResponse(
             status_code=HTTP_STATUS[ErrorCode.UNAUTHENTICATED],
             content=error_body(

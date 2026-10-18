@@ -30,7 +30,7 @@ from ak5.server.routers.tickets import router as tickets_router
 from ak5.server.routers.web_auth import router as web_auth_router
 from ak5.server.seed import seed_initial_data
 from ak5.server.services.workflow import WorkflowError
-from ak5.server.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
+from ak5.server.web_auth import get_web_auth_config
 from ak5.server.web_ui_static import mount_web_ui, web_ui_available
 
 logger = logging.getLogger(__name__)
@@ -107,14 +107,14 @@ def _is_public_path(path: str) -> bool:
 
 
 async def _request_has_web_session(request: Request) -> bool:
-    """Accept new ``ak5_session`` DB cookies or legacy in-memory ``ak5_auth``."""
+    """Accept DB-backed ``ak5_session`` cookies (identity.md §3.2)."""
     session_cookie = request.cookies.get(SESSION_COOKIE)
-    if session_cookie:
-        async with AsyncSessionLocal() as db:
-            if await resolve_web_session(db, session_cookie) is not None:
-                return True
-    legacy = request.cookies.get(COOKIE_NAME)
-    return bool(legacy) and verify_session_cookie(legacy)
+    if not session_cookie:
+        return False
+    # Tests set ``app.state.session_factory`` to the in-memory test engine.
+    factory = getattr(request.app.state, "session_factory", None) or AsyncSessionLocal
+    async with factory() as db:
+        return await resolve_web_session(db, session_cookie) is not None
 
 
 def create_app() -> FastAPI:

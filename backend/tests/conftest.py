@@ -106,6 +106,8 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    # Web-auth gate middleware reads sessions via this factory (not only get_db).
+    app.state.session_factory = TestAsyncSessionLocal
 
     # Long-poll / SSE re-open sessions via the service factory (same in-memory engine).
     from ak5.services.subscription_service import (
@@ -253,6 +255,8 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
         await conn.run_sync(Base.metadata.drop_all)
 
     app.dependency_overrides.clear()
+    if hasattr(app.state, "session_factory"):
+        del app.state.session_factory
 
 
 @pytest_asyncio.fixture(scope="function")

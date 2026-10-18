@@ -1,12 +1,25 @@
-"""HTTP routes for the optional Kanban web-dashboard login gate."""
+"""HTTP routes for local-owner password login (loopback) — DB web sessions."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ak5.server.auth.sessions import (
+    CSRF_COOKIE,
+    CSRF_HEADER,
+    SESSION_COOKIE,
+    create_web_session_tokens,
+    csrf_matches,
+    resolve_web_session,
+    revoke_web_session,
+)
+from ak5.server.auth.users import ensure_local_owner_user
+from ak5.server.database import get_db
+from ak5.server.security import is_loopback_client
 from ak5.server.web_auth import (
     COOKIE_NAME,
     SESSION_MAX_AGE_SECONDS,
@@ -14,11 +27,8 @@ from ak5.server.web_auth import (
     client_ip_from_headers,
     credentials_match,
     get_web_auth_config,
-    issue_session_token,
     record_failed_attempt,
     record_successful_attempt,
-    revoke_session_token,
-    verify_session_cookie,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["web-auth"])
@@ -42,13 +52,13 @@ def _is_secure(request: Request) -> bool:
 
 
 @router.post("/login")
-async def web_login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
-    """Legacy dashboard gate. Password login is **loopback-only** (identity.md §8).
-
-    Prefer ``POST /auth/local/login`` (OIDC local owner) for new clients.
-    """
-    from ak5.server.security import is_loopback_client
-
+async def web_login(
+    body: LoginBody,
+    request: Request,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Local-owner password login — **loopback only**; mints DB ``ak5_session``."""
     ip = _client_ip(request)
     allowed, wait_seconds = check_rate_limit(ip)
     if not allowed:
@@ -71,55 +81,30 @@ async def web_login(body: LoginBody, request: Request, response: Response) -> di
         return {"error": "Invalid username or password"}
 
     record_successful_attempt(ip)
-    token = issue_session_token()
     secure = _is_secure(request)
+    user = await ensure_local_owner_user(db)
+    session_cookie, csrf = await create_web_session_tokens(db, user.user_id)
+    await db.commit()
+
     response.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
+        key=SESSION_COOKIE,
+        value=session_cookie,
         httponly=True,
         secure=secure,
         samesite="lax",
         path="/",
         max_age=SESSION_MAX_AGE_SECONDS,
     )
-    # Also mint identity.md web session so dashboard + /auth/me share one login.
-    try:
-        from ak5.server.auth.sessions import CSRF_COOKIE, SESSION_COOKIE, create_web_session_tokens
-        from ak5.server.auth.users import ensure_local_owner_user
-        from ak5.server.database import AsyncSessionLocal
-
-        async with AsyncSessionLocal() as db:
-            user = await ensure_local_owner_user(db)
-            session_cookie, csrf = await create_web_session_tokens(db, user.user_id)
-            await db.commit()
-        response.set_cookie(
-            key=SESSION_COOKIE,
-            value=session_cookie,
-            httponly=True,
-            secure=secure,
-            samesite="lax",
-            path="/",
-            max_age=SESSION_MAX_AGE_SECONDS,
-        )
-        response.set_cookie(
-            key=CSRF_COOKIE,
-            value=csrf,
-            httponly=False,
-            secure=secure,
-            samesite="lax",
-            path="/",
-            max_age=SESSION_MAX_AGE_SECONDS,
-        )
-    except Exception:
-        # Legacy cookie alone still unlocks the gate if DB session mint fails.
-        pass
-    return {"success": True}
-
-
-@router.post("/logout")
-async def web_logout(request: Request, response: Response) -> dict[str, bool]:
-    revoke_session_token(request.cookies.get(COOKIE_NAME))
-    secure = _is_secure(request)
+    response.set_cookie(
+        key=CSRF_COOKIE,
+        value=csrf,
+        httponly=False,
+        secure=secure,
+        samesite="lax",
+        path="/",
+        max_age=SESSION_MAX_AGE_SECONDS,
+    )
+    # Clear any legacy in-memory cookie from older builds.
     response.set_cookie(
         key=COOKIE_NAME,
         value="",
@@ -129,17 +114,51 @@ async def web_logout(request: Request, response: Response) -> dict[str, bool]:
         path="/",
         max_age=0,
     )
+    return {"success": True, "user_id": user.user_id, "csrf": csrf}
+
+
+@router.post("/logout")
+async def web_logout(
+    request: Request,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, bool]:
+    secure = _is_secure(request)
+    cookie = request.cookies.get(SESSION_COOKIE)
+    if cookie:
+        presented = request.headers.get(CSRF_HEADER) or request.cookies.get(CSRF_COOKIE)
+        resolved = await resolve_web_session(db, cookie)
+        if resolved is not None:
+            _uid, csrf_hash = resolved
+            if csrf_matches(presented, csrf_hash):
+                await revoke_web_session(db, cookie)
+                await db.commit()
+    for key in (SESSION_COOKIE, CSRF_COOKIE, COOKIE_NAME):
+        response.set_cookie(
+            key=key,
+            value="",
+            httponly=key != CSRF_COOKIE,
+            secure=secure,
+            samesite="lax",
+            path="/",
+            max_age=0,
+        )
     return {"success": True}
 
 
 @router.get("/status")
-async def web_auth_status(request: Request) -> dict[str, Any]:
+async def web_auth_status(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
     cfg = get_web_auth_config()
     if not cfg.enabled:
         return {"authEnabled": False, "authenticated": True, "username": None}
 
-    cookie = request.cookies.get(COOKIE_NAME)
-    authenticated = verify_session_cookie(cookie)
+    cookie = request.cookies.get(SESSION_COOKIE)
+    authenticated = False
+    if cookie:
+        authenticated = await resolve_web_session(db, cookie) is not None
     return {
         "authEnabled": True,
         "authenticated": authenticated,
