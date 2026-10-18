@@ -23,7 +23,7 @@ async def _cancel_wait(_timeout: float = 0) -> bool:
 async def test_sse_stream_requires_auth(anon_client: AsyncClient):
     resp = await anon_client.get("/api/v1/events/stream")
     assert resp.status_code == 401
-    assert "Bearer" in resp.json()["detail"]
+    assert "Authorization" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
