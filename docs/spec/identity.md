@@ -51,6 +51,7 @@ User (global)                      사람. upstream IdP의 (issuer, subject)로 
   - `principal_type == "user"` 이고 해당 workspace의 member → `Role.HUMAN`
   - `principal_type == "agent"` → `agents.workflow_role` (토큰 claim과 DB 값이 다르면 거부)
 - 기존 `actors.actor_type`, `actors.role`은 workflow 판정에 쓰지 않는다 (마이그레이션 §8 이후 제거).
+- **system principal**: lease 회수·에스컬레이션 등 서버 자체 동작은 예약 id `sys_server`(`principal_type = "system"`)로 audit·event에 기록한다. 토큰을 발급하지 않으며 어떤 API로도 인증할 수 없다. v1의 `system` actor 참조는 `sys_server`로 변환한다.
 - `POST /auth/identify` (자기 등록)는 **제거**한다. 로컬 개발용으로만 `AK5_DEV_INSECURE_IDENTIFY=1`일 때 loopback 요청에 한해 허용한다.
 
 ## 3. User 인증 (OAuth 2.0 / OIDC)
