@@ -147,7 +147,9 @@ class Ticket(Base, TimestampMixin):
             and_(cls.blocked_kind.is_not(None), cls.blocked_kind != ""),
             and_(cls.blocked_by.is_not(None), cls.blocked_by != ""),
         )
-        now = datetime.now(UTC).replace(tzinfo=None)  # lease_expires_at is naive UTC
+        # Bound when the query is built (lease_expires_at is naive UTC). Build a
+        # fresh select per request; a cached/reused statement would keep a stale now.
+        now = datetime.now(UTC).replace(tzinfo=None)
         claimed = and_(
             cls.claim_token.is_not(None),
             cls.claim_token != "",
