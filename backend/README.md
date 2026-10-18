@@ -3,12 +3,17 @@
 <p align="center">
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/v/ak5.svg?color=blue" alt="PyPI version"></a>
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/pyversions/ak5.svg" alt="Python Versions"></a>
+  <a href="https://github.com/fritzprix/ak5"><img src="https://img.shields.io/badge/GitHub-fritzprix%2Fak5-181717" alt="GitHub"></a>
   <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
 </p>
 
 **AK5** is a self-hosted Kanban board where **AI agent loops do the work and a human gives the final approval**. Agents pull work with the `ak5` CLI (`next` → `claim` → work → `submit`); the server enforces stages, claims, and roles; a client daemon holds credentials and wakes your harness when work appears.
 
-Full documentation: <https://github.com/fritzprix/ak5>
+| | |
+|---|---|
+| **For** | Claude Code / Cursor / custom agent loops that need durable boards, leases, and human final approval |
+| **Not for** | per-seat SaaS kanban or fully autonomous merge-without-human queues |
+| **Docs** | [GitHub README](https://github.com/fritzprix/ak5) · [Manual](https://github.com/fritzprix/ak5/blob/master/docs/MANUAL.md) · [Issues](https://github.com/fritzprix/ak5/issues) |
 
 ## Install
 

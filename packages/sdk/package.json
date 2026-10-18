@@ -26,13 +26,27 @@
     "ak5",
     "kanban",
     "ai-agents",
+    "multi-agent",
     "mcp",
     "sdk",
     "typescript",
-    "client"
+    "client",
+    "human-in-the-loop"
   ],
-  "author": "AK5 Team",
+  "author": "AK5 contributors",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/fritzprix/ak5",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fritzprix/ak5.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/fritzprix/ak5/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "tsup": "^8.3.5",
     "typescript": "^5.6.3"
