@@ -14,10 +14,11 @@ from ak5.contracts.stages import Role
 from ak5.server.auth.bridge import register_bridge
 from ak5.server.auth.principal import Principal
 from ak5.server.auth.tokens import issue_access_token
+from ak5.server.config import settings
 from ak5.server.main import app
 from ak5.server.models.actor import Actor
 from ak5.server.models.board import Board
-from ak5.server.models.ticket import Ticket
+from ak5.server.models.ticket import Ticket, TicketAttachment
 from ak5.server.models.workspace import Membership, User, Workspace
 from ak5.server.seed import ensure_local_tenancy
 from httpx import AsyncClient
@@ -82,7 +83,8 @@ _PATH_VALUES = {
     "ticket_id": "TK-LOCAL-ISO",
     "actor_id": "user_pm",
     "sub_id": "sub-missing-iso",
-    "attachment_id": "att-missing-iso",
+    # Real file (seeded below) so download routes cannot pass on a 404 (#75).
+    "attachment_id": "att-local-iso",
     "column_id": "col_todo",
 }
 
@@ -121,7 +123,7 @@ def _is_collection_list(path: str, method: str) -> bool:
 
 
 @pytest.fixture
-async def foreign_ws_headers(test_db: AsyncSession) -> dict[str, str]:
+async def foreign_ws_headers(test_db: AsyncSession, tmp_path, monkeypatch) -> dict[str, str]:
     await ensure_local_tenancy(test_db)
     await _ensure_other_workspace(test_db)
     if await test_db.get(Actor, "usr_other") is None:
@@ -149,6 +151,24 @@ async def foreign_ws_headers(test_db: AsyncSession) -> dict[str, str]:
                 priority="medium",
                 rank="a0",
                 created_by="user_pm",
+            )
+        )
+    attach_dir = tmp_path / "attachments"
+    attach_dir.mkdir()
+    monkeypatch.setattr(settings, "ATTACHMENTS_DIR", str(attach_dir))
+    secret = attach_dir / "att-local-iso.txt"
+    secret.write_text("TOP-SECRET-LOCAL", encoding="utf-8")
+    if await test_db.get(TicketAttachment, "att-local-iso") is None:
+        test_db.add(
+            TicketAttachment(
+                attachment_id="att-local-iso",
+                workspace_id="ws_local",
+                ticket_id="TK-LOCAL-ISO",
+                actor_id="user_pm",
+                filename="secret.txt",
+                file_size=secret.stat().st_size,
+                content_type="text/plain",
+                storage_path=str(secret),
             )
         )
     await test_db.commit()

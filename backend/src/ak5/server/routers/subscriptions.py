@@ -78,6 +78,7 @@ def _require_owned_sub(
     sub: Subscription | None,
     sub_id: str,
     current_actor: Actor,
+    workspace_id: str,
 ) -> Subscription:
     if not sub:
         raise HTTPException(
@@ -85,6 +86,17 @@ def _require_owned_sub(
             detail=error_body(
                 ErrorCode.SUBSCRIPTION_NOT_FOUND,
                 f"Subscription '{sub_id}' not found",
+            )["error"],
+        )
+    # Defense in depth (#75 review): owner ids are per-workspace principals, but
+    # never act on a subscription outside the caller's workspace.
+    if sub.workspace_id != workspace_id:
+        raise HTTPException(
+            status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+            detail=error_body(
+                ErrorCode.WORKSPACE_FORBIDDEN,
+                f"Subscription '{sub_id}' is outside the caller's workspace",
+                details={"subscription_id": sub_id, "workspace_id": workspace_id},
             )["error"],
         )
     if not is_admin_or_owner(current_actor, sub.created_by):
@@ -200,7 +212,7 @@ async def get_subscription(
                 details={"subscription_id": sub_id, "workspace_id": workspace_id},
             ),
         )
-    sub = _require_owned_sub(raw, sub_id, current_actor)
+    sub = _require_owned_sub(raw, sub_id, current_actor, workspace_id)
     return _to_subscription_out(sub)
 
 
@@ -209,9 +221,10 @@ async def delete_subscription(
     sub_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
 ) -> dict[str, str]:
     """Delete a subscription (owner or admin)."""
-    sub = _require_owned_sub(await db.get(Subscription, sub_id), sub_id, current_actor)
+    sub = _require_owned_sub(await db.get(Subscription, sub_id), sub_id, current_actor, workspace_id)
     await db.delete(sub)
     await db.commit()
     return {"status": "unsubscribed", "subscription_id": sub_id}
@@ -222,13 +235,14 @@ async def long_poll_subscription_events(
     sub_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     x_ak5_consumer: Annotated[str | None, Header(alias="X-AK5-Consumer")] = None,
     cursor: Annotated[int | None, Query(ge=0, description="Resume after this seq")] = None,
     wait: Annotated[int, Query(ge=0, description="Seconds to wait when empty")] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> LongPollEventsOut | JSONResponse:
     """Long-poll subscription events (events.md §3)."""
-    sub = _require_owned_sub(await db.get(Subscription, sub_id), sub_id, current_actor)
+    sub = _require_owned_sub(await db.get(Subscription, sub_id), sub_id, current_actor, workspace_id)
 
     if not x_ak5_consumer or not x_ak5_consumer.strip():
         return JSONResponse(
@@ -261,10 +275,11 @@ async def ack_subscription(
     body: SubscriptionAckIn,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     x_ak5_consumer: Annotated[str | None, Header(alias="X-AK5-Consumer")] = None,
 ) -> SubscriptionAckOut | JSONResponse:
     """Advance the server-stored ack cursor (monotonic; events.md §3.2)."""
-    sub = _require_owned_sub(await db.get(Subscription, sub_id), sub_id, current_actor)
+    sub = _require_owned_sub(await db.get(Subscription, sub_id), sub_id, current_actor, workspace_id)
 
     try:
         ack = await subscription_service.ack_cursor(
