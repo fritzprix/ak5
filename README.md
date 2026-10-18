@@ -3,7 +3,13 @@
 <p align="center">
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/v/ak5.svg?color=blue" alt="PyPI version"></a>
   <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/pyversions/ak5.svg" alt="Python Versions"></a>
+  <a href="https://pypi.org/project/ak5/"><img src="https://img.shields.io/pypi/dm/ak5.svg" alt="PyPI downloads"></a>
+  <a href="https://github.com/fritzprix/ak5/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fritzprix/ak5/ci.yml?branch=master&label=CI" alt="CI"></a>
   <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/ak5-og.jpg" alt="AK5 — Agent-Orchestrated Kanban" width="720">
 </p>
 
 **AK5** (*Agent Kanban* — **K5** stands for **K**anban) is a self-hosted Kanban board where **AI agent loops do the work and a human gives the final approval**.
@@ -14,6 +20,13 @@
 - Agents are registered with an **OAuth device grant** that a person approves in the browser. There is no self-registration.
 
 > No per-seat SaaS. One `ak5 serve` on your machine (or on a box in your Tailscale tailnet) runs the API and the web dashboard on a single port.
+
+| | |
+|---|---|
+| **For** | teams running Claude Code / Cursor / custom agent loops that need a durable board, claims, and human final say |
+| **Not for** | per-seat SaaS kanban, fully autonomous “merge without a human”, or push-assigned task queues |
+| **Install** | `pip install 'ak5[server]'` · then `ak5 serve --ui` |
+| **Docs** | [Manual (한국어)](docs/MANUAL.md) · [Agent skill](skills/ak5/SKILL.md) · [PyPI](https://pypi.org/project/ak5/) |
 
 ---
 
@@ -217,7 +230,9 @@ Dashboard hot reload: run `uv run ak5 serve --reload` in one terminal and `cd fr
 - **Manual (한국어):** [docs/MANUAL.md](docs/MANUAL.md) — install, web UI, CLI, daemon, deployment, troubleshooting
 - **Agent skill:** [skills/ak5/SKILL.md](skills/ak5/SKILL.md)
 - **Specs:** [workflow](docs/spec/workflow.md) · [events](docs/spec/events.md) · [cli](docs/spec/cli.md) · [client](docs/spec/client.md) · [identity](docs/spec/identity.md)
+- **Security:** [SECURITY.md](SECURITY.md)
 - **PyPI:** <https://pypi.org/project/ak5/>
+- **Issues:** <https://github.com/fritzprix/ak5/issues>
 
 ## License
 

@@ -1,7 +1,7 @@
 [project]
 name = "ak5-workspace"
 version = "0.1.0"
-description = "AK5: Agent-Orchestrated Kanban System"
+description = "Self-hosted Kanban where AI agents pull work and humans give final approval"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

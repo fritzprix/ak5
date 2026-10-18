@@ -1,14 +1,24 @@
 [project]
 name = "ak5"
 version = "1.0.26"
-description = "AK5: Agent-Orchestrated Kanban System Gateway, MCP Server & CLI"
+description = "Self-hosted Kanban where AI agents pull work and humans give final approval — CLI, daemon, web UI, optional MCP"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 authors = [
-    { name = "AK5 Team" }
+    { name = "AK5 contributors" }
 ]
-keywords = ["kanban", "ai-agents", "mcp", "orchestration", "multi-agent", "fastapi"]
+keywords = [
+    "kanban",
+    "ai-agents",
+    "multi-agent",
+    "mcp",
+    "orchestration",
+    "self-hosted",
+    "human-in-the-loop",
+    "fastapi",
+    "cli",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -18,7 +28,18 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Office/Business :: Groupware",
+    "Environment :: Console",
+    "Environment :: Web Environment",
 ]
+
+[project.urls]
+Homepage = "https://github.com/fritzprix/ak5"
+Documentation = "https://github.com/fritzprix/ak5/blob/master/docs/MANUAL.md"
+Repository = "https://github.com/fritzprix/ak5"
+Issues = "https://github.com/fritzprix/ak5/issues"
+Changelog = "https://github.com/fritzprix/ak5/releases"
+PyPI = "https://pypi.org/project/ak5/"
 dependencies = [
     # Client / daemon / CLI (daemon UDS IPC uses FastAPI + uvicorn)
     "fastapi>=0.115.0",
