@@ -64,6 +64,7 @@ def live_server(tmp_path: Path):
     env["HOME"] = str(home)
     env["AK5_PROJECT_ROOT"] = str(tmp_path / "project")
     (tmp_path / "project").mkdir()
+    env["AK5_DEV_INSECURE_IDENTIFY"] = "1"
     env.pop("AK5_AUTH_PASSWORD", None)
     env.pop("AK5_IDENTIFY_SECRET", None)
     env.pop("IDENTIFY_SECRET", None)

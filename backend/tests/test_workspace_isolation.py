@@ -145,3 +145,80 @@ async def test_create_ticket_rejects_cross_workspace_board(
     )
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_claim_and_comment_reject_cross_workspace_ticket(
+    client: AsyncClient, auth_headers, test_db: AsyncSession
+):
+    await ensure_local_tenancy(test_db)
+    other_ws = await _ensure_other_workspace(test_db)
+    col_id = "col-other-ws-backlog"
+    if await test_db.get(Column, col_id) is None:
+        test_db.add(
+            Column(
+                column_id=col_id,
+                board_id="board-other-ws",
+                name="Backlog",
+                stage="backlog",
+                position=1,
+            )
+        )
+    ticket_id = "tkt-other-ws-write"
+    if await test_db.get(Ticket, ticket_id) is None:
+        test_db.add(
+            Ticket(
+                ticket_id=ticket_id,
+                workspace_id=other_ws,
+                board_id="board-other-ws",
+                column_id=col_id,
+                title="Secret write target",
+                description="must not claim",
+                priority="medium",
+                rank="a0",
+                created_by="user_pm",
+            )
+        )
+    await test_db.commit()
+
+    headers = auth_headers("user_pm", "human")
+    claim = await client.post(f"/api/v1/tickets/{ticket_id}/claim", headers=headers)
+    assert claim.status_code == 403
+    assert claim.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+    comment = await client.post(
+        f"/api/v1/tickets/{ticket_id}/comments",
+        headers=headers,
+        json={"content": "nope"},
+    )
+    assert comment.status_code == 403
+    assert comment.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+    patch = await client.patch(
+        f"/api/v1/tickets/{ticket_id}",
+        headers=headers,
+        json={"title": "hijack"},
+    )
+    assert patch.status_code == 403
+    assert patch.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+
+def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
+    from sqlalchemy import select
+
+    from ak5.contracts.stages import Role
+    from ak5.server.auth.principal import Principal
+    from ak5.server.auth.scope import ScopeError, scoped
+    from ak5.server.models.column import Column
+    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+
+    principal = Principal(
+        principal_id="usr_x",
+        principal_type="user",
+        workspace_id=LOCAL_WORKSPACE_ID,
+        workflow_role=Role.HUMAN,
+        membership_role="owner",
+    )
+    # Column is listed as tenant but (today) has no workspace_id → fail closed.
+    with pytest.raises(ScopeError):
+        scoped(select(Column), principal, Column)

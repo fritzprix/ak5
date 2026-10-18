@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.stages import Role
 from ak5.server.auth.principal import Principal
 from ak5.server.config import settings
@@ -96,9 +97,15 @@ async def verify_access_token(token: str, db: AsyncSession) -> Principal:
             )
         ).scalar_one_or_none()
         if membership is None:
+            # Raise via HTTPException; main maps unknown codes — use envelope in detail
+            # for clients that read detail, and status from WORKSPACE_FORBIDDEN.
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not a member of this workspace",
+                status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+                detail=error_body(
+                    ErrorCode.WORKSPACE_FORBIDDEN,
+                    "Not a member of this workspace",
+                    details={"workspace_id": workspace_id, "principal_id": principal_id},
+                ),
             )
         return Principal(
             principal_id=principal_id,

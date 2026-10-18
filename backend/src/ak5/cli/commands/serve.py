@@ -414,6 +414,13 @@ def run_serve(
     else:
         _print_api_banner(host, port)
 
+    # identity.md §2 — local loopback serve enables insecure identify unless overridden.
+    if is_loopback_bind(host) and "AK5_DEV_INSECURE_IDENTIFY" not in os.environ:
+        os.environ["AK5_DEV_INSECURE_IDENTIFY"] = "1"
+        console.print(
+            "[dim]AK5_DEV_INSECURE_IDENTIFY=1 (loopback bind; disable for production).[/dim]"
+        )
+
     daemon_proc: subprocess.Popen[str] | None = None
     proxy_headers, forwarded_allow_ips = resolve_uvicorn_proxy_settings(
         host, ui=ui, is_ssl=is_ssl, tailscale_serve=tailscale_serve

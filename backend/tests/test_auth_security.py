@@ -55,6 +55,28 @@ async def test_identify_open_without_secret(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_identify_blocked_without_dev_insecure_flag(
+    client: AsyncClient, monkeypatch
+):
+    monkeypatch.delenv("AK5_DEV_INSECURE_IDENTIFY", raising=False)
+    monkeypatch.setattr("ak5.server.config.settings.DEV_INSECURE_IDENTIFY", False)
+    reset_secret_caches()
+
+    resp = await client.post(
+        "/api/v1/auth/identify",
+        json={
+            "actor_id": "agent_blocked",
+            "actor_type": "agent",
+            "name": "Blocked",
+            "role": "Worker",
+            "capabilities": [],
+        },
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
+
+
+@pytest.mark.asyncio
 async def test_identify_requires_secret_when_configured(client: AsyncClient, monkeypatch):
     monkeypatch.setenv("AK5_IDENTIFY_SECRET", "shared-agent-secret")
     reset_secret_caches()

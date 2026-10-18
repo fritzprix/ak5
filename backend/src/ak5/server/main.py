@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,6 +107,23 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=HTTP_STATUS[exc.code],
             content=error_body(exc.code, exc.message, details=exc.details),
+        )
+
+    @application.exception_handler(HTTPException)
+    async def http_exception_envelope_handler(
+        _request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        """Pass through contracts error envelopes raised as ``HTTPException.detail``."""
+        if isinstance(exc.detail, dict) and "error" in exc.detail:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=exc.detail,
+                headers=dict(exc.headers) if exc.headers else None,
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=dict(exc.headers) if exc.headers else None,
         )
 
     @application.exception_handler(RequestValidationError)

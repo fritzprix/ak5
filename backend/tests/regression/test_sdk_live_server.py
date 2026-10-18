@@ -47,6 +47,7 @@ def sdk_built():
 def test_sdk_create_next_claim_route_submit_history(live_server, sdk_built):
     env = dict(live_server["env"])
     env["AK5_LIVE_BASE_URL"] = live_server["api"]
+    env["AK5_DEV_INSECURE_IDENTIFY"] = "1"
     env.pop("AK5_IDENTIFY_SECRET", None)
     env.pop("IDENTIFY_SECRET", None)
 

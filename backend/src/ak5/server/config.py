@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     # Optional shared secret for POST /auth/identify (AK5_IDENTIFY_SECRET).
     # When set, CLI/MCP send it automatically; web UI may use the auth cookie instead.
     IDENTIFY_SECRET: str = ""
+    # Local-only insecure identify (identity.md §2). Also requires loopback client.
+    DEV_INSECURE_IDENTIFY: bool = False
 
     DEFAULT_BOARD_ID: str = "proj-core-engine"
     DEFAULT_BOARD_NAME: str = "Core Engine Project"

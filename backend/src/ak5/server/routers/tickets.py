@@ -68,6 +68,17 @@ def _workflow_error_response(exc: WorkflowError) -> JSONResponse:
     )
 
 
+def _workspace_forbidden_ticket(ticket_id: str, workspace_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+        content=error_body(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Ticket is outside the caller's workspace",
+            details={"ticket_id": ticket_id, "workspace_id": workspace_id},
+        ),
+    )
+
+
 def _format_ticket_out(t: Ticket, subtask_stats: tuple[int, int] = (0, 0)) -> TicketOut:
     """Build TicketOut. Caller must not pass an expired ticket (refresh/reload first)."""
     count, done_count = subtask_stats
@@ -409,6 +420,7 @@ async def update_ticket(
     ticket_id: str,
     req: TicketUpdate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TicketOut | JSONResponse:
     """Update ticket fields, status, or assignee.
@@ -423,6 +435,8 @@ async def update_ticket(
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
+    if ticket.workspace_id != workspace_id:
+        return _workspace_forbidden_ticket(ticket_id, workspace_id)
 
     data = req.model_dump(exclude_unset=True)
     if not data:
@@ -781,12 +795,15 @@ async def add_comment(
     ticket_id: str,
     req: TicketCommentCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> TicketCommentOut:
+) -> TicketCommentOut | JSONResponse:
     """Add a discussion or reasoning comment to a ticket."""
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
+    if ticket.workspace_id != workspace_id:
+        return _workspace_forbidden_ticket(ticket_id, workspace_id)
 
     comment_id = f"cmt_{uuid.uuid4().hex[:8]}"
     comment = TicketComment(
@@ -1064,11 +1081,15 @@ async def delete_attachment(
 async def claim_ticket_endpoint(
     ticket_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     req: ClaimRequest | None = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketClaimOut | JSONResponse:
     body = req or ClaimRequest()
+    existing = await db.get(Ticket, ticket_id)
+    if existing is not None and existing.workspace_id != workspace_id:
+        return _workspace_forbidden_ticket(ticket_id, workspace_id)
 
     async def _run() -> TicketClaimOut:
         result = await wf.claim_ticket(

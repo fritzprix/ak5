@@ -138,8 +138,45 @@ def extract_identify_secret(request: Request, body_secret: str | None = None) ->
     return None
 
 
+def is_loopback_client(request: Request) -> bool:
+    """True when the ASGI client host is loopback (or Starlette TestClient)."""
+    client = request.client
+    if client is None:
+        return False
+    host = (client.host or "").strip().lower()
+    if host in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_dev_insecure_identify_enabled() -> bool:
+    """``AK5_DEV_INSECURE_IDENTIFY=1`` (identity.md §2 local path)."""
+    raw = os.environ.get("AK5_DEV_INSECURE_IDENTIFY", "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    from ak5.server.config import settings
+
+    return bool(settings.DEV_INSECURE_IDENTIFY)
+
+
+def is_dev_insecure_identify_allowed(request: Request) -> bool:
+    """Identify is allowed only with the insecure flag **and** a loopback client."""
+    return is_dev_insecure_identify_enabled() and is_loopback_client(request)
+
+
 def is_identify_authorized(request: Request, provided_secret: str | None) -> bool:
-    """Allow identify when secret unset, matches, or valid web-auth cookie (gate on)."""
+    """Allow identify when secret unset, matches, or valid web-auth cookie (gate on).
+
+    Callers must also enforce :func:`is_dev_insecure_identify_allowed` (identity.md §2).
+    """
+    if not is_dev_insecure_identify_allowed(request):
+        return False
+
     required = get_identify_secret()
     if not required:
         return True
