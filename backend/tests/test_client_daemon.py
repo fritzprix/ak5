@@ -417,13 +417,14 @@ def test_hook_env_carries_subscriber_profile_not_daemon_token(daemon_home, monke
     """#78: each hook gets its own AK5_PROFILE; daemon-process tokens never leak in."""
     sock: Path = daemon_home["sock"]
     monkeypatch.setenv("AK5_TOKEN", "daemon-shell-token")  # would override profiles in the CLI
+    monkeypatch.setenv("AK5_ACTOR_ID", "daemon-actor")  # must not shadow the event actor
     out = daemon_home["home"]
     for name, role in (("worker-1", "worker"), ("gk-1", "gatekeeper")):
         upsert_profile(Profile(name=name, server="http://127.0.0.1:9/api/v1", role=role))
         save_credential(name, ProfileCredential(access_token=f"tok-{name}", actor_id=name, status="active"))
     start_daemon_background(sock=sock)
 
-    record = 'printf "%s|%s|%s" "$AK5_PROFILE" "${AK5_TOKEN-unset}" "$AK5_SUBSCRIBER_ID"'
+    record = 'printf "%s|%s|%s|%s" "$AK5_PROFILE" "${AK5_TOKEN-unset}" "$AK5_SUBSCRIBER_ID" "$AK5_ACTOR_ID"'
     with _uds_client(sock) as client:
         for name in ("worker-1", "gk-1"):
             res = client.post(
@@ -450,7 +451,7 @@ def test_hook_env_carries_subscriber_profile_not_daemon_token(daemon_home, monke
         for name in ("worker-1", "gk-1"):
             spooled = client.post(
                 "/v1/spool",
-                json={"profile": name, "type": "WORK_AVAILABLE", "data": {}},
+                json={"profile": name, "type": "WORK_AVAILABLE", "data": {"actor_id": f"usr_{name}"}},
                 timeout=30.0,
             )
             assert spooled.status_code == 200, spooled.text
@@ -459,6 +460,7 @@ def test_hook_env_carries_subscriber_profile_not_daemon_token(daemon_home, monke
     files = {n: out / f"{n}.env" for n in ("worker-1", "gk-1", "override")}
     while time.time() < deadline and not all(f.is_file() and f.read_text() for f in files.values()):
         time.sleep(0.1)
-    assert files["worker-1"].read_text() == "worker-1|unset|sub-worker-1"
-    assert files["gk-1"].read_text() == "gk-1|unset|sub-gk-1"
+    # $AK5_ACTOR_ID is the event actor (events.md §4.1), not the daemon's inherited value.
+    assert files["worker-1"].read_text() == "worker-1|unset|sub-worker-1|usr_worker-1"
+    assert files["gk-1"].read_text() == "gk-1|unset|sub-gk-1|usr_gk-1"
     assert files["override"].read_text() == "custom"

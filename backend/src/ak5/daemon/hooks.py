@@ -58,8 +58,14 @@ def _ticket_title(inner: dict[str, Any], data: dict[str, Any]) -> str:
     return ""
 
 
-def hook_env_for_event(event: dict[str, Any]) -> dict[str, str]:
-    """Build events.md §4.1 environ from a spool event row."""
+def hook_env_for_event(
+    event: dict[str, Any], base_env: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Build events.md §4.1 environ from a spool event row on top of ``base_env``.
+
+    ``base_env`` defaults to a copy of the daemon's ``os.environ``; event fields
+    are written last so they always win over inherited values.
+    """
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     if not data and isinstance(event.get("payload"), dict):
         data = event["payload"]
@@ -99,7 +105,7 @@ def hook_env_for_event(event: dict[str, Any]) -> dict[str, str]:
         or (f"seq-{event['seq']}" if event.get("seq") is not None else "")
     )
     cursor = str(event.get("seq") or data.get("cursor") or "")
-    env = os.environ.copy()
+    env = dict(os.environ) if base_env is None else dict(base_env)
     env.update(
         {
             "AK5_EVENT": str(event.get("type") or ""),
@@ -162,9 +168,10 @@ def hook_env_for_subscriber(sub: LocalSubscriber, event: dict[str, Any]) -> dict
 
     A shell assignment inside ``--exec`` (``AK5_PROFILE=x cmd``) still overrides it.
     """
-    env = hook_env_for_event(event)
-    for key in _HOOK_ENV_DROP:
-        env.pop(key, None)
+    # Strip daemon credentials from the *inherited* env only, then layer the event
+    # fields on top — $AK5_ACTOR_ID stays the event actor (events.md §4.1).
+    inherited = {k: v for k, v in os.environ.items() if k not in _HOOK_ENV_DROP}
+    env = hook_env_for_event(event, base_env=inherited)
     env["AK5_PROFILE"] = sub.profile
     env["AK5_SUBSCRIBER_ID"] = sub.id
     return env
