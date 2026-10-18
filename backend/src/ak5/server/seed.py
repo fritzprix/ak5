@@ -188,6 +188,68 @@ async def repair_claimless_in_progress_tickets(db: AsyncSession) -> None:
         )
 
 
+_AGENT_WORKFLOW_ROLES = frozenset({"triage", "worker", "gatekeeper"})
+
+
+def _agent_workflow_role(actor: Actor) -> str:
+    raw = (actor.role or "").strip().lower()
+    if raw in _AGENT_WORKFLOW_ROLES:
+        return raw
+    if "review" in raw or "gate" in raw:
+        return "gatekeeper"
+    if "triage" in raw:
+        return "triage"
+    return "worker"
+
+
+async def migrate_v1_actors_to_principals(db: AsyncSession) -> None:
+    """Map every v1 Actor into users/agents + bridge (identity.md §9)."""
+    from ak5.server.auth.bridge import principal_id_for_v1_actor, register_bridge
+
+    actors = list((await db.execute(select(Actor))).scalars().all())
+    for actor in actors:
+        if actor.actor_id in {"system", SYSTEM_ACTOR_ID}:
+            continue
+        if actor.actor_type == "human":
+            pid = principal_id_for_v1_actor(actor_id=actor.actor_id, actor_type="human")
+            register_bridge(pid, actor.actor_id)
+            if await db.get(User, pid) is None:
+                db.add(
+                    User(
+                        user_id=pid,
+                        email=None,
+                        display_name=actor.name or actor.actor_id,
+                    )
+                )
+            mem_id = f"mem_{LOCAL_WORKSPACE_ID}_{pid}"
+            if await db.get(Membership, mem_id) is None:
+                role = "owner" if pid == LOCAL_USER_ID else "member"
+                db.add(
+                    Membership(
+                        membership_id=mem_id,
+                        workspace_id=LOCAL_WORKSPACE_ID,
+                        user_id=pid,
+                        role=role,
+                    )
+                )
+        elif actor.actor_type == "agent":
+            pid = principal_id_for_v1_actor(actor_id=actor.actor_id, actor_type="agent")
+            register_bridge(pid, actor.actor_id)
+            if await db.get(Agent, pid) is None:
+                db.add(
+                    Agent(
+                        agent_id=pid,
+                        workspace_id=LOCAL_WORKSPACE_ID,
+                        name=actor.name or actor.actor_id,
+                        workflow_role=_agent_workflow_role(actor),
+                        capabilities=actor.capabilities or "[]",
+                        board_scope="[]",
+                        created_by=LOCAL_USER_ID,
+                    )
+                )
+    await db.flush()
+
+
 async def ensure_local_tenancy(db: AsyncSession) -> None:
     """Create ``ws_local`` workspace + mapped user/agents (identity.md §9 / #23)."""
     ws = await db.get(Workspace, LOCAL_WORKSPACE_ID)
@@ -241,6 +303,13 @@ async def ensure_local_tenancy(db: AsyncSession) -> None:
                 )
             )
     await db.flush()
+    # Register seed bridges then migrate any remaining v1 actors.
+    from ak5.server.auth.bridge import register_bridge
+
+    register_bridge(LOCAL_USER_ID, "user_pm")
+    register_bridge(LOCAL_AGENT_WORKER_ID, "agent_image_worker")
+    register_bridge(LOCAL_AGENT_REVIEWER_ID, "agent_code_reviewer")
+    await migrate_v1_actors_to_principals(db)
 
 
 async def seed_initial_data() -> None:

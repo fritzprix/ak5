@@ -41,6 +41,46 @@ async def test_ensure_local_tenancy_idempotent(test_db: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_migrate_v1_actors_creates_principals(test_db: AsyncSession):
+    from ak5.server.auth.bridge import actor_id_for_principal, principal_id_for_v1_actor
+    from ak5.server.models.actor import Actor
+    from ak5.server.seed import migrate_v1_actors_to_principals
+
+    test_db.add(
+        Actor(
+            actor_id="human_extra",
+            actor_type="human",
+            name="Extra Human",
+            role="PM",
+            capabilities="[]",
+            status="idle",
+        )
+    )
+    test_db.add(
+        Actor(
+            actor_id="agent_extra",
+            actor_type="agent",
+            name="Extra Agent",
+            role="Worker",
+            capabilities="[]",
+            status="idle",
+        )
+    )
+    await test_db.commit()
+
+    await ensure_local_tenancy(test_db)
+    await migrate_v1_actors_to_principals(test_db)
+    await test_db.commit()
+
+    human_pid = principal_id_for_v1_actor(actor_id="human_extra", actor_type="human")
+    agent_pid = principal_id_for_v1_actor(actor_id="agent_extra", actor_type="agent")
+    assert await test_db.get(User, human_pid) is not None
+    assert await test_db.get(Agent, agent_pid) is not None
+    assert actor_id_for_principal(human_pid) == "human_extra"
+    assert actor_id_for_principal(agent_pid) == "agent_extra"
+
+
+@pytest.mark.asyncio
 async def test_user_token_verifies_as_human(test_db: AsyncSession):
     await ensure_local_tenancy(test_db)
     await test_db.commit()

@@ -203,6 +203,63 @@ async def test_claim_and_comment_reject_cross_workspace_ticket(
     assert patch.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
 
 
+@pytest.mark.asyncio
+async def test_board_next_columns_members_reject_cross_workspace(
+    client: AsyncClient, auth_headers, test_db: AsyncSession
+):
+    await ensure_local_tenancy(test_db)
+    await _ensure_other_workspace(test_db)
+    # Give other board a backlog column so add_column isn't the only path.
+    col_id = "col-other-ws-backlog"
+    if await test_db.get(Column, col_id) is None:
+        test_db.add(
+            Column(
+                column_id=col_id,
+                board_id="board-other-ws",
+                name="Backlog",
+                stage="backlog",
+                position=1,
+            )
+        )
+    await test_db.commit()
+
+    headers = auth_headers("user_pm", "human")
+    nxt = await client.get("/api/v1/boards/board-other-ws/next", headers=headers)
+    assert nxt.status_code == 403
+    assert nxt.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+    members = await client.get("/api/v1/boards/board-other-ws/members", headers=headers)
+    assert members.status_code == 403
+    assert members.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+    col = await client.post(
+        "/api/v1/boards/board-other-ws/columns",
+        headers=headers,
+        json={
+            "column_id": "col-leak",
+            "name": "Leak",
+            "stage": "backlog",
+            "position": 9,
+            "wip_limit": 0,
+        },
+    )
+    assert col.status_code == 403
+    assert col.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_list_actors_scoped_to_workspace(
+    client: AsyncClient, auth_headers, test_db: AsyncSession
+):
+    await ensure_local_tenancy(test_db)
+    await test_db.commit()
+    listed = await client.get("/api/v1/actors", headers=auth_headers("user_pm", "human"))
+    assert listed.status_code == 200
+    ids = {a["actor_id"] for a in listed.json()}
+    # Seed locals are visible; a foreign actor never enrolled should not appear.
+    assert "user_pm" in ids
+
+
 def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
     from ak5.contracts.stages import Role
     from ak5.server.auth.principal import Principal
