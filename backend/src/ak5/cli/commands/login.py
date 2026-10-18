@@ -1,3 +1,7 @@
+"""``ak5 login`` — OAuth device grant via daemon (client.md §3 / identity.md §3.3·§4.1)."""
+
+from __future__ import annotations
+
 import time
 from contextlib import suppress
 
@@ -12,9 +16,11 @@ from ak5.cli.config import (
     list_identity_hints,
     save_session,
 )
-from ak5.client.errors import ClientError
+from ak5.client.errors import EXIT_AUTH, ClientError
 from ak5.client.output import handle_client_error, is_json_mode, print_result
+from ak5.contracts.errors import ErrorCode
 from ak5.contracts.stages import Role
+from ak5.daemon.ipc import daemon_client, ensure_daemon
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -22,6 +28,7 @@ from rich.table import Table
 console = Console()
 
 _ROLE_CHOICES = [r.value for r in Role]
+_AGENT_ROLES = [Role.TRIAGE.value, Role.WORKER.value, Role.GATEKEEPER.value]
 
 
 def _print_identity_hints(project_root) -> None:
@@ -41,59 +48,74 @@ def _print_identity_hints(project_root) -> None:
         caps_str = ", ".join(caps) if isinstance(caps, list) else str(caps)
         table.add_row(f"@{h['actor_id']}", str(h.get("role") or ""), caps_str)
     console.print(table)
-    console.print(
-        "[dim]Match against your role/capabilities, then: "
-        "export AK5_ACTOR_ID=<id> && ak5 whoami[/dim]"
-    )
 
 
-def _perform_device_flow(
-    api_url: str,
-    payload: dict,
-    board_id: str | None,
-    project_root,
+def _normalize_server(url: str) -> str:
+    s = url.strip().rstrip("/")
+    if not s.endswith("/api/v1"):
+        s = f"{s}/api/v1"
+    return s
+
+
+def _daemon_oauth_login(
     *,
+    profile: str,
+    server: str,
+    principal: str,
+    name: str | None,
+    role: str,
+    capabilities: list[str],
+    workspace_id: str | None,
     json_mode: bool,
-) -> None:
-    """Execute OAuth 2.0 Device Flow authorization with interactive terminal waiting."""
-    code_req = {
-        "actor_id": payload["actor_id"],
-        "actor_type": payload["actor_type"],
-        "name": payload["name"],
-        "role": payload["role"],
-        "capabilities": payload["capabilities"],
-        "board_id": board_id,
-    }
-
-    with httpx.Client(timeout=15.0) as client:
-        resp = client.post(f"{api_url}/auth/device/code", json=code_req)
-        resp.raise_for_status()
-        code_data = resp.json()
-
-        device_code = code_data["device_code"]
-        user_code = code_data["user_code"]
-        verify_url = code_data["verification_uri"]
-        complete_url = code_data["verification_uri_complete"]
-        interval = max(code_data.get("interval", 3), 2)
-        expires_in = code_data.get("expires_in", 600)
+) -> dict:
+    ensure_daemon()
+    with daemon_client() as client:
+        start = client.post(
+            "/v1/login",
+            json={
+                "profile": profile,
+                "server": server,
+                "principal": principal,
+                "name": name,
+                "role": role,
+                "capabilities": capabilities,
+                "workspace_id": workspace_id,
+            },
+        )
+        if start.status_code >= 400:
+            detail = start.json().get("detail") if start.headers.get("content-type", "").startswith(
+                "application/json"
+            ) else start.text
+            raise ClientError(
+                str(detail) or "login failed",
+                code=ErrorCode.UNAUTHENTICATED,
+                exit_code=EXIT_AUTH,
+                http_status=start.status_code,
+            )
+        body = start.json()
+        login_id = body["login_id"]
+        user_code = body["user_code"]
+        verify_url = body.get("verification_uri") or ""
+        complete_url = body.get("verification_uri_complete") or verify_url
+        interval = max(int(body.get("interval") or 2), 1)
+        expires_in = int(body.get("expires_in") or 600)
 
         if not json_mode:
-            panel_content = (
-                f"[bold]1. Visit the approval page:[/bold]\n"
-                f"   [cyan underline]{complete_url}[/cyan underline]\n\n"
-                f"[bold]2. Or enter this code manually on {verify_url}:[/bold]\n"
-                f"   [bold yellow] {user_code} [/bold yellow]\n\n"
-                f"[dim]Code expires in {expires_in // 60} minutes.[/dim]"
-            )
             console.print(
                 Panel(
-                    panel_content,
-                    title="[bold cyan]AK5 Agent Device Authorization[/bold cyan]",
+                    (
+                        f"[bold]1. Visit the approval page:[/bold]\n"
+                        f"   [cyan underline]{complete_url}[/cyan underline]\n\n"
+                        f"[bold]2. Or enter this code on {verify_url}:[/bold]\n"
+                        f"   [bold yellow] {user_code} [/bold yellow]\n\n"
+                        f"[dim]Expires in {expires_in // 60} minutes.[/dim]"
+                    ),
+                    title="[bold cyan]AK5 Device Authorization[/bold cyan]",
                     border_style="cyan",
                 )
             )
 
-        start_time = time.time()
+        deadline = time.time() + expires_in
         status_ctx = (
             console.status("[bold green]Waiting for authorization...[/bold green]", spinner="dots")
             if not json_mode
@@ -101,117 +123,52 @@ def _perform_device_flow(
         )
         with status_ctx:
             while True:
-                if time.time() - start_time > expires_in:
-                    raise ClientError("Authorization timed out", exit_code=1)
-
+                if time.time() > deadline:
+                    raise ClientError(
+                        "Authorization timed out",
+                        code=ErrorCode.UNAUTHENTICATED,
+                        exit_code=EXIT_AUTH,
+                    )
                 time.sleep(interval)
-                poll_resp = client.post(
-                    f"{api_url}/auth/device/token",
-                    json={"device_code": device_code},
-                )
-
-                if poll_resp.status_code == 200:
-                    token_data = poll_resp.json()
-                    token = token_data["access_token"]
-                    break
-
-                if poll_resp.status_code == 403:
-                    raise ClientError("Authorization denied by user", exit_code=1)
-
-                error_detail = ""
-                with suppress(Exception):
-                    error_detail = poll_resp.json().get("detail", "")
-
-                if "authorization_pending" in error_detail:
-                    continue
-                if "expired" in error_detail:
-                    raise ClientError("Authorization code expired", exit_code=1)
-                raise ClientError(f"Polling error: {poll_resp.text}", exit_code=1)
-
-    session_path = save_session(
-        {
-            "token": token,
-            "actor_id": payload["actor_id"],
-            "actor_type": payload["actor_type"],
-            "role": payload["role"],
-            "api_url": api_url,
-            "capabilities": payload["capabilities"],
-        },
-        project_root=project_root,
-    )
-    claim_path = identity_path_for(payload["actor_id"], project_root)
-    out = {
-        "actor_id": payload["actor_id"],
-        "role": payload["role"],
-        "actor_type": payload["actor_type"],
-        "session": str(session_path),
-        "identity": str(claim_path),
-    }
-    if json_mode:
-        print_result(out, json_mode=True)
-    else:
-        console.print(
-            f"[bold green]✓[/bold green] Authorized as [cyan]{payload['actor_id']}[/cyan] "
-            f"[{payload['actor_type']}]"
-        )
-        console.print(f"[dim]Session:[/dim]  {session_path}")
-        console.print(f"[dim]Identity:[/dim] {claim_path}")
+                poll = client.get(f"/v1/login/{login_id}")
+                if poll.status_code == 410:
+                    raise ClientError(
+                        "Authorization code expired",
+                        code=ErrorCode.UNAUTHENTICATED,
+                        exit_code=EXIT_AUTH,
+                        http_status=410,
+                    )
+                if poll.status_code >= 400:
+                    detail = (
+                        poll.json().get("detail")
+                        if poll.headers.get("content-type", "").startswith("application/json")
+                        else poll.text
+                    )
+                    raise ClientError(
+                        str(detail) or "authorization failed",
+                        code=ErrorCode.UNAUTHENTICATED,
+                        exit_code=EXIT_AUTH,
+                        http_status=poll.status_code,
+                    )
+                result = poll.json()
+                if result.get("status") == "approved":
+                    return result
+                # pending — continue
 
 
-@click.command("login")
-@click.argument("url_arg", required=False, default=None)
-@click.option(
-    "--id",
-    "actor_id",
-    required=True,
-    help="Stable actor id WITHOUT leading '@'. '@' is stripped if present.",
-)
-@click.option(
-    "--role",
-    required=True,
-    type=click.Choice(_ROLE_CHOICES, case_sensitive=False),
-    help="Workflow role: triage | worker | gatekeeper | human",
-)
-@click.option("--caps", default="", help="Comma-separated capabilities")
-@click.option("--type", "actor_type", type=click.Choice(["human", "agent"]), default="agent")
-@click.option("--board", default=None, help="Board ID to enroll this actor with")
-@click.option("--url", default=None, help="AK5 Gateway API URL")
-@click.option("--device/--no-device", default=None, help="Use browser Device Code Flow")
-@click.pass_context
-def login_command(
-    ctx: click.Context,
-    url_arg: str | None,
+def _legacy_identify_login(
+    *,
+    api_url: str,
     actor_id: str,
     role: str,
     caps: str,
     actor_type: str,
     board: str | None,
-    url: str | None,
-    device: bool | None,
+    project_root,
+    json_mode: bool,
 ) -> None:
-    """Identify and authenticate as an Actor (Human or AI Agent).
-
-    Agent happy path:
-      ak5 login --type agent --role worker --caps ..
-      ak5 subscribe add <board> --events WORK_AVAILABLE --hook-exec '<wake>'
-      ak5 daemon start
-      # on wake: ak5 next --json → ak5 ticket claim → work → ak5 ticket submit
-    """
-    json_mode = is_json_mode(flag=json_flag_from_ctx(ctx))
-    actor_id = clean_actor_id(actor_id)
-    if not actor_id:
-        raise click.UsageError("--id must be a non-empty actor id (without leading @).")
-
-    role = role.lower()
-    api_url = url or url_arg or get_api_url()
+    """Dev insecure identify path (identity.md §2) — kept for local loops."""
     capabilities = [c.strip() for c in caps.split(",") if c.strip()]
-    project_root = find_project_root()
-
-    existing = list_identity_hints(project_root)
-    if len(existing) >= 1 and actor_id not in {h["actor_id"] for h in existing} and not json_mode:
-        console.print("[dim]Other local identities already present:[/dim]")
-        _print_identity_hints(project_root)
-
     payload = {
         "actor_id": actor_id,
         "actor_type": actor_type,
@@ -219,72 +176,205 @@ def login_command(
         "role": role,
         "capabilities": capabilities,
     }
+    from ak5.security import identify_headers_from_env
 
-    use_device_flow = bool(device)
+    with open_client(require_auth=False, api_url=api_url) as client:
+        data = client.identify(payload, extra_headers=identify_headers_from_env())
+    token = data["access_token"]
+    if board:
+        with suppress(Exception), httpx.Client(timeout=10.0) as http:
+            http.post(
+                f"{api_url}/boards/{board}/members",
+                json={"actor_id": actor_id, "role": role},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    session_path = save_session(
+        {
+            "token": token,
+            "actor_id": actor_id,
+            "actor_type": actor_type,
+            "role": role,
+            "api_url": api_url,
+            "capabilities": capabilities,
+        },
+        project_root=project_root,
+    )
+    claim_path = identity_path_for(actor_id, project_root)
+    out = {
+        "actor_id": actor_id,
+        "role": role,
+        "actor_type": actor_type,
+        "session": str(session_path),
+        "identity": str(claim_path),
+        "source": "identify",
+    }
+    if json_mode:
+        print_result(out, json_mode=True)
+    else:
+        console.print(
+            f"[bold green]✓[/bold green] Authenticated as [cyan]{actor_id}[/cyan] [{actor_type}]"
+        )
+        console.print(f"[dim]Session:[/dim]  {session_path}")
+
+
+@click.command("login")
+@click.argument("url_arg", required=False, default=None)
+@click.option("--agent", "agent_name", default=None, help="Agent display name (OAuth device grant)")
+@click.option("--profile", default=None, help="Daemon credential profile name")
+@click.option("--workspace", "workspace_id", default=None, help="Workspace id for the grant")
+@click.option(
+    "--id",
+    "actor_id",
+    default=None,
+    help="[legacy] Stable actor id WITHOUT leading '@'. '@' is stripped if present.",
+)
+@click.option(
+    "--role",
+    default=None,
+    type=click.Choice(_ROLE_CHOICES, case_sensitive=False),
+    help="Workflow role: triage | worker | gatekeeper | human",
+)
+@click.option("--caps", default="", help="Comma-separated capabilities")
+@click.option(
+    "--type",
+    "actor_type",
+    type=click.Choice(["human", "agent"]),
+    default="agent",
+    help="[legacy] Actor type for identify",
+)
+@click.option("--board", default=None, help="[legacy] Board to enroll after identify")
+@click.option("--url", default=None, help="AK5 Gateway API URL")
+@click.option(
+    "--device/--no-device",
+    default=None,
+    help="[deprecated] Legacy /auth/device — prefer default OAuth via --agent / --profile",
+)
+@click.option(
+    "--user",
+    "as_user",
+    is_flag=True,
+    help="User principal device grant (default when --agent is omitted and --profile is set)",
+)
+@click.pass_context
+def login_command(
+    ctx: click.Context,
+    url_arg: str | None,
+    agent_name: str | None,
+    profile: str | None,
+    workspace_id: str | None,
+    actor_id: str | None,
+    role: str | None,
+    caps: str,
+    actor_type: str,
+    board: str | None,
+    url: str | None,
+    device: bool | None,
+    as_user: bool,
+) -> None:
+    """Authenticate via OAuth device grant (daemon credential store).
+
+    Agent::
+
+      ak5 login --agent worker-1 --role worker --caps py [--profile worker-1]
+
+    User::
+
+      ak5 login --profile me [--workspace ws_…]
+
+    Legacy (dev insecure identify)::
+
+      ak5 login --id <actor> --role worker --caps …
+    """
+    json_mode = is_json_mode(flag=json_flag_from_ctx(ctx))
+    api_url = _normalize_server(url or url_arg or get_api_url())
+    project_root = find_project_root()
+    capabilities = [c.strip() for c in caps.split(",") if c.strip()]
 
     try:
-        if use_device_flow:
-            # Version-check against server before device flow.
-            with open_client(require_auth=False, api_url=api_url) as client:
-                client.ensure_version()
-            _perform_device_flow(api_url, payload, board, project_root, json_mode=json_mode)
+        # Prefer OAuth when --agent or --profile (without legacy --id).
+        if agent_name or (profile and not actor_id):
+            if agent_name and as_user:
+                raise click.UsageError("Cannot combine --agent with --user")
+            principal = "user" if (as_user or not agent_name) else "agent"
+            if principal == "agent":
+                if not role:
+                    raise click.UsageError("--role is required with --agent")
+                role = role.lower()
+                if role not in _AGENT_ROLES:
+                    raise click.UsageError(
+                        f"--role for agents must be one of: {', '.join(_AGENT_ROLES)}"
+                    )
+            else:
+                role = (role or Role.HUMAN.value).lower()
+
+            profile_name = (profile or agent_name or "me").strip()
+            result = _daemon_oauth_login(
+                profile=profile_name,
+                server=api_url,
+                principal=principal,
+                name=agent_name,
+                role=role,
+                capabilities=capabilities,
+                workspace_id=workspace_id,
+                json_mode=json_mode,
+            )
+            out = {
+                "profile": profile_name,
+                "principal": principal,
+                "role": role,
+                "actor_id": result.get("actor_id") or "",
+                "actor_type": result.get("actor_type") or principal,
+                "server": api_url,
+                "source": "daemon",
+            }
+            if json_mode:
+                print_result(out, json_mode=True)
+            else:
+                console.print(
+                    f"[bold green]✓[/bold green] Logged in profile "
+                    f"[cyan]{profile_name}[/cyan] ({principal})"
+                )
+                if out["actor_id"]:
+                    console.print(f"[dim]Actor:[/dim] {out['actor_id']}")
+                console.print(f"[dim]Server:[/dim] {api_url}")
             return
 
-        from ak5.security import identify_headers_from_env
+        # Legacy identify / deprecated device path.
+        if not actor_id:
+            raise click.UsageError(
+                "Specify --agent <name> --role …, or --profile me, "
+                "or legacy --id <actor> --role …"
+            )
+        if not role:
+            raise click.UsageError("--role is required")
+        actor_id = clean_actor_id(actor_id)
+        if not actor_id:
+            raise click.UsageError("--id must be a non-empty actor id")
+        role = role.lower()
 
-        with open_client(require_auth=False, api_url=api_url) as client:
-            data = client.identify(payload, extra_headers=identify_headers_from_env())
+        existing = list_identity_hints(project_root)
+        if len(existing) >= 1 and actor_id not in {h["actor_id"] for h in existing} and not json_mode:
+            console.print("[dim]Other local identities already present:[/dim]")
+            _print_identity_hints(project_root)
 
-        token = data["access_token"]
+        if device:
+            raise ClientError(
+                "Legacy --device (/auth/device) is removed; use "
+                "`ak5 login --agent …` or `ak5 login --profile me`",
+                code=ErrorCode.UNAUTHENTICATED,
+                exit_code=EXIT_AUTH,
+            )
 
-        if board:
-            try:
-                with httpx.Client(timeout=10.0) as http:
-                    mem_resp = http.post(
-                        f"{api_url}/boards/{board}/members",
-                        json={"actor_id": actor_id, "role": role},
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                    if mem_resp.status_code == 200 and not json_mode:
-                        console.print(f"[dim]Enrolled in board:[/dim] [cyan]{board}[/cyan]")
-            except Exception as ex:
-                if not json_mode:
-                    console.print(
-                        f"[dim yellow]Notice: Could not enroll in board '{board}': {ex}[/dim yellow]"
-                    )
-
-        session_path = save_session(
-            {
-                "token": token,
-                "actor_id": actor_id,
-                "actor_type": actor_type,
-                "role": role,
-                "api_url": api_url,
-                "capabilities": capabilities,
-            },
+        _legacy_identify_login(
+            api_url=api_url,
+            actor_id=actor_id,
+            role=role,
+            caps=caps,
+            actor_type=actor_type,
+            board=board,
             project_root=project_root,
+            json_mode=json_mode,
         )
-        claim_path = identity_path_for(actor_id, project_root)
-        out = {
-            "actor_id": actor_id,
-            "role": role,
-            "actor_type": actor_type,
-            "session": str(session_path),
-            "identity": str(claim_path),
-        }
-        if json_mode:
-            print_result(out, json_mode=True)
-        else:
-            console.print(
-                f"[bold green]✓[/bold green] Authenticated as [cyan]{actor_id}[/cyan] [{actor_type}]"
-            )
-            console.print(f"[dim]Session:[/dim]  {session_path}")
-            console.print(f"[dim]Identity:[/dim] {claim_path}")
-            console.print(
-                "[dim]Next:[/dim] export AK5_ACTOR_ID="
-                f"{actor_id}"
-                " && ak5 whoami && ak5 next --json"
-            )
     except ClientError as exc:
         handle_client_error(exc, json_mode=json_mode)
     except httpx.ConnectError:

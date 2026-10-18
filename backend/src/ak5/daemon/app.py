@@ -6,15 +6,33 @@ import asyncio
 import contextlib
 import os
 import time
-from typing import Any
+import uuid
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ak5.client.errors import ClientError
 from ak5.daemon import __version__
-from ak5.daemon.credentials import ProfileCredential, load_credential, mark_revoked, save_credential
-from ak5.daemon.profiles import list_profiles, resolve_profile_name
+from ak5.daemon.credentials import (
+    ProfileCredential,
+    delete_credential,
+    load_credential,
+    mark_revoked,
+    save_credential,
+)
+from ak5.daemon.oauth_flow import (
+    poll_device_token,
+    refresh_access_token,
+    revoke_token,
+    start_device_login,
+)
+from ak5.daemon.profiles import Profile, get_profile, list_profiles, resolve_profile_name, upsert_profile
 from ak5.daemon.state import DaemonState
+
+# Access tokens refresh this many seconds before stated expiry.
+_TOKEN_REFRESH_SKEW_SECONDS = 60
 
 
 class TokenRequest(BaseModel):
@@ -37,12 +55,15 @@ class SubscriberCreate(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    """Device-grant stub (client.md §5) — interface only until #26."""
+    """Start OAuth device grant (client.md §5 / #26)."""
 
     profile: str
-    principal: str = "agent"
+    server: str
+    principal: Literal["user", "agent"] = "agent"
+    name: str | None = None
     role: str = "worker"
     capabilities: list[str] = Field(default_factory=list)
+    workspace_id: str | None = None
 
 
 class LogoutRequest(BaseModel):
@@ -57,6 +78,8 @@ def create_daemon_app(state: DaemonState | None = None) -> FastAPI:
     app.state.waiters: dict[str, list[asyncio.Event]] = {}
     app.state.poller_stop: asyncio.Event | None = None
     app.state.poller_task: asyncio.Task | None = None
+    # login_id -> pending device grant metadata
+    app.state.pending_logins: dict[str, dict[str, Any]] = {}
 
     def _state() -> DaemonState:
         return app.state.daemon_state
@@ -64,6 +87,44 @@ def create_daemon_app(state: DaemonState | None = None) -> FastAPI:
     def _wake(profile: str) -> None:
         for ev in list(app.state.waiters.get(profile, [])):
             ev.set()
+
+    def _token_needs_refresh(expires_at: str) -> bool:
+        if not expires_at.strip():
+            return False
+        try:
+            raw = expires_at.replace("Z", "+00:00")
+            when = datetime.fromisoformat(raw)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            remaining = (when - datetime.now(UTC)).total_seconds()
+            return remaining <= _TOKEN_REFRESH_SKEW_SECONDS
+        except ValueError:
+            return False
+
+    def _persist_login_success(pending: dict[str, Any], bundle: Any) -> ProfileCredential:
+        profile_name = str(pending["profile"])
+        actor_type = "user" if pending["principal"] == "user" else "agent"
+        actor_id = str(getattr(bundle, "agent_id", "") or pending.get("name") or "")
+        cred = ProfileCredential(
+            access_token=bundle.access_token,
+            refresh_token=bundle.refresh_token,
+            expires_at=bundle.expires_at,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            status="active",
+        )
+        save_credential(profile_name, cred)
+        upsert_profile(
+            Profile(
+                name=profile_name,
+                server=str(pending["server"]),
+                workspace=str(pending.get("workspace_id") or ""),
+                principal=str(pending["principal"]),
+                role=str(pending.get("role") or ""),
+                actor_id=actor_id,
+            )
+        )
+        return cred
 
     @app.on_event("startup")
     async def _start_poller() -> None:
@@ -118,6 +179,31 @@ def create_daemon_app(state: DaemonState | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail=f"profile '{name}' not logged in")
         if cred.status == "revoked":
             raise HTTPException(status_code=401, detail=f"profile '{name}' revoked")
+
+        profile = get_profile(name)
+        server = profile.server if profile is not None else ""
+        if (
+            cred.refresh_token
+            and server
+            and _token_needs_refresh(cred.expires_at)
+        ):
+            try:
+                bundle = await asyncio.to_thread(
+                    refresh_access_token, server, cred.refresh_token
+                )
+            except ClientError as exc:
+                mark_revoked(name)
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
+            cred = ProfileCredential(
+                access_token=bundle.access_token,
+                refresh_token=bundle.refresh_token or cred.refresh_token,
+                expires_at=bundle.expires_at,
+                actor_id=cred.actor_id,
+                actor_type=cred.actor_type,
+                status="active",
+            )
+            save_credential(name, cred)
+
         return TokenResponse(
             access_token=cred.access_token,
             expires_at=cred.expires_at,
@@ -127,22 +213,97 @@ def create_daemon_app(state: DaemonState | None = None) -> FastAPI:
 
     @app.post("/v1/login")
     async def login(body: LoginRequest) -> dict[str, Any]:
-        # Interface stub — real device grant is #26.
+        if not body.profile.strip() or not body.server.strip():
+            raise HTTPException(status_code=400, detail="profile and server required")
+        principal = body.principal
+        name = (body.name or body.profile).strip()
+        try:
+            started = await asyncio.to_thread(
+                start_device_login,
+                body.server,
+                principal=principal,
+                name=name if principal == "agent" else None,
+                workflow_role=body.role if principal == "agent" else None,
+                capabilities=body.capabilities if principal == "agent" else None,
+                workspace_id=body.workspace_id,
+            )
+        except ClientError as exc:
+            raise HTTPException(status_code=exc.http_status or 400, detail=str(exc)) from exc
+
+        login_id = f"login_{uuid.uuid4().hex[:16]}"
+        app.state.pending_logins[login_id] = {
+            "profile": body.profile.strip(),
+            "server": body.server.strip(),
+            "principal": principal,
+            "name": name,
+            "role": body.role,
+            "workspace_id": body.workspace_id or "",
+            "device_code": started.device_code,
+            "user_code": started.user_code,
+            "interval": started.interval,
+            "expires_at": time.time() + started.expires_in,
+        }
         return {
-            "login_id": f"login-{body.profile}",
-            "user_code": "ABCD-EFGH",
-            "verification_uri": "https://example.invalid/device",
-            "message": "device grant not implemented yet (#26); use credential import",
+            "login_id": login_id,
+            "user_code": started.user_code,
+            "verification_uri": started.verification_uri,
+            "verification_uri_complete": started.verification_uri_complete,
+            "expires_in": started.expires_in,
+            "interval": started.interval,
         }
 
     @app.get("/v1/login/{login_id}")
     async def login_poll(login_id: str) -> dict[str, Any]:
-        return {"login_id": login_id, "status": "pending", "message": "device grant deferred to #26"}
+        pending = app.state.pending_logins.get(login_id)
+        if pending is None:
+            raise HTTPException(status_code=404, detail="login_id not found")
+        if time.time() > float(pending["expires_at"]):
+            app.state.pending_logins.pop(login_id, None)
+            raise HTTPException(status_code=410, detail="device grant expired")
+        try:
+            bundle = await asyncio.to_thread(
+                poll_device_token,
+                str(pending["server"]),
+                device_code=str(pending["device_code"]),
+            )
+        except ClientError as exc:
+            app.state.pending_logins.pop(login_id, None)
+            raise HTTPException(
+                status_code=exc.http_status or 401,
+                detail=str(exc),
+            ) from exc
+        if bundle is None:
+            return {
+                "login_id": login_id,
+                "status": "pending",
+                "user_code": pending["user_code"],
+                "interval": pending["interval"],
+            }
+        cred = _persist_login_success(pending, bundle)
+        app.state.pending_logins.pop(login_id, None)
+        return {
+            "login_id": login_id,
+            "status": "approved",
+            "profile": pending["profile"],
+            "actor_id": cred.actor_id,
+            "actor_type": cred.actor_type,
+            "expires_at": cred.expires_at,
+        }
 
     @app.post("/v1/logout")
     async def logout(body: LogoutRequest) -> dict[str, str]:
-        mark_revoked(body.profile)
-        return {"status": "ok", "profile": body.profile}
+        name = body.profile.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="profile required")
+        cred = load_credential(name)
+        profile = get_profile(name)
+        server = profile.server if profile is not None else ""
+        if cred is not None and server:
+            # Prefer refresh (user) or opaque access (agent) for revoke.
+            token = cred.refresh_token or cred.access_token
+            await asyncio.to_thread(revoke_token, server, token)
+        delete_credential(name)
+        return {"status": "ok", "profile": name}
 
     @app.post("/v1/credentials")
     async def put_credentials(body: dict[str, Any]) -> dict[str, str]:
