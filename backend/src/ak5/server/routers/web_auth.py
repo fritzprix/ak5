@@ -43,6 +43,12 @@ def _is_secure(request: Request) -> bool:
 
 @router.post("/login")
 async def web_login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
+    """Legacy dashboard gate. Password login is **loopback-only** (identity.md §8).
+
+    Prefer ``POST /auth/local/login`` (OIDC local owner) for new clients.
+    """
+    from ak5.server.security import is_loopback_client
+
     ip = _client_ip(request)
     allowed, wait_seconds = check_rate_limit(ip)
     if not allowed:
@@ -54,6 +60,10 @@ async def web_login(body: LoginBody, request: Request, response: Response) -> di
     cfg = get_web_auth_config()
     if not cfg.enabled:
         return {"success": True, "message": "Auth disabled"}
+
+    if not is_loopback_client(request):
+        response.status_code = 403
+        return {"error": "Password login is loopback-only; use OIDC on exposed binds"}
 
     if not credentials_match(body.username, body.password):
         record_failed_attempt(ip)

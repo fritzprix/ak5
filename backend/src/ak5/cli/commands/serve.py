@@ -39,11 +39,14 @@ def is_loopback_bind(host: str) -> bool:
 
 
 def auth_is_configured() -> bool:
-    """True when web auth and/or identify secret gates are active."""
-    from ak5.security import get_identify_secret
-    from ak5.server.web_auth import get_web_auth_config
+    """True when identity.md §8 auth is active for exposed binds.
 
-    return get_web_auth_config().enabled or bool(get_identify_secret())
+    Non-loopback / Tailscale Serve require at least one OIDC provider.
+    Legacy web password or identify secret alone are not sufficient.
+    """
+    from ak5.server.auth.oidc_config import oidc_providers_configured
+
+    return oidc_providers_configured()
 
 
 def assert_safe_bind(
@@ -79,15 +82,16 @@ def assert_safe_bind(
         console.print(
             "[bold red]✗ Refusing --tailscale-serve without authentication.[/bold red]\n"
             "  Tailscale Serve publishes this process to the tailnet over HTTPS.\n"
-            "  Set [cyan]AK5_AUTH_PASSWORD[/cyan] and/or [cyan]AK5_IDENTIFY_SECRET[/cyan],\n"
+            "  Set [cyan]AK5_OIDC_PROVIDERS[/cyan] (identity.md §8),\n"
             "  or pass [bold]--insecure[/bold] to override (not recommended)."
         )
     else:
         console.print(
-            f"[bold red]✗ Refusing to bind to {host} without authentication.[/bold red]\n"
-            "  Non-loopback binds require [cyan]AK5_AUTH_PASSWORD[/cyan] and/or "
-            "[cyan]AK5_IDENTIFY_SECRET[/cyan],\n"
-            "  or pass [bold]--insecure[/bold] to override (not recommended)."
+            f"[bold red]✗ Refusing to bind to {host} without OIDC.[/bold red]\n"
+            "  Non-loopback binds require [cyan]AK5_OIDC_PROVIDERS[/cyan] "
+            "(identity.md §8),\n"
+            "  or pass [bold]--insecure[/bold] to override (not recommended).\n"
+            "  Local owner password login remains loopback-only."
         )
     raise SystemExit(1)
 
