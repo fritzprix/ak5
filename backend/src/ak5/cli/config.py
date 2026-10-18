@@ -420,7 +420,20 @@ def get_actor_id() -> str | None:
 
 
 def get_api_url() -> str:
-    return os.environ.get("AK5_API_URL") or load_session().get("api_url", DEFAULT_API_URL)
+    env = os.environ.get("AK5_API_URL", "").strip()
+    if env:
+        return env
+    try:
+        from ak5.daemon.profiles import get_profile, resolve_profile_name
+
+        name = resolve_profile_name(None)
+        if name:
+            profile = get_profile(name)
+            if profile is not None and profile.server.strip():
+                return profile.server.strip()
+    except Exception:  # noqa: BLE001 — fall through to session
+        pass
+    return load_session().get("api_url", DEFAULT_API_URL)
 
 
 def _resolved_token(resolved: ResolvedSession) -> str | None:
@@ -521,21 +534,36 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
 
 
 def require_auth_headers(api_url: str | None = None) -> dict[str, str]:
-    """Return Authorization headers or exit 8 (cli.md §3.1 auth required)."""
+    """Return Authorization headers or exit 8/9 (cli.md §3.1 / client.md §3.3).
+
+    Prefers ``resolve_access_token`` (env → daemon profile → legacy session) so
+    daemon-backed ``ak5 login --profile`` works without project ``.ak5`` sessions (#61).
+    """
     from rich.console import Console
+
+    from ak5.client.auth import resolve_access_token
+    from ak5.client.errors import ClientError
 
     # Exit 8 = authentication required / expired (cli.md §3.1)
     _AUTH_EXIT = 8
 
     console = Console(stderr=True)
+
+    try:
+        token = resolve_access_token()
+    except ClientError as exc:
+        raise SystemExit(exc.exit_code) from exc
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+
     resolved = resolve_session()
 
     if resolved.ambiguous:
         print_identity_hints(resolved, err=True)
         raise SystemExit(_AUTH_EXIT)
 
-    token = _resolved_token(resolved)
-    if not token and resolved.source in _BOUND_NO_FALLBACK:
+    session_token = _resolved_token(resolved)
+    if not session_token and resolved.source in _BOUND_NO_FALLBACK:
         actor_id = resolved.data.get("actor_id") or os.environ.get("AK5_ACTOR_ID") or "unknown"
         console.print(
             f"[yellow]Bound as @{actor_id} (source={resolved.source}) but JWT is missing.[/yellow]"
@@ -550,7 +578,8 @@ def require_auth_headers(api_url: str | None = None) -> dict[str, str]:
         console.print("[yellow]No authenticated AK5 session.[/yellow]")
         print_identity_hints(resolved, err=True)
         console.print(
-            "[dim]Run [bold cyan]ak5 login --id <actor_id> --role <role>[/bold cyan] first.[/dim]"
+            "[dim]Run [bold cyan]ak5 login --agent …[/bold cyan] or "
+            "[bold cyan]ak5 login --profile me[/bold cyan] first.[/dim]"
         )
         raise SystemExit(_AUTH_EXIT)
     return headers

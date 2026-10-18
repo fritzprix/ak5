@@ -6,6 +6,7 @@ import os
 
 import click
 import httpx
+from ak5.cli.client_factory import json_flag_from_ctx
 from ak5.cli.config import (
     get_api_url,
     list_identity_hints,
@@ -13,6 +14,7 @@ from ak5.cli.config import (
     resolve_session,
 )
 from ak5.client.errors import ClientError
+from ak5.client.output import is_json_mode, print_result
 from ak5.daemon.credentials import load_credential
 from ak5.daemon.ipc import fetch_token
 from ak5.daemon.profiles import get_profile, resolve_profile_name
@@ -24,54 +26,82 @@ from rich.table import Table
 console = Console()
 
 
-def _whoami_from_profile(profile_name: str) -> bool:
-    """Print daemon profile whoami. Return True if handled."""
+def _profile_payload(profile_name: str) -> dict | None:
     profile = get_profile(profile_name)
     cred = load_credential(profile_name)
     if profile is None and cred is None:
+        return None
+    out: dict = {
+        "profile": profile_name,
+        "source": "daemon",
+    }
+    if profile is not None:
+        out.update(
+            {
+                "server": profile.server,
+                "principal": profile.principal,
+                "role": profile.role,
+                "workspace": profile.workspace,
+                "actor_id": profile.actor_id,
+            }
+        )
+    if cred is not None:
+        out["credential_status"] = cred.status
+        out["expires_at"] = cred.expires_at
+        out["token_type"] = "opaque" if cred.access_token.startswith("ak5_agt_") else "jwt"
+    else:
+        out["credential_status"] = "missing"
+        out["source"] = "profile-only"
+    if os.environ.get("AK5_TOKEN") or os.environ.get("AK5_ACTOR_TOKEN"):
+        out["source"] = "AK5_TOKEN"
+        out["env_token"] = True
+    if is_daemon_running() and cred is not None and cred.status == "active":
+        try:
+            tok = fetch_token(profile_name, ensure=False)
+            out["daemon_token"] = "ok"
+            if tok.get("actor_id"):
+                out["daemon_actor_id"] = tok["actor_id"]
+        except ClientError as exc:
+            out["daemon_token"] = exc.message
+    return out
+
+
+def _whoami_from_profile(profile_name: str, *, json_mode: bool) -> bool:
+    """Print daemon profile whoami. Return True if handled."""
+    payload = _profile_payload(profile_name)
+    if payload is None:
         return False
+    if json_mode:
+        print_result(payload, json_mode=True)
+        return True
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Key", style="bold cyan")
     table.add_column("Value", style="white")
     table.add_row("Profile", profile_name)
-    if profile is not None:
-        table.add_row("Server", profile.server or "(unset)")
-        table.add_row("Principal", profile.principal)
-        table.add_row("Role", profile.role or "(unset)")
-        table.add_row("Workspace", profile.workspace or "(default)")
-        table.add_row("Actor ID", profile.actor_id or "(unset)")
-    if cred is not None:
-        table.add_row("Credential", cred.status)
-        table.add_row("Expires", cred.expires_at or "(none)")
-        table.add_row("Token type", "opaque" if cred.access_token.startswith("ak5_agt_") else "jwt")
-        source = "daemon"
-    else:
-        table.add_row("Credential", "missing")
-        source = "profile-only"
-
-    env_token = os.environ.get("AK5_TOKEN") or os.environ.get("AK5_ACTOR_TOKEN")
-    if env_token:
-        source = "AK5_TOKEN"
-        table.add_row("Env token", "set")
-
-    if is_daemon_running() and cred is not None and cred.status == "active":
-        try:
-            tok = fetch_token(profile_name, ensure=False)
-            table.add_row("Daemon token", "ok")
-            if tok.get("actor_id"):
-                table.add_row("Daemon actor", str(tok["actor_id"]))
-        except ClientError as exc:
-            table.add_row("Daemon token", f"[red]{exc.message}[/red]")
-
-    table.add_row("Source", source)
+    for key, label in (
+        ("server", "Server"),
+        ("principal", "Principal"),
+        ("role", "Role"),
+        ("workspace", "Workspace"),
+        ("actor_id", "Actor ID"),
+        ("credential_status", "Credential"),
+        ("expires_at", "Expires"),
+        ("token_type", "Token type"),
+        ("daemon_token", "Daemon token"),
+        ("daemon_actor_id", "Daemon actor"),
+        ("source", "Source"),
+    ):
+        if key in payload and payload[key] not in (None, ""):
+            table.add_row(label, str(payload[key]))
     console.print(Panel(table, title="AK5 Whoami", expand=False))
     return True
 
 
 @click.command("whoami")
 @click.option("--profile", default=None, help="Daemon profile to inspect")
-def whoami_command(profile: str | None) -> None:
+@click.pass_context
+def whoami_command(ctx: click.Context, profile: str | None) -> None:
     """Show the active daemon profile or project-bound actor session.
 
     Agents:
@@ -80,16 +110,25 @@ def whoami_command(profile: str | None) -> None:
       - If ambiguous, match role/caps under .ak5/identity/, then export + whoami.
       - Next after a healthy session: ak5 subscribe create … && ak5 subscribe ls
     """
+    json_mode = is_json_mode(flag=json_flag_from_ctx(ctx))
     profile_name = resolve_profile_name(profile)
-    if profile_name and _whoami_from_profile(profile_name):
+    if profile_name and _whoami_from_profile(profile_name, json_mode=json_mode):
         return
 
     if os.environ.get("AK5_TOKEN") or os.environ.get("AK5_ACTOR_TOKEN"):
+        payload = {
+            "source": "AK5_TOKEN",
+            "api_url": get_api_url(),
+            "token_status": "env token present",
+        }
+        if json_mode:
+            print_result(payload, json_mode=True)
+            return
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column("Key", style="bold cyan")
         table.add_column("Value", style="white")
         table.add_row("Source", "AK5_TOKEN")
-        table.add_row("API Gateway", get_api_url())
+        table.add_row("API Gateway", payload["api_url"])
         table.add_row("Token Status", "[green]env token present[/green]")
         console.print(Panel(table, title="AK5 Whoami", expand=False))
         return
@@ -128,13 +167,25 @@ def whoami_command(profile: str | None) -> None:
         console.print(f"[yellow]Identity @{actor_id} found but JWT token missing.[/yellow]")
         raise SystemExit(1)
 
+    payload = {
+        "actor_id": actor_id,
+        "role": session.get("role", "Unknown"),
+        "actor_type": session.get("actor_type", "agent"),
+        "api_url": api_url,
+        "source": resolved.source,
+        "token_status": "authenticated",
+    }
+    if json_mode:
+        print_result(payload, json_mode=True)
+        return
+
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Key", style="bold cyan")
     table.add_column("Value", style="white")
     table.add_row("Actor ID", str(actor_id))
     table.add_row("Mention", f"@{actor_id}")
-    table.add_row("Role", session.get("role", "Unknown"))
-    table.add_row("Type", session.get("actor_type", "agent"))
+    table.add_row("Role", str(payload["role"]))
+    table.add_row("Type", str(payload["actor_type"]))
     table.add_row("API Gateway", api_url)
     table.add_row("Source", resolved.source)
     if project_root:
