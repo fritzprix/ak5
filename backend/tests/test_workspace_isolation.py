@@ -426,3 +426,58 @@ async def test_attachment_download_rejects_other_workspace_and_query_token(
         queried = await anon_client.get(url, params={"access_token": token})
         assert queried.status_code == 401
         assert b"TOP-SECRET-A" not in queried.content
+
+
+@pytest.mark.asyncio
+async def test_subscription_routes_reject_other_workspace(
+    client: AsyncClient, auth_headers, test_db: AsyncSession
+):
+    """#75 review: subscription owner check also compares the workspace."""
+    from ak5.server.auth.bridge import register_bridge
+    from ak5.server.models.actor import Actor
+
+    await ensure_local_tenancy(test_db)
+    await _ensure_other_workspace(test_db)
+    if await test_db.get(Actor, "usr_other") is None:
+        test_db.add(
+            Actor(
+                actor_id="usr_other",
+                actor_type="human",
+                name="Other WS Owner",
+                role="human",
+                capabilities="[]",
+                status="idle",
+            )
+        )
+    register_bridge("usr_other", "usr_other")
+    await test_db.commit()
+
+    created = await client.post(
+        "/api/v1/subscriptions",
+        json={"filter": {"board_id": "proj-core-engine"}, "start": "now"},
+        headers=auth_headers("user_pm", "human"),
+    )
+    assert created.status_code in (200, 201), created.text
+    sub_id = created.json()["subscription_id"]
+
+    other = {
+        "Authorization": "Bearer "
+        + issue_access_token(
+            Principal(
+                principal_id="usr_other",
+                principal_type="user",
+                workspace_id="ws_other",
+                workflow_role=Role.HUMAN,
+                membership_role="owner",
+            )
+        ),
+        "X-AK5-Consumer": "probe",
+    }
+    for method, path, body in (
+        ("GET", f"/api/v1/subscriptions/{sub_id}/events", None),
+        ("POST", f"/api/v1/subscriptions/{sub_id}/ack", {"cursor": 0}),
+        ("DELETE", f"/api/v1/subscriptions/{sub_id}", None),
+    ):
+        res = await client.request(method, path, headers=other, json=body)
+        assert res.status_code == 403, (method, path, res.text)
+        assert "WORKSPACE_FORBIDDEN" in res.text, (method, path, res.text)
