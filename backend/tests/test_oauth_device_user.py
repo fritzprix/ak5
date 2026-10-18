@@ -257,6 +257,88 @@ async def test_agent_device_grant_and_revoke(
 
 
 @pytest.mark.asyncio
+async def test_agent_board_scope_enforced_on_claim(
+    client: AsyncClient,
+    anon_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    auth_headers,
+):
+    """Device-grant board_scope must block out-of-scope ticket writes (§4.3)."""
+    from helpers_workflow import board_ticket
+
+    human = auth_headers("user_pm", "human")
+    in_scope = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("In scope", board_id="proj-core-engine"),
+        headers=human,
+    )
+    assert in_scope.status_code == 201, in_scope.text
+    # Second board + ticket outside scope
+    other_board = await client.post(
+        "/api/v1/boards",
+        json={"board_id": "board-other-scope", "name": "Other", "template": "default"},
+        headers=human,
+    )
+    assert other_board.status_code in (200, 201), other_board.text
+    out_scope = await client.post(
+        "/api/v1/tickets",
+        json=board_ticket("Out of scope", board_id="board-other-scope"),
+        headers=human,
+    )
+    assert out_scope.status_code == 201, out_scope.text
+
+    start = await anon_client.post(
+        "/oauth/device_authorization",
+        json={
+            "client_id": "ak5-cli",
+            "principal": "agent",
+            "name": "scoped-worker",
+            "workflow_role": "worker",
+        },
+    )
+    device_code = start.json()["device_code"]
+    user_code = start.json()["user_code"]
+    csrf = await _login(client, monkeypatch)
+    approve = await client.post(
+        "/oauth/device/approve",
+        json={
+            "user_code": user_code,
+            "approved": True,
+            "workflow_role": "worker",
+            "board_scope": ["proj-core-engine"],
+        },
+        headers={CSRF_HEADER: csrf},
+    )
+    assert approve.status_code == 200, approve.text
+    token = await anon_client.post(
+        "/oauth/token",
+        json={
+            "grant_type": DEVICE_GRANT,
+            "device_code": device_code,
+            "client_id": "ak5-cli",
+        },
+    )
+    opaque = token.json()["access_token"]
+    agent_headers = {"Authorization": f"Bearer {opaque}"}
+
+    ok = await anon_client.post(
+        f"/api/v1/tickets/{in_scope.json()['ticket_id']}/claim",
+        headers=agent_headers,
+    )
+    assert ok.status_code == 200, ok.text
+
+    forbidden = await anon_client.post(
+        f"/api/v1/tickets/{out_scope.json()['ticket_id']}/claim",
+        headers=agent_headers,
+    )
+    assert forbidden.status_code == 403, forbidden.text
+    body = forbidden.json()
+    assert body.get("error", {}).get("code") == "ROLE_FORBIDDEN" or "board_scope" in str(
+        body
+    ).lower() or "ROLE_FORBIDDEN" in str(body)
+
+
+@pytest.mark.asyncio
 async def test_disabled_agent_token_rejected(
     client: AsyncClient,
     anon_client: AsyncClient,

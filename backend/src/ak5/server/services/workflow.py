@@ -27,6 +27,8 @@ from ak5.contracts.stages import BlockedKind, Role, Stage
 from ak5.server.authz import (
     RoleForbiddenError,
     actor_has_capabilities,
+    board_in_scope,
+    require_board_scope,
     require_roles,
     same_subject,
     workflow_role_of,
@@ -71,6 +73,14 @@ class WorkflowError(Exception):
         self.message = message
         self.details = details or {}
         super().__init__(message)
+
+
+def _require_board_scope(actor: Actor, board_id: str) -> None:
+    """Enforce agent ``board_scope`` (identity.md §4.3) → ``ROLE_FORBIDDEN``."""
+    try:
+        require_board_scope(actor, board_id, inbox_board_id=INBOX_BOARD_ID)
+    except RoleForbiddenError as exc:
+        raise WorkflowError(exc.code, exc.message) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1085,7 @@ async def create_direct(
             ErrorCode.SYSTEM_BOARD,
             "create_direct cannot target the inbox board; omit board_id for T1",
         )
+    _require_board_scope(actor, board_id)
     if not spec.strip():
         raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "spec is required")
     if not acceptance_criteria:
@@ -1158,6 +1169,7 @@ async def claim_ticket(
     """T3 / T5 / T11 / T18 — claim a ticket. Returns claim payload dict."""
     await reclaim_expired_leases(db)
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     _require_unblocked(ticket)
     # Valid claim (incl. in_progress) → conflict for losers, not INVALID_TRANSITION.
     if is_claim_valid(ticket):
@@ -1231,6 +1243,7 @@ async def claim_ticket(
 
     # Re-load with relationships after atomic update (avoid stale / lazy IO).
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     if to_stage == Stage.IN_PROGRESS:
         await _move_ticket(db, ticket, board_id=ticket.board_id, stage=Stage.IN_PROGRESS)
     ticket.claim_token = token
@@ -1297,6 +1310,7 @@ async def heartbeat(
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     if ticket_stage(ticket) != Stage.IN_PROGRESS:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "heartbeat requires in_progress stage")
     _require_own_claim(ticket, actor, claim_token)
@@ -1321,6 +1335,7 @@ async def release(
     if not reason.strip():
         raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "reason is required")
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage != Stage.IN_PROGRESS:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "release requires in_progress stage")
@@ -1353,6 +1368,7 @@ async def submit(
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage != Stage.IN_PROGRESS:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "submit requires in_progress stage")
@@ -1394,6 +1410,7 @@ async def bounce(
     if not reason.strip():
         raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "reason is required")
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage != Stage.IN_PROGRESS:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "bounce requires in_progress stage")
@@ -1486,6 +1503,7 @@ async def route_ticket(
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage != Stage.UNCLASSIFIED:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "route requires unclassified stage")
@@ -1508,6 +1526,8 @@ async def route_ticket(
             raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{target_board_id}' not found")
         if board.kind == "inbox" or target_board_id == INBOX_BOARD_ID:
             raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot route onto the inbox board")
+
+    _require_board_scope(actor, target_board_id)
 
     ticket.title = plan.refined_title
     ticket.description = plan.refined_spec
@@ -1549,6 +1569,7 @@ async def verdict(
 ) -> Ticket:
     """T12–T16 — gatekeeper / human verdict."""
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     _require_unblocked(ticket)
 
@@ -1743,6 +1764,7 @@ async def submit_postmortem(
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage != Stage.POSTMORTEM_PENDING:
         raise WorkflowError(
@@ -1818,6 +1840,7 @@ async def reopen(
     if not reason.strip():
         raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "reason is required")
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage != Stage.DONE:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "reopen requires done stage")
@@ -1868,6 +1891,7 @@ async def reroute(
         )
 
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage == Stage.DONE:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "cannot reroute a done ticket")
@@ -1924,6 +1948,7 @@ async def block_ticket(
         raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "reason is required")
 
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
     if stage not in _BLOCKABLE_STAGES:
         raise WorkflowError(
@@ -1998,6 +2023,7 @@ async def unblock_ticket(
 ) -> Ticket:
     """B2 / B3 — clear blocked overlay."""
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     if not is_blocked(ticket):
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "Ticket is not blocked")
 
@@ -2087,6 +2113,7 @@ async def move_ticket_constrained(
     recorded. Same-stage reorders only adjust column/rank.
     """
     ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
     target = await db.get(Column, target_column_id)
     if target is None:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, f"Column '{target_column_id}' not found")
@@ -2236,6 +2263,9 @@ async def next_ticket(
     board = await db.get(Board, board_id)
     if board is None:
         raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
+    # Out-of-scope boards yield 204 (no work), not ROLE_FORBIDDEN.
+    if not board_in_scope(actor, board_id, inbox_board_id=INBOX_BOARD_ID):
+        return None
 
     role = workflow_role_of(actor)
     if board_id == INBOX_BOARD_ID or board.kind == "inbox":
