@@ -116,6 +116,17 @@ async def test_v1_fixture_migration_idempotent(tmp_path, monkeypatch):
         }
         assert {"idx_tickets_board", "idx_tickets_column_rank", "idx_tickets_parent"} <= indexes
 
+        # #79: rewriting actor refs must not touch updated_at. Only t_ip is a real
+        # change (claimless in_progress → backlog by repair_claimless_in_progress_tickets).
+        rows = (
+            await conn.execute(
+                text("SELECT ticket_id, created_by, updated_at FROM tickets WHERE ticket_id != 't_ip'")
+            )
+        ).fetchall()
+        assert rows
+        assert {r[1] for r in rows} == {"usr_local_pm"}, rows  # refs were rewritten
+        assert all(str(r[2]).startswith("2026-01-01") for r in rows), rows
+
     async with session_factory() as session:
         t_ip = await session.get(Ticket, "t_ip")
         assert t_ip is not None and t_ip.status == "open"
