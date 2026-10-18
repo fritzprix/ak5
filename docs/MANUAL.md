@@ -326,7 +326,7 @@ session을 열어 두는 대신, 이벤트가 오면 harness를 깨우는 명령
 
 ```bash
 ak5 subscribe add proj-core-engine --profile worker-1 --events WORK_AVAILABLE \
-  --exec 'AK5_PROFILE=worker-1 claude -p "AK5: $AK5_SUMMARY. ak5 worker 루프를 한 번 실행해."'
+  --exec 'claude -p "AK5: $AK5_SUMMARY. ak5 worker 루프를 한 번 실행해."'
 ak5 subscribe ls
 ak5 subscribe remove <ID>
 ```
@@ -341,8 +341,8 @@ ak5 subscribe remove <ID>
 
 - daemon이 `--exec`를 셸로 그대로 실행한다. 등록 명령은 즉시 끝난다.
 - 이벤트 데이터는 env와 stdin(JSON 원문)으로만 받는다. `{ticket_id}` 같은 자리표시자는 치환하지 않는다.
-  env: `$AK5_EVENT`, `$AK5_EVENT_TYPE`, `$AK5_EVENT_ID`, `$AK5_CURSOR`, `$AK5_BOARD_ID`, `$AK5_TICKET_ID`, `$AK5_TITLE`, `$AK5_STATUS`, `$AK5_SUMMARY`, `$AK5_ACTOR_ID`(이벤트를 일으킨 주체), `$AK5_DATA_JSON`.
-- hook 프로세스는 구독한 profile을 env로 받지 않는다. 깨운 harness가 CLI를 쓰려면 `--exec` 안에서 `AK5_PROFILE=…`을 지정한다.
+  env: `$AK5_EVENT`, `$AK5_EVENT_TYPE`, `$AK5_EVENT_ID`, `$AK5_CURSOR`, `$AK5_BOARD_ID`, `$AK5_TICKET_ID`, `$AK5_TITLE`, `$AK5_STATUS`, `$AK5_SUMMARY`, `$AK5_ACTOR_ID`(이벤트를 일으킨 주체), `$AK5_DATA_JSON`, `$AK5_PROFILE`, `$AK5_SUBSCRIBER_ID`.
+- hook 프로세스는 구독자의 profile을 `$AK5_PROFILE`로, 구독자 id를 `$AK5_SUBSCRIBER_ID`로 받는다. 그래서 깨어난 harness는 같은 profile로 CLI를 쓴다. daemon 프로세스의 토큰(`AK5_TOKEN` 등)은 hook에 넘기지 않는다. 다른 profile을 쓰려면 `--exec 'AK5_PROFILE=other …'`처럼 지정한다 (선택).
 - `--exec`는 harness를 **깨우는** 일만 한다. claim·작업·submit은 깨어난 세션에서 한다.
 - 주요 이벤트: `WORK_AVAILABLE`(claim할 일이 생김 — inbox 진입, backlog 복귀, agent_review·postmortem_pending 진입, unblock, lease 만료), `HUMAN_ACTION_REQUIRED`(human_review 진입, needs_human·escalation 블록). 전체 목록은 [events.md](spec/events.md).
 

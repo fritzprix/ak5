@@ -183,7 +183,7 @@ session open. The daemon runs the command when a matching event arrives.
 
 ```bash
 ak5 subscribe add <BOARD> --events WORK_AVAILABLE \
-  --exec 'AK5_PROFILE=worker-1 claude -p "AK5: $AK5_SUMMARY. Run the ak5 loop once."'
+  --exec 'claude -p "AK5: $AK5_SUMMARY. Run the ak5 loop once."'
 ak5 subscribe ls          # success = the row is listed
 ```
 
@@ -191,7 +191,9 @@ ak5 subscribe ls          # success = the row is listed
   inside `--exec`. `echo …` or `ak5 move …` as a hook does nothing useful.
 - Event data comes in env vars (`$AK5_EVENT`, `$AK5_TICKET_ID`, `$AK5_BOARD_ID`, `$AK5_TITLE`,
   `$AK5_SUMMARY`, `$AK5_DATA_JSON`, …) and as JSON on stdin. `{placeholders}` are not expanded.
-- The hook does not inherit your profile; set `AK5_PROFILE=…` inside `--exec` as above.
+- The hook runs with `AK5_PROFILE` set to the subscriber's profile (and `AK5_SUBSCRIBER_ID`), so the
+  woken session calls `ak5` as you. The daemon's own tokens are not passed. To force another profile,
+  prefix the command: `--exec 'AK5_PROFILE=other …'`.
 - HTTP harness: `--exec 'curl -s -X POST http://127.0.0.1:3030/hook -H "Content-Type: application/json" -d @-'`
   or `--preset curl:http://127.0.0.1:3030/hook`. Presets `claude` and `cursor` also exist.
 - Remove with `ak5 subscribe remove <ID>`. Failed hooks: `ak5 daemon logs --dead-letter`.

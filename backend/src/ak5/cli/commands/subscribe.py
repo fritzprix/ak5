@@ -362,21 +362,22 @@ def subscribe_group() -> None:
       - The daemon runs --exec literally in a shell for each matching event.
       - Event data is NOT interpolated into --exec. Use env vars / stdin.
       - Do NOT use curly-brace tokens like {ticket_id} (they are not expanded).
-      - The hook does not inherit your profile: set it inside --exec
-        (e.g. --exec 'AK5_PROFILE=worker-1 claude -p "$AK5_SUMMARY"').
+      - The hook gets $AK5_PROFILE (the subscriber's profile), so the woken
+        harness calls ak5 as that profile. Daemon-process tokens are not passed.
 
     \b
     [Event payload]
       Env:  $AK5_EVENT  $AK5_EVENT_TYPE  $AK5_EVENT_ID  $AK5_CURSOR
             $AK5_BOARD_ID  $AK5_TICKET_ID  $AK5_TITLE  $AK5_STATUS
             $AK5_SUMMARY  $AK5_ACTOR_ID  $AK5_EVENT_ACTOR_ID  $AK5_DATA_JSON
+            $AK5_PROFILE  $AK5_SUBSCRIBER_ID
       $AK5_ACTOR_ID / $AK5_EVENT_ACTOR_ID: who caused the event.
       stdin: event JSON (e.g. curl -d @-)
 
     \b
     [Examples]
       ak5 subscribe add proj-core-engine --events WORK_AVAILABLE \\
-        --exec 'AK5_PROFILE=worker-1 claude -p "$AK5_SUMMARY"'
+        --exec 'claude -p "$AK5_SUMMARY"'
       ak5 subscribe add --events HUMAN_ACTION_REQUIRED \\
         --exec 'notify-send "AK5" "$AK5_SUMMARY"'
       ak5 subscribe add --preset curl:http://127.0.0.1:3030/hook

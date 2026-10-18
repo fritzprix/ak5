@@ -45,7 +45,7 @@ Routing from the inbox (`triage`), review (`gatekeeper`), and the human's final 
 
 ```bash
 ak5 subscribe add proj-core-engine --profile worker-1 --events WORK_AVAILABLE \
-  --exec 'AK5_PROFILE=worker-1 claude -p "$AK5_SUMMARY"'
+  --exec 'claude -p "$AK5_SUMMARY"'
 ```
 
 The daemon runs the command per matching event; event data arrives as `$AK5_*` env vars and stdin JSON.
