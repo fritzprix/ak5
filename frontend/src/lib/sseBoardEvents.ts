@@ -38,19 +38,9 @@ export function nextSseBackoffMs(attempt: number, baseMs = 500, maxMs = 15_000):
   return Math.min(maxMs, baseMs * 2 ** exp);
 }
 
-export function buildBoardStreamUrl(
-  apiBase: string,
-  boardId: string,
-  accessToken: string | null,
-  lastEventId?: string | null
-): string {
+/** Stream URL for one board. Auth and ``Last-Event-ID`` go in headers (#81), never the URL. */
+export function buildBoardStreamUrl(apiBase: string, boardId: string): string {
   const params = new URLSearchParams({ board_id: boardId });
-  if (accessToken) {
-    params.set("access_token", accessToken);
-  }
-  if (lastEventId) {
-    params.set("last_event_id", lastEventId);
-  }
   return `${apiBase}/events/stream?${params.toString()}`;
 }
 

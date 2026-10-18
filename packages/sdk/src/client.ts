@@ -36,6 +36,7 @@ import {
   VerdictInput,
 } from "./types";
 import { API_VERSION, SDK_VERSION } from "./version";
+import { SseParser } from "./sse";
 
 const IDENTIFY_SECRET_HEADER = "X-AK5-Identify-Secret";
 const CONSUMER_HEADER = "X-AK5-Consumer";
@@ -643,63 +644,67 @@ export class AK5Client {
   // --- Real-Time Events (SSE, human observation — events.md §6) ---
 
   /**
-   * Subscribe to the board's SSE stream for observation.
-   * Prefer long-poll subscriptions for agent daemons.
-   * Returns an unsubscribe function.
+   * Subscribe to the SSE stream for observation (events.md §6).
+   * Prefer long-poll subscriptions for agent daemons. Returns an unsubscribe function.
+   *
+   * Uses ``fetch`` with an ``Authorization`` header (no token in the URL, #81) and
+   * reconnects with backoff, resuming from the last seen event id.
    */
   public subscribeToEvents(
     onEvent: (event: BoardEventPayload) => void,
-    onError?: (err: unknown) => void
+    onError?: (err: unknown) => void,
+    options?: { boardId?: string }
   ): () => void {
-    if (typeof EventSource === "undefined") {
-      console.warn("EventSource is not natively available in this runtime environment.");
-      return () => {};
-    }
+    const controller = new AbortController();
+    let lastEventId: string | null = null;
+    let attempt = 0;
+    const query = options?.boardId ? `?board_id=${encodeURIComponent(options.boardId)}` : "";
+    const url = `${this.baseUrl}/events/stream${query}`;
 
-    const tokenQuery = this.token
-      ? `?access_token=${encodeURIComponent(this.token)}`
-      : "";
-    const eventSource = new EventSource(`${this.baseUrl}/events/stream${tokenQuery}`);
-
-    const handleMessage = (type: string) => (msg: MessageEvent) => {
-      try {
-        const data = JSON.parse(msg.data as string) as Record<string, unknown>;
-        onEvent({
-          eventType: type,
-          data,
-          id: msg.lastEventId,
-        });
-      } catch (e) {
-        console.error("Failed to parse event message:", e);
+    const run = async (): Promise<void> => {
+      while (!controller.signal.aborted) {
+        try {
+          const token = await this.ensureToken();
+          const headers: Record<string, string> = {
+            Accept: "text/event-stream",
+            Authorization: `Bearer ${token}`,
+          };
+          if (lastEventId) headers["Last-Event-ID"] = lastEventId;
+          const res = await fetch(url, { headers, signal: controller.signal });
+          if (!res.ok || !res.body) throw await this.toError(res);
+          attempt = 0;
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          const parser = new SseParser();
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            for (const msg of parser.push(decoder.decode(value, { stream: true }))) {
+              if (msg.id) lastEventId = msg.id;
+              try {
+                onEvent({
+                  eventType: msg.event,
+                  data: JSON.parse(msg.data) as Record<string, unknown>,
+                  id: msg.id ?? undefined,
+                });
+              } catch (e) {
+                console.error("Failed to parse event message:", e);
+              }
+            }
+          }
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          onError?.(err);
+        }
+        const delay = Math.min(15_000, 500 * 2 ** attempt);
+        attempt += 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     };
-
-    // Listen for known types; also catch-all via onmessage for unknown types.
-    const knownTypes = [
-      "WORK_AVAILABLE",
-      "TICKET_TRANSITIONED",
-      "TICKET_BLOCKED",
-      "TICKET_UNBLOCKED",
-      "HUMAN_ACTION_REQUIRED",
-      "TICKET_CREATED",
-      "TICKET_UPDATED",
-      "COMMENT_ADDED",
-      "TICKET_MOVED",
-      "TICKET_DELEGATED",
-      "CONNECTED",
-      "RESYNC",
-    ];
-
-    knownTypes.forEach((type) => {
-      eventSource.addEventListener(type, handleMessage(type) as EventListener);
-    });
-
-    if (onError) {
-      eventSource.onerror = onError;
-    }
+    void run();
 
     return () => {
-      eventSource.close();
+      controller.abort();
     };
   }
 }

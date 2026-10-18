@@ -26,17 +26,16 @@ router = APIRouter(prefix="/events", tags=["events"])
 _security = HTTPBearer(auto_error=False)
 
 
-async def _actor_from_bearer_or_query(
+async def _actor_from_bearer(
     db: AsyncSession,
     credentials: HTTPAuthorizationCredentials | None,
-    access_token: str | None,
 ) -> Actor:
-    """SSE cannot set Authorization in browsers — allow ``?access_token=`` as well."""
-    token = credentials.credentials if credentials else (access_token or "").strip() or None
+    """Bearer header only: clients stream with fetch, so no ``?access_token=`` (#81)."""
+    token = credentials.credentials if credentials else None
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header or access_token query param required",
+            detail="Authorization: Bearer header required",
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
@@ -95,7 +94,6 @@ async def sse_event_stream(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_security)],
-    access_token: Annotated[str | None, Query(description="JWT for EventSource clients")] = None,
     board_id: Annotated[
         str | None, Query(description="Limit stream to one board (Web UI / observation)")
     ] = None,
@@ -108,7 +106,7 @@ async def sse_event_stream(
     ] = None,
 ) -> EventSourceResponse:
     """SSE observation stream sourced from the persistent event log (events.md §6)."""
-    await _actor_from_bearer_or_query(db, credentials, access_token)
+    await _actor_from_bearer(db, credentials)
 
     # Without Last-Event-ID / last_event_id, start at tip — do not replay retention history.
     tip_seq = await subscription_service.max_event_seq(db)

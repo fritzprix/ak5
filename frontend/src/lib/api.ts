@@ -398,14 +398,14 @@ export function subscribeToBoardEvents(
     onResync?: (payload: unknown) => void;
   }
 ): () => void {
-  let eventSource: EventSource | null = null;
-  let cancelled = false;
+  // fetch-based SSE: the JWT goes in Authorization, never in the URL (#81).
+  const controller = new AbortController();
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let lastEventId: string | null = null;
 
   const attach = async () => {
-    if (cancelled) return;
+    if (controller.signal.aborted) return;
     const {
       BOARD_SSE_NAMED_EVENTS,
       buildBoardStreamUrl,
@@ -413,65 +413,62 @@ export function subscribeToBoardEvents(
       nextSseBackoffMs,
       reduceSseBoardEvent,
     } = await import("./sseBoardEvents");
-    const token = await getAuthToken();
-    if (cancelled) return;
-
-    const url = buildBoardStreamUrl(API_BASE, boardId, token, lastEventId);
-    eventSource = new EventSource(url);
-
-    eventSource.onopen = () => {
-      reconnectAttempt = 0;
-      options?.onOpen?.();
-    };
-
-    eventSource.onerror = () => {
-      options?.onError?.();
-      eventSource?.close();
-      eventSource = null;
-      if (cancelled) return;
-      const delay = nextSseBackoffMs(reconnectAttempt);
-      reconnectAttempt += 1;
-      reconnectTimer = setTimeout(() => {
-        void attach();
-      }, delay);
-    };
-
-    BOARD_SSE_NAMED_EVENTS.forEach((evt) => {
-      eventSource?.addEventListener(evt, (e: MessageEvent) => {
-        if (e.lastEventId) {
-          lastEventId = e.lastEventId;
-        }
-        let parsed: unknown = e.data;
-        try {
-          parsed = JSON.parse(e.data);
-        } catch {
-          // CONNECTED/RESYNC may still be JSON; keep raw string on failure
-        }
-        if (!eventMatchesBoard(parsed, boardId)) return;
-        const action = reduceSseBoardEvent(evt);
-        if (action === "connected") {
-          options?.onConnected?.();
+    const { streamSse } = await import("./sseFetch");
+    const named = new Set<string>(BOARD_SSE_NAMED_EVENTS);
+    try {
+      await streamSse(buildBoardStreamUrl(API_BASE, boardId), {
+        fetch: (url, init) => fetch(url, init),
+        getToken: getAuthToken,
+        invalidate: clearAuthTokenCache,
+        lastEventId,
+        signal: controller.signal,
+        onOpen: () => {
+          reconnectAttempt = 0;
           options?.onOpen?.();
-          return;
-        }
-        if (action === "resync") {
-          options?.onResync?.(parsed);
-          return;
-        }
-        if (action === "refresh") {
-          onEvent(evt, parsed);
-        }
+        },
+        onMessage: (message) => {
+          if (message.id) lastEventId = message.id;
+          if (!named.has(message.event)) return;
+          let parsed: unknown = message.data;
+          try {
+            parsed = JSON.parse(message.data);
+          } catch {
+            // CONNECTED/RESYNC may still be JSON; keep raw string on failure
+          }
+          if (!eventMatchesBoard(parsed, boardId)) return;
+          const action = reduceSseBoardEvent(message.event);
+          if (action === "connected") {
+            options?.onConnected?.();
+            options?.onOpen?.();
+            return;
+          }
+          if (action === "resync") {
+            options?.onResync?.(parsed);
+            return;
+          }
+          if (action === "refresh") {
+            onEvent(message.event, parsed);
+          }
+        },
       });
-    });
+    } catch {
+      if (controller.signal.aborted) return;
+      options?.onError?.();
+    }
+    if (controller.signal.aborted) return;
+    // Stream ended or failed: reconnect with a fresh token (re-minted if expired).
+    const delay = nextSseBackoffMs(reconnectAttempt);
+    reconnectAttempt += 1;
+    reconnectTimer = setTimeout(() => {
+      void attach();
+    }, delay);
   };
 
   void attach();
 
   return () => {
-    cancelled = true;
+    controller.abort();
     if (reconnectTimer) clearTimeout(reconnectTimer);
-    eventSource?.close();
-    eventSource = null;
   };
 }
 
