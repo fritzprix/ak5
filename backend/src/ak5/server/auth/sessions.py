@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
+import time
 from datetime import UTC, datetime, timedelta
+from typing import TypedDict
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,15 +16,41 @@ from ak5.server.models.workspace import UserSession
 SESSION_COOKIE = "ak5_session"
 CSRF_COOKIE = "ak5_csrf"
 CSRF_HEADER = "X-CSRF-Token"
+# Binds OIDC `state` to the browser that started login (login CSRF / RFC 6749 §10.12).
+OIDC_STATE_COOKIE = "ak5_oidc_state"
 SESSION_TTL = timedelta(days=14)
+OIDC_PENDING_TTL = timedelta(minutes=10)
+OIDC_PENDING_MAX = 256
+OIDC_STATE_COOKIE_MAX_AGE = int(OIDC_PENDING_TTL.total_seconds())
 
-# In-process pending OIDC login state (state → payload).
-_oidc_pending: dict[str, dict[str, str]] = {}
+
+class _OidcPending(TypedDict):
+    provider_id: str
+    nonce: str
+    code_verifier: str
+    expires_at: float
+
+
+# In-process pending OIDC login state (state → payload). TTL + size capped.
+_oidc_pending: dict[str, _OidcPending] = {}
 _oidc_lock = threading.Lock()
 
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _purge_oidc_pending_locked(now: float) -> None:
+    expired = [key for key, meta in _oidc_pending.items() if meta["expires_at"] <= now]
+    for key in expired:
+        del _oidc_pending[key]
+
+
+def _evict_oldest_oidc_pending_locked() -> None:
+    if not _oidc_pending:
+        return
+    oldest_key = min(_oidc_pending.items(), key=lambda item: item[1]["expires_at"])[0]
+    del _oidc_pending[oldest_key]
 
 
 def store_oidc_pending(
@@ -32,17 +60,62 @@ def store_oidc_pending(
     nonce: str,
     code_verifier: str,
 ) -> None:
+    now = time.time()
+    with _oidc_lock:
+        _purge_oidc_pending_locked(now)
+        while len(_oidc_pending) >= OIDC_PENDING_MAX:
+            _evict_oldest_oidc_pending_locked()
+        _oidc_pending[state] = {
+            "provider_id": provider_id,
+            "nonce": nonce,
+            "code_verifier": code_verifier,
+            "expires_at": now + OIDC_PENDING_TTL.total_seconds(),
+        }
+
+
+def pop_oidc_pending(state: str) -> dict[str, str] | None:
+    now = time.time()
+    with _oidc_lock:
+        _purge_oidc_pending_locked(now)
+        meta = _oidc_pending.pop(state, None)
+        if meta is None:
+            return None
+        if meta["expires_at"] <= now:
+            return None
+        return {
+            "provider_id": meta["provider_id"],
+            "nonce": meta["nonce"],
+            "code_verifier": meta["code_verifier"],
+        }
+
+
+def oidc_state_matches(cookie_state: str | None, query_state: str) -> bool:
+    """Constant-time compare of browser-bound state cookie vs callback query."""
+    if not cookie_state or not query_state:
+        return False
+    return secrets.compare_digest(cookie_state, query_state)
+
+
+def oidc_pending_count_for_tests() -> int:
+    with _oidc_lock:
+        return len(_oidc_pending)
+
+
+def inject_expired_oidc_pending_for_tests(
+    *,
+    state: str,
+    provider_id: str = "mock",
+    nonce: str = "n",
+    code_verifier: str = "verifier",
+) -> None:
+    """Test helper: insert a pending entry that is already past TTL."""
     with _oidc_lock:
         _oidc_pending[state] = {
             "provider_id": provider_id,
             "nonce": nonce,
             "code_verifier": code_verifier,
+            "expires_at": time.time() - 1.0,
         }
-
-
-def pop_oidc_pending(state: str) -> dict[str, str] | None:
-    with _oidc_lock:
-        return _oidc_pending.pop(state, None)
 
 
 def clear_oidc_pending_for_tests() -> None:

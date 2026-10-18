@@ -13,8 +13,12 @@ from ak5.server.auth.oidc_config import OidcProvider
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
     CSRF_HEADER,
+    OIDC_PENDING_MAX,
+    OIDC_STATE_COOKIE,
     SESSION_COOKIE,
     clear_oidc_pending_for_tests,
+    inject_expired_oidc_pending_for_tests,
+    oidc_pending_count_for_tests,
     store_oidc_pending,
 )
 from ak5.server.seed import LOCAL_USER_ID
@@ -128,6 +132,7 @@ async def test_oidc_login_redirect_includes_pkce(
     assert qs["state"][0]
     assert qs["nonce"][0]
     assert "code_challenge" in qs
+    assert resp.cookies.get(OIDC_STATE_COOKIE) == qs["state"][0]
 
 
 @pytest.mark.asyncio
@@ -170,6 +175,7 @@ async def test_oidc_callback_success_and_nonce_rejection(
     ok = await client.get(
         "/auth/callback",
         params={"code": "abc", "state": state},
+        cookies={OIDC_STATE_COOKIE: state},
         follow_redirects=False,
     )
     assert ok.status_code == 302
@@ -193,9 +199,66 @@ async def test_oidc_callback_success_and_nonce_rejection(
     bad = await client.get(
         "/auth/callback",
         params={"code": "abc", "state": "state2"},
+        cookies={OIDC_STATE_COOKIE: "state2"},
         follow_redirects=False,
     )
     assert bad.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_oidc_callback_rejects_missing_state_cookie(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Login CSRF: callback URL without the browser-bound state cookie must fail."""
+    monkeypatch.setenv("AK5_OIDC_PROVIDERS", _mock_providers_env())
+    state = "stolen-state"
+    store_oidc_pending(
+        state=state,
+        provider_id="mock",
+        nonce="n",
+        code_verifier="verifier",
+    )
+    resp = await client.get(
+        "/auth/callback",
+        params={"code": "abc", "state": state},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "state cookie" in resp.json()["detail"].lower()
+    # Pending must remain so the legitimate browser can still complete.
+    assert oidc_pending_count_for_tests() == 1
+
+
+@pytest.mark.asyncio
+async def test_oidc_callback_rejects_expired_state(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("AK5_OIDC_PROVIDERS", _mock_providers_env())
+    state = "expired-state"
+    inject_expired_oidc_pending_for_tests(state=state)
+    resp = await client.get(
+        "/auth/callback",
+        params={"code": "abc", "state": state},
+        cookies={OIDC_STATE_COOKIE: state},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "expired" in resp.json()["detail"].lower() or "invalid" in resp.json()[
+        "detail"
+    ].lower()
+
+
+def test_oidc_pending_enforces_size_cap():
+    clear_oidc_pending_for_tests()
+    for i in range(OIDC_PENDING_MAX + 40):
+        store_oidc_pending(
+            state=f"state-{i}",
+            provider_id="mock",
+            nonce="n",
+            code_verifier="v",
+        )
+    assert oidc_pending_count_for_tests() <= OIDC_PENDING_MAX
+    clear_oidc_pending_for_tests()
 
 
 def test_verify_id_token_rejects_wrong_audience():
@@ -236,6 +299,7 @@ async def test_oidc_callback_rejects_missing_pkce_verifier(
     resp = await client.get(
         "/auth/callback",
         params={"code": "abc", "state": "no-pkce"},
+        cookies={OIDC_STATE_COOKIE: "no-pkce"},
         follow_redirects=False,
     )
     assert resp.status_code == 400
@@ -289,6 +353,7 @@ async def test_github_userinfo_callback_creates_session(
     resp = await client.get(
         "/auth/callback",
         params={"code": "abc", "state": "gh-state"},
+        cookies={OIDC_STATE_COOKIE: "gh-state"},
         follow_redirects=False,
     )
     assert resp.status_code == 302

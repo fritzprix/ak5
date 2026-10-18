@@ -13,7 +13,8 @@ import httpx
 from ak5.server.auth.oidc import OidcClaims, fetch_oauth_userinfo
 from ak5.server.auth.oidc_config import OidcProvider
 
-# device_code → pending upstream poll state (in-process; fine for single-node local).
+# device_code → pending upstream poll state (in-process; TTL from IdP + size capped).
+_PENDING_MAX = 256
 _pending: dict[str, dict[str, Any]] = {}
 _lock = threading.Lock()
 
@@ -28,9 +29,29 @@ class UpstreamDeviceStart:
     interval: int
 
 
+def _purge_pending_locked(now: float) -> None:
+    expired = [
+        code for code, meta in _pending.items() if float(meta["expires_at"]) <= now
+    ]
+    for code in expired:
+        del _pending[code]
+
+
+def _evict_oldest_pending_locked() -> None:
+    if not _pending:
+        return
+    oldest = min(_pending.items(), key=lambda item: float(item[1]["expires_at"]))[0]
+    del _pending[oldest]
+
+
 def clear_upstream_device_pending_for_tests() -> None:
     with _lock:
         _pending.clear()
+
+
+def upstream_device_pending_count_for_tests() -> int:
+    with _lock:
+        return len(_pending)
 
 
 def _github_device_endpoints() -> dict[str, str]:
@@ -96,11 +117,15 @@ async def start_upstream_device_flow(provider: OidcProvider) -> UpstreamDeviceSt
     complete = payload.get("verification_uri_complete")
     complete_s = str(complete) if complete else None
 
+    now = time.time()
     with _lock:
+        _purge_pending_locked(now)
+        while len(_pending) >= _PENDING_MAX:
+            _evict_oldest_pending_locked()
         _pending[device_code] = {
             "provider_id": provider.id,
             "interval": interval,
-            "expires_at": time.time() + expires_in,
+            "expires_at": now + expires_in,
             "last_poll": 0.0,
         }
 
@@ -133,11 +158,13 @@ async def poll_upstream_device_flow(
     if endpoints is None:
         raise ValueError(f"Provider '{provider.id}' does not support upstream device flow")
 
+    now = time.time()
     with _lock:
+        _purge_pending_locked(now)
         meta = _pending.get(device_code)
     if meta is None:
         raise ValueError("Unknown or expired device_code")
-    if time.time() > float(meta["expires_at"]):
+    if now > float(meta["expires_at"]):
         with _lock:
             _pending.pop(device_code, None)
         raise ValueError("expired_token")
@@ -203,11 +230,15 @@ async def poll_upstream_device_flow(
 def mint_local_device_code_for_tests(provider_id: str, *, interval: int = 1) -> str:
     """Test helper: register a synthetic pending device_code."""
     code = secrets.token_urlsafe(16)
+    now = time.time()
     with _lock:
+        _purge_pending_locked(now)
+        while len(_pending) >= _PENDING_MAX:
+            _evict_oldest_pending_locked()
         _pending[code] = {
             "provider_id": provider_id,
             "interval": interval,
-            "expires_at": time.time() + 600,
+            "expires_at": now + 600,
             "last_poll": 0.0,
         }
     return code

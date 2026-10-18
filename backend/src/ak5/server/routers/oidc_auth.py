@@ -34,9 +34,12 @@ from ak5.server.auth.oidc_device import (
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
     CSRF_HEADER,
+    OIDC_STATE_COOKIE,
+    OIDC_STATE_COOKIE_MAX_AGE,
     SESSION_COOKIE,
     create_web_session_tokens,
     csrf_matches,
+    oidc_state_matches,
     pop_oidc_pending,
     resolve_web_session,
     revoke_web_session,
@@ -98,6 +101,30 @@ def _clear_session_cookies(response: Response, *, secure: bool) -> None:
         )
 
 
+def _set_oidc_state_cookie(response: Response, *, state: str, secure: bool) -> None:
+    response.set_cookie(
+        key=OIDC_STATE_COOKIE,
+        value=state,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        path="/",
+        max_age=OIDC_STATE_COOKIE_MAX_AGE,
+    )
+
+
+def _clear_oidc_state_cookie(response: Response, *, secure: bool) -> None:
+    response.set_cookie(
+        key=OIDC_STATE_COOKIE,
+        value="",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        path="/",
+        max_age=0,
+    )
+
+
 class LocalLoginBody(BaseModel):
     password: str = Field(default="")
 
@@ -135,7 +162,9 @@ async def oidc_login(provider: str, request: Request) -> RedirectResponse:
         nonce=nonce,
         code_challenge=challenge,
     )
-    return RedirectResponse(url=url, status_code=302)
+    response = RedirectResponse(url=url, status_code=302)
+    _set_oidc_state_cookie(response, state=state, secure=_is_secure(request))
+    return response
 
 
 @router.get("/auth/callback")
@@ -147,20 +176,55 @@ async def oidc_callback(
     error: str | None = None,
 ) -> Response:
     """Complete OIDC login: exchange code, verify ID token, set session cookies."""
+    secure = _is_secure(request)
     if error:
-        raise HTTPException(status_code=400, detail=f"IdP error: {error}")
+        fail = JSONResponse(
+            status_code=400,
+            content={"detail": f"IdP error: {error}"},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
     if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code or state")
+        fail = JSONResponse(
+            status_code=400,
+            content={"detail": "Missing code or state"},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
+    cookie_state = request.cookies.get(OIDC_STATE_COOKIE)
+    if not oidc_state_matches(cookie_state, state):
+        # Do not consume pending state — attacker may be probing with a stolen URL.
+        fail = JSONResponse(
+            status_code=400,
+            content={"detail": "OIDC state cookie mismatch"},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
     pending = pop_oidc_pending(state)
     if pending is None:
-        raise HTTPException(status_code=400, detail="Invalid or expired state")
+        fail = JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid or expired state"},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
     cfg = get_oidc_provider(pending["provider_id"])
     if cfg is None:
-        raise HTTPException(status_code=400, detail="Provider no longer configured")
+        fail = JSONResponse(
+            status_code=400,
+            content={"detail": "Provider no longer configured"},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
 
     # Reject authorization responses that omit PKCE (verifier must be present).
     if not pending.get("code_verifier"):
-        raise HTTPException(status_code=400, detail="PKCE verifier missing")
+        fail = JSONResponse(
+            status_code=400,
+            content={"detail": "PKCE verifier missing"},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
 
     endpoints = await discover_endpoints(cfg)
     base = public_base_url(
@@ -168,15 +232,15 @@ async def oidc_callback(
         bind_port=request.url.port or 8000,
     )
     redirect_uri = f"{base}/auth/callback"
-    token_payload = await exchange_code(
-        cfg,
-        endpoints=endpoints,
-        code=code,
-        redirect_uri=redirect_uri,
-        code_verifier=pending["code_verifier"],
-    )
-
     try:
+        token_payload = await exchange_code(
+            cfg,
+            endpoints=endpoints,
+            code=code,
+            redirect_uri=redirect_uri,
+            code_verifier=pending["code_verifier"],
+        )
+
         if cfg.oauth_userinfo:
             access_token = token_payload.get("access_token")
             if not isinstance(access_token, str) or not access_token:
@@ -211,13 +275,20 @@ async def oidc_callback(
                 nonce=pending["nonce"],
                 jwks=jwks,
             )
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        fail = JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
     except Exception as exc:
-        raise HTTPException(
+        fail = JSONResponse(
             status_code=401,
-            detail=f"Identity verification rejected: {exc}",
-        ) from exc
+            content={"detail": f"Identity verification rejected: {exc}"},
+        )
+        _clear_oidc_state_cookie(fail, secure=secure)
+        return fail
 
     user = await upsert_user_from_oidc(
         db,
@@ -235,8 +306,9 @@ async def oidc_callback(
         response,
         session_cookie=session_cookie,
         csrf_token=csrf,
-        secure=_is_secure(request),
+        secure=secure,
     )
+    _clear_oidc_state_cookie(response, secure=secure)
     return response
 
 
