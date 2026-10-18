@@ -110,19 +110,21 @@ describe("fetchWithAuthRetry", () => {
 });
 
 describe("sharedInFlight", () => {
-  it("runs once for concurrent callers with the same key", async () => {
+  // Timeout: a regression must fail fast, never hang CI.
+  it("runs once for concurrent callers with the same key", { timeout: 2000 }, async () => {
     const inflight = new Map<string, Promise<string>>();
     let runs = 0;
-    let release!: (v: string) => void;
+    const releases: ((v: string) => void)[] = [];
     const run = () => {
       runs += 1;
       return new Promise<string>((resolve) => {
-        release = resolve;
+        releases.push(resolve);
       });
     };
     const a = sharedInFlight(inflight, "ws_a", run);
     const b = sharedInFlight(inflight, "ws_a", run);
-    release("tok");
+    // Release every started run so a missing dedupe fails on `runs`, not by hanging.
+    for (const release of releases) release("tok");
     assert.deepEqual(await Promise.all([a, b]), ["tok", "tok"]);
     assert.equal(runs, 1);
   });
