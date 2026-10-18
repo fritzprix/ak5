@@ -46,14 +46,18 @@ _AUTH_PUBLIC_PREFIXES = (
     "/oauth",
     "/device",
     "/api/v1",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
     "/health",
     "/meta",
     "/mcp",
     "/_next",
     "/login",
+)
+
+# OpenAPI / Swagger — public only when ``AK5_PUBLIC_DOCS`` is set (#64).
+_DOCS_PUBLIC_PREFIXES = (
+    "/docs",
+    "/redoc",
+    "/openapi.json",
 )
 
 
@@ -96,12 +100,26 @@ def _web_gate_enabled() -> bool:
     )
 
 
+def _public_docs_enabled() -> bool:
+    """When true, ``/docs`` · ``/redoc`` · ``/openapi.json`` stay unauthenticated (#64)."""
+    return os.environ.get("AK5_PUBLIC_DOCS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _is_public_path(path: str) -> bool:
     if path == "/" and not _web_gate_enabled():
         return True
     for prefix in _AUTH_PUBLIC_PREFIXES:
         if path == prefix or path.startswith(prefix + "/"):
             return True
+    if _public_docs_enabled():
+        for prefix in _DOCS_PUBLIC_PREFIXES:
+            if path == prefix or path.startswith(prefix + "/"):
+                return True
     # Static asset extensions always public (JS/CSS needed on login page)
     lowered = path.lower()
     for ext in (".js", ".css", ".map", ".ico", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".woff", ".woff2", ".ttf"):
