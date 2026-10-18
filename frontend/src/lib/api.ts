@@ -15,6 +15,12 @@ import {
   BlockedKind,
   ApiErrorBody,
 } from "./types";
+import {
+  type CachedAuthToken,
+  expiresAtFromNow,
+  fetchWithAuthRetry,
+  isCachedTokenUsable,
+} from "./authToken";
 import { fetchWithCsrf, mapOauthDeviceRequest } from "./webSession";
 
 export type { CreateTicketOptions } from "./createTicketPayload";
@@ -56,8 +62,7 @@ export function getEventsStreamUrl(): string {
 /** Dashboard identity used by getAuthToken identify (dev fallback). */
 export const DASHBOARD_ACTOR_ID = "user_pm";
 
-let cachedToken: string | null = null;
-let cachedWorkspaceId: string | null = null;
+let cachedAuth: CachedAuthToken | null = null;
 
 export function getStoredWorkspaceId(): string | null {
   if (typeof window === "undefined") return null;
@@ -72,22 +77,17 @@ export function setStoredWorkspaceId(workspaceId: string | null): void {
   } else {
     localStorage.removeItem(WORKSPACE_STORAGE_KEY);
   }
-  cachedToken = null;
-  cachedWorkspaceId = null;
+  cachedAuth = null;
 }
 
 export function clearAuthTokenCache(): void {
-  cachedToken = null;
-  cachedWorkspaceId = null;
+  cachedAuth = null;
 }
 
 export async function getAuthToken(): Promise<string> {
   const desiredWs = getStoredWorkspaceId();
-  if (
-    cachedToken &&
-    (!desiredWs || desiredWs === cachedWorkspaceId)
-  ) {
-    return cachedToken;
+  if (isCachedTokenUsable(cachedAuth, desiredWs)) {
+    return cachedAuth.token;
   }
 
   // Prefer web-session → Principal JWT so workspace APIs see the signed-in user (#27).
@@ -101,13 +101,17 @@ export async function getAuthToken(): Promise<string> {
       const data = (await res.json()) as {
         access_token: string;
         workspace_id: string;
+        expires_in?: number;
       };
-      cachedToken = data.access_token;
-      cachedWorkspaceId = data.workspace_id;
+      cachedAuth = {
+        token: data.access_token,
+        workspaceId: data.workspace_id,
+        expiresAt: expiresAtFromNow(data.expires_in),
+      };
       if (typeof window !== "undefined" && data.workspace_id) {
         localStorage.setItem(WORKSPACE_STORAGE_KEY, data.workspace_id);
       }
-      return cachedToken;
+      return data.access_token;
     }
   } catch (err) {
     console.warn("Session token mint failed:", err);
@@ -128,10 +132,16 @@ export async function getAuthToken(): Promise<string> {
       }),
     });
     if (res.ok) {
-      const data = await res.json();
-      cachedToken = data.access_token;
-      cachedWorkspaceId = desiredWs;
-      return cachedToken!;
+      const data = (await res.json()) as {
+        access_token: string;
+        expires_in?: number;
+      };
+      cachedAuth = {
+        token: data.access_token,
+        workspaceId: desiredWs,
+        expiresAt: expiresAtFromNow(data.expires_in),
+      };
+      return data.access_token;
     }
   } catch (err) {
     console.warn("Failed to auto-authenticate:", err);
@@ -139,15 +149,22 @@ export async function getAuthToken(): Promise<string> {
   return "";
 }
 
-async function authHeaders(): Promise<HeadersInit> {
-  const token = await getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+/** Authorized API fetch: attaches the Principal JWT and retries once on 401 (#72). */
+async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  return fetchWithAuthRetry(
+    (token) => {
+      const headers = new Headers(init.headers);
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      return fetch(input, { ...init, headers });
+    },
+    getAuthToken,
+    clearAuthTokenCache
+  );
 }
 
 export async function fetchBoards(): Promise<BoardSummary[]> {
-  const res = await fetch(`${API_BASE}/boards`, {
+  const res = await apiFetch(`${API_BASE}/boards`, {
     cache: "no-store",
-    headers: await authHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Failed to fetch boards: ${res.statusText}`);
@@ -156,9 +173,8 @@ export async function fetchBoards(): Promise<BoardSummary[]> {
 }
 
 export async function fetchBoard(boardId: string): Promise<Board> {
-  const res = await fetch(`${API_BASE}/boards/${boardId}`, {
+  const res = await apiFetch(`${API_BASE}/boards/${boardId}`, {
     cache: "no-store",
-    headers: await authHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Failed to fetch board: ${res.statusText}`);
@@ -167,9 +183,8 @@ export async function fetchBoard(boardId: string): Promise<Board> {
 }
 
 export async function fetchTicket(ticketId: string): Promise<Ticket> {
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}`, {
     cache: "no-store",
-    headers: await authHeaders(),
   });
   if (!res.ok) {
     throw new Error(`Failed to fetch ticket: ${res.statusText}`);
@@ -178,9 +193,8 @@ export async function fetchTicket(ticketId: string): Promise<Ticket> {
 }
 
 export async function fetchActors(): Promise<Actor[]> {
-  const res = await fetch(`${API_BASE}/actors`, {
+  const res = await apiFetch(`${API_BASE}/actors`, {
     cache: "no-store",
-    headers: await authHeaders(),
   });
   if (!res.ok) return [];
   return res.json();
@@ -215,7 +229,6 @@ export async function moveTicket(
   nextTicketId?: string | null,
   reason?: string | null
 ): Promise<Ticket> {
-  const token = await getAuthToken();
   const body: Record<string, unknown> = {
     target_column_id: targetColumnId,
     previous_ticket_id: previousTicketId ?? null,
@@ -224,11 +237,10 @@ export async function moveTicket(
   if (reason != null && reason.trim().length > 0) {
     body.reason = reason.trim();
   }
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/move`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/move`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify(body),
   });
@@ -246,14 +258,12 @@ export async function createTicket(
   priority: string = "medium",
   options?: CreateTicketOptions
 ): Promise<Ticket> {
-  const token = await getAuthToken();
   const payload = buildCreateTicketPayload(boardId, columnId, title, description, priority, options);
 
-  const res = await fetch(`${API_BASE}/tickets`, {
+  const res = await apiFetch(`${API_BASE}/tickets`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify(payload),
   });
@@ -270,12 +280,10 @@ export async function delegateSubtask(
   subtaskDescription?: string,
   priority: string = "medium"
 ): Promise<Ticket> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/tickets/${parentTicketId}/delegate`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${parentTicketId}/delegate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify({
       target_actor_id: targetActorId,
@@ -295,12 +303,10 @@ export async function updateTicket(
   ticketId: string,
   payload: TicketUpdatePayload
 ): Promise<Ticket> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify(payload),
   });
@@ -315,12 +321,10 @@ export async function addComment(
   content: string,
   isInternal: boolean = false
 ): Promise<TicketComment> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/comments`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/comments`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify({
       content,
@@ -336,8 +340,8 @@ export async function addComment(
 
 export function getAttachmentDownloadUrl(ticketId: string, attachmentId: string): string {
   const base = `${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`;
-  if (cachedToken) {
-    return `${base}?access_token=${encodeURIComponent(cachedToken)}`;
+  if (isCachedTokenUsable(cachedAuth, null)) {
+    return `${base}?access_token=${encodeURIComponent(cachedAuth.token)}`;
   }
   return base;
 }
@@ -346,15 +350,11 @@ export async function uploadAttachment(
   ticketId: string,
   file: File
 ): Promise<TicketAttachment> {
-  const token = await getAuthToken();
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/attachments`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/attachments`, {
     method: "POST",
-    headers: {
-      Authorization: token ? `Bearer ${token}` : "",
-    },
     body: formData,
   });
   if (!res.ok) {
@@ -367,12 +367,8 @@ export async function deleteAttachment(
   ticketId: string,
   attachmentId: string
 ): Promise<void> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`, {
     method: "DELETE",
-    headers: {
-      Authorization: token ? `Bearer ${token}` : "",
-    },
   });
   if (!res.ok) {
     throw new Error(await readErrorDetail(res));
@@ -467,9 +463,8 @@ export function subscribeToBoardEvents(
 }
 
 export async function fetchBoardMembers(boardId: string): Promise<Actor[]> {
-  const res = await fetch(`${API_BASE}/boards/${boardId}/members`, {
+  const res = await apiFetch(`${API_BASE}/boards/${boardId}/members`, {
     cache: "no-store",
-    headers: await authHeaders(),
   });
   if (!res.ok) return [];
   return res.json();
@@ -480,12 +475,10 @@ export async function addBoardMember(
   actorId: string,
   role: string = "member"
 ): Promise<unknown> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/boards/${boardId}/members`, {
+  const res = await apiFetch(`${API_BASE}/boards/${boardId}/members`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ actor_id: actorId, role }),
   });
@@ -500,12 +493,8 @@ export async function removeBoardMember(
   boardId: string,
   actorId: string
 ): Promise<unknown> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/boards/${boardId}/members/${actorId}`, {
+  const res = await apiFetch(`${API_BASE}/boards/${boardId}/members/${actorId}`, {
     method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
   });
   if (!res.ok) {
     const detail = await readErrorDetail(res);
@@ -522,12 +511,8 @@ export interface BoardClaimResult {
 }
 
 export async function claimBoard(boardId: string): Promise<BoardClaimResult> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/boards/${boardId}/claim`, {
+  const res = await apiFetch(`${API_BASE}/boards/${boardId}/claim`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
   });
   if (!res.ok) {
     const detail = await readErrorDetail(res);
@@ -604,12 +589,10 @@ export async function submitVerdict(
   reason: string = "",
   options?: { claimToken?: string | null; misrouted?: boolean }
 ): Promise<Ticket> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/verdict`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/verdict`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify({
       claim_token: options?.claimToken ?? null,
@@ -629,12 +612,10 @@ export async function submitVerdict(
 
 /** POST /tickets/{id}/reopen — T17 done → postmortem_pending. */
 export async function reopenTicket(ticketId: string, reason: string): Promise<Ticket> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/reopen`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/reopen`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify({ reason: reason.trim() }),
   });
@@ -651,12 +632,10 @@ export async function blockTicket(
   reason: string,
   claimToken?: string | null
 ): Promise<Ticket> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/block`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/block`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify({
       kind,
@@ -675,16 +654,14 @@ export async function unblockTicket(
   ticketId: string,
   resolution?: string | null
 ): Promise<Ticket> {
-  const token = await getAuthToken();
   const body: Record<string, unknown> = {};
   if (resolution != null && resolution.trim().length > 0) {
     body.resolution = resolution.trim();
   }
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/unblock`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/unblock`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: JSON.stringify(body),
   });
@@ -696,9 +673,8 @@ export async function unblockTicket(
 
 /** GET /tickets/{id}/history — revisions · reviews · postmortems · audit. */
 export async function fetchTicketHistory(ticketId: string): Promise<TicketHistory> {
-  const res = await fetch(`${API_BASE}/tickets/${ticketId}/history`, {
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/history`, {
     cache: "no-store",
-    headers: await authHeaders(),
   });
   if (!res.ok) {
     throw new Error(await readErrorDetail(res));
@@ -744,20 +720,18 @@ export interface WorkspaceAgent {
 }
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
-  const res = await fetch(`${API_BASE}/workspaces`, {
+  const res = await apiFetch(`${API_BASE}/workspaces`, {
     cache: "no-store",
-    headers: await authHeaders(),
   });
   if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json();
 }
 
 export async function createWorkspace(name: string): Promise<WorkspaceSummary> {
-  const res = await fetch(`${API_BASE}/workspaces`, {
+  const res = await apiFetch(`${API_BASE}/workspaces`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(await authHeaders()),
     },
     body: JSON.stringify({ name }),
   });
@@ -768,9 +742,9 @@ export async function createWorkspace(name: string): Promise<WorkspaceSummary> {
 export async function fetchWorkspaceMembers(
   workspaceId: string
 ): Promise<WorkspaceMember[]> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/members`,
-    { cache: "no-store", headers: await authHeaders() }
+    { cache: "no-store" }
   );
   if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json();
@@ -781,13 +755,12 @@ export async function inviteWorkspaceMember(
   email: string,
   role: "admin" | "member" = "member"
 ): Promise<{ invite_id: string; token: string; email: string; role: string }> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/members`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(await authHeaders()),
       },
       body: JSON.stringify({ email, role }),
     }
@@ -801,13 +774,12 @@ export async function updateWorkspaceMemberRole(
   userId: string,
   role: "owner" | "admin" | "member"
 ): Promise<WorkspaceMember> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
     {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        ...(await authHeaders()),
       },
       body: JSON.stringify({ role }),
     }
@@ -819,9 +791,9 @@ export async function updateWorkspaceMemberRole(
 export async function fetchWorkspaceAgents(
   workspaceId: string
 ): Promise<WorkspaceAgent[]> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents`,
-    { cache: "no-store", headers: await authHeaders() }
+    { cache: "no-store" }
   );
   if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json();
@@ -836,13 +808,12 @@ export async function createWorkspaceAgent(
     board_scope?: string[];
   }
 ): Promise<WorkspaceAgent> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(await authHeaders()),
       },
       body: JSON.stringify(body),
     }
@@ -855,9 +826,9 @@ export async function disableWorkspaceAgent(
   workspaceId: string,
   agentId: string
 ): Promise<WorkspaceAgent> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/disable`,
-    { method: "POST", headers: await authHeaders() }
+    { method: "POST" }
   );
   if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json();
@@ -867,13 +838,12 @@ export async function issueAgentCredential(
   workspaceId: string,
   agentId: string
 ): Promise<AgentCredentialInfo> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/credentials`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(await authHeaders()),
       },
       body: JSON.stringify({}),
     }
@@ -887,9 +857,9 @@ export async function revokeAgentCredential(
   agentId: string,
   credentialId: string
 ): Promise<AgentCredentialInfo> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/credentials/${encodeURIComponent(credentialId)}/revoke`,
-    { method: "POST", headers: await authHeaders() }
+    { method: "POST" }
   );
   if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json();

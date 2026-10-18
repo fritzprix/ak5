@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    # Web session → user JWT exchange (#72). Short so logout/XSS exposure is bounded;
+    # override with AK5_SESSION_TOKEN_TTL_MINUTES.
+    SESSION_TOKEN_TTL_MINUTES: int = 15
 
     # Optional shared secret for POST /auth/identify (AK5_IDENTIFY_SECRET).
     # When set, CLI/MCP send it automatically; web UI may use the auth cookie instead.

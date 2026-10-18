@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
@@ -31,6 +32,18 @@ _AGENT_TOKEN_PREFIX = "ak5_agt_"
 # Throttle last_used_at writes so auth does not touch SQLite on every poll (#65).
 _LAST_USED_MIN_INTERVAL = timedelta(seconds=60)
 logger = logging.getLogger(__name__)
+
+
+def session_token_ttl() -> timedelta:
+    """TTL for ``/auth/session/token`` JWTs (``AK5_SESSION_TOKEN_TTL_MINUTES``, #72)."""
+    raw = os.environ.get("AK5_SESSION_TOKEN_TTL_MINUTES", "").strip()
+    minutes = settings.SESSION_TOKEN_TTL_MINUTES
+    if raw:
+        try:
+            minutes = int(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid AK5_SESSION_TOKEN_TTL_MINUTES=%r", raw)
+    return timedelta(minutes=max(1, minutes))
 
 
 def issue_access_token(

@@ -46,7 +46,7 @@ from ak5.server.auth.sessions import (
     revoke_web_session,
     store_oidc_pending,
 )
-from ak5.server.auth.tokens import issue_access_token
+from ak5.server.auth.tokens import issue_access_token, session_token_ttl
 from ak5.server.auth.users import (
     ensure_local_owner_user,
     local_owner_configured,
@@ -459,9 +459,11 @@ async def mint_session_access_token(
         workflow_role=Role.HUMAN,
         membership_role=membership.role if membership else None,
     )
-    token = issue_access_token(principal)
+    ttl = session_token_ttl()
+    token = issue_access_token(principal, ttl=ttl)
     return SessionTokenOut(
         access_token=token,
+        expires_in=int(ttl.total_seconds()),
         workspace_id=workspace_id,
         user_id=user_id,
         membership_role=membership.role if membership else None,

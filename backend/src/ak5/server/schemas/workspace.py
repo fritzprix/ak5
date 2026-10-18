@@ -103,6 +103,7 @@ class SessionTokenRequest(BaseModel):
 class SessionTokenOut(BaseModel):
     access_token: str
     token_type: str = "Bearer"
+    expires_in: int
     workspace_id: str
     user_id: str
     membership_role: str | None = None
