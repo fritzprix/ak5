@@ -14,6 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.server.config import settings
 from ak5.server.database import get_db
+from ak5.server.inbox import resolve_board_alias
 from ak5.server.models.actor import Actor
 from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.event import EventOut, EventsPollOut
@@ -67,6 +68,8 @@ async def poll_events(
 ) -> EventsPollOut | JSONResponse:
     """One-shot event log poll without a subscription (cli.md ``ak5 events poll``)."""
     _ = current_actor
+    if board_id:
+        board_id = resolve_board_alias(board_id, workspace_id)
     try:
         events, next_cursor = await subscription_service.poll_events(
             db,

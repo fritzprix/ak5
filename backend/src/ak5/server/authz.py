@@ -5,6 +5,7 @@ from __future__ import annotations
 from ak5.contracts.errors import ErrorCode
 from ak5.contracts.stages import Role
 from ak5.server.auth.principal import Principal
+from ak5.server.inbox import inbox_board_id_for
 from ak5.server.models.actor import Actor
 
 RESERVED_ADMIN_ROLES: frozenset[str] = frozenset({"admin", "system_admin", "root", "superuser"})
@@ -124,12 +125,11 @@ def require_roles(subject: Actor | Principal, *allowed: Role) -> Role:
 def board_in_scope(
     subject: Actor | Principal,
     board_id: str,
-    *,
-    inbox_board_id: str = "inbox",
 ) -> bool:
     """True when an agent may touch ``board_id`` (identity.md §4.3).
 
-    Empty ``board_scope`` means all boards. Inbox is always in scope.
+    Empty ``board_scope`` means all boards. The agent's own workspace inbox is
+    always in scope (#76).
     Users and legacy Actor JWTs (no Principal) are unrestricted here.
     """
     principal = subject if isinstance(subject, Principal) else principal_of(subject)
@@ -137,7 +137,7 @@ def board_in_scope(
         return True
     if not principal.board_scope:
         return True
-    if board_id == inbox_board_id:
+    if board_id == inbox_board_id_for(principal.workspace_id):
         return True
     return board_id in principal.board_scope
 
@@ -145,11 +145,9 @@ def board_in_scope(
 def require_board_scope(
     subject: Actor | Principal,
     board_id: str,
-    *,
-    inbox_board_id: str = "inbox",
 ) -> None:
     """Raise :class:`RoleForbiddenError` when ``board_id`` is outside agent scope."""
-    if board_in_scope(subject, board_id, inbox_board_id=inbox_board_id):
+    if board_in_scope(subject, board_id):
         return
     if isinstance(subject, Principal):
         label = f"{subject.principal_type}:{subject.principal_id}"

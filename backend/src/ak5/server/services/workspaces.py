@@ -14,20 +14,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import ErrorCode
 from ak5.server.auth.bridge import actor_id_for_principal
+from ak5.server.inbox import inbox_board_id_for  # noqa: F401  (re-exported for routers)
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
 from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
 from ak5.server.models.workspace import (
-    LOCAL_WORKSPACE_ID,
     Membership,
     User,
     UserIdentity,
     Workspace,
 )
 from ak5.server.models.workspace_invite import WorkspaceInvite
-from ak5.server.seed import INBOX_BOARD_ID, LOCAL_USER_ID
+from ak5.server.seed import LOCAL_USER_ID
 from ak5.server.services.templates import INBOX_TEMPLATE
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -75,10 +75,6 @@ def merge_policy(existing: str, patch: dict[str, Any]) -> str:
     return json.dumps(current)
 
 
-def inbox_board_id_for(workspace_id: str) -> str:
-    if workspace_id == LOCAL_WORKSPACE_ID:
-        return INBOX_BOARD_ID
-    return f"{workspace_id}__inbox"
 
 
 def _hash_token(token: str) -> str:

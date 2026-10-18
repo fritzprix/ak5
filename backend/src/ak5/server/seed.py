@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import uuid
 from contextlib import suppress
@@ -13,6 +14,7 @@ from ak5.contracts.stages import STANDARD_STAGES
 from ak5.paths import get_app_data_dir
 from ak5.server.config import settings
 from ak5.server.database import AsyncSessionLocal
+from ak5.server.inbox import INBOX_BOARD_ID, is_inbox_board_id
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
@@ -35,8 +37,9 @@ from ak5.server.models.workspace import (
 )
 from ak5.server.services.templates import DEFAULT_TEMPLATE, INBOX_TEMPLATE, get_template
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer", "system"}
-INBOX_BOARD_ID = "inbox"
 SYSTEM_ACTOR_ID = "system"
 LOCAL_USER_ID = "usr_local_pm"
 LOCAL_AGENT_WORKER_ID = "agt_image_worker"
@@ -421,6 +424,23 @@ async def ensure_local_tenancy(db: AsyncSession) -> None:
     await migrate_v1_actors_to_principals(db)
 
 
+async def warn_inbox_like_standard_boards(db: AsyncSession) -> list[str]:
+    """Log non-inbox boards whose id looks like an inbox (``*__inbox``, #82 review).
+
+    ``is_inbox_board_id`` treats that suffix as an inbox; creation now rejects
+    it, but boards made before #82 could carry it and would be misclassified.
+    """
+    rows = (await db.execute(select(Board.board_id, Board.kind))).all()
+    suspicious = [bid for bid, kind in rows if kind != "inbox" and is_inbox_board_id(bid)]
+    for bid in suspicious:
+        logger.warning(
+            "Board %r is not an inbox but its id ends with '__inbox'; workflow code will "
+            "treat it as an inbox. Rename it (identity.md §7).",
+            bid,
+        )
+    return suspicious
+
+
 async def seed_initial_data() -> None:
     """Seed initial actors, global inbox, and default board if not present."""
     async with AsyncSessionLocal() as db:
@@ -569,6 +589,7 @@ async def seed_initial_data() -> None:
 
         # v1 → v2 data repairs (idempotent): missing stages + claimless tickets
         await backfill_standard_board_stages(db)
+        await warn_inbox_like_standard_boards(db)
         await repair_claimless_in_progress_tickets(db)
         from ak5.server.services.workflow import clear_assignees_without_claim
 

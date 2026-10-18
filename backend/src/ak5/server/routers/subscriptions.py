@@ -11,6 +11,7 @@ from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.server.authz import is_admin, is_admin_or_owner
 from ak5.server.config import settings
 from ak5.server.database import get_db
+from ak5.server.inbox import resolve_board_alias
 from ak5.server.models.actor import Actor
 from ak5.server.models.board import Board
 from ak5.server.models.event import Event
@@ -125,6 +126,8 @@ async def create_subscription(
         )
 
     filt = sub_in.filter
+    if filt.board_id:
+        filt.board_id = resolve_board_alias(filt.board_id, workspace_id)
     if filt.board_id and filt.board_id not in ("*", "all"):
         board = await db.get(Board, filt.board_id)
         if board is None:
@@ -187,7 +190,7 @@ async def list_subscriptions(
         stmt = stmt.where(Subscription.created_by == current_actor.actor_id)
 
     if board_id:
-        stmt = stmt.where(Subscription.board_id == board_id)
+        stmt = stmt.where(Subscription.board_id == resolve_board_alias(board_id, workspace_id))
 
     result = await db.execute(stmt)
     subscriptions = result.scalars().all()
