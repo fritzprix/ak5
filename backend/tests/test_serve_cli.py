@@ -130,10 +130,24 @@ def test_assert_safe_bind_allows_tailscale_serve_with_insecure(
     assert_safe_bind("127.0.0.1", insecure=True, tailscale_serve=True)
 
 
-def test_assert_safe_bind_allows_tailscale_serve_with_web_auth(
+def test_assert_safe_bind_rejects_tailscale_serve_with_web_auth_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Password alone is not enough for exposed binds (identity.md §8 → OIDC)."""
     monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret")
+    monkeypatch.delenv("AK5_OIDC_PROVIDERS", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        assert_safe_bind("127.0.0.1", insecure=False, tailscale_serve=True)
+    assert exc.value.code == 1
+
+
+def test_assert_safe_bind_allows_tailscale_serve_with_oidc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "AK5_OIDC_PROVIDERS",
+        '[{"id":"mock","issuer":"https://idp.example","client_id":"c"}]',
+    )
     assert_safe_bind("127.0.0.1", insecure=False, tailscale_serve=True)
 
 
@@ -163,18 +177,34 @@ def test_assert_safe_bind_allows_non_loopback_with_insecure(
     assert_safe_bind("0.0.0.0", insecure=True)
 
 
-def test_assert_safe_bind_allows_non_loopback_with_web_auth(
+def test_assert_safe_bind_rejects_non_loopback_with_web_auth_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret")
-    assert_safe_bind("0.0.0.0", insecure=False)
+    monkeypatch.delenv("AK5_OIDC_PROVIDERS", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        assert_safe_bind("0.0.0.0", insecure=False)
+    assert exc.value.code == 1
 
 
-def test_assert_safe_bind_allows_non_loopback_with_identify_secret(
+def test_assert_safe_bind_rejects_non_loopback_with_identify_secret_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
     monkeypatch.setenv("AK5_IDENTIFY_SECRET", "shared-secret")
+    monkeypatch.delenv("AK5_OIDC_PROVIDERS", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        assert_safe_bind("0.0.0.0", insecure=False)
+    assert exc.value.code == 1
+
+
+def test_assert_safe_bind_allows_non_loopback_with_oidc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "AK5_OIDC_PROVIDERS",
+        '[{"id":"mock","issuer":"https://idp.example","client_id":"c"}]',
+    )
     assert_safe_bind("0.0.0.0", insecure=False)
 
 

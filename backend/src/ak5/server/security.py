@@ -16,7 +16,6 @@ from pathlib import Path
 from fastapi import Request
 
 from ak5.paths import get_app_data_dir
-from ak5.server.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -181,14 +180,6 @@ def is_identify_authorized(request: Request, provided_secret: str | None) -> boo
     if not required:
         return True
 
-    if provided_secret is not None and secrets.compare_digest(provided_secret, required):
-        return True
-
-    # Dashboard UX: after web login, cookie proves the browser passed the gate.
-    cfg = get_web_auth_config()
-    if cfg.enabled:
-        cookie = request.cookies.get(COOKIE_NAME)
-        if cookie and verify_session_cookie(cookie):
-            return True
-
-    return False
+    return bool(
+        provided_secret is not None and secrets.compare_digest(provided_secret, required)
+    )

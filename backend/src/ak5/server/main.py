@@ -12,21 +12,25 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
+from ak5.server.auth.oidc_config import oidc_providers_configured
+from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
+from ak5.server.auth.users import local_owner_configured
 from ak5.server.config import settings
-from ak5.server.database import engine, run_sqlite_schema_migrations
+from ak5.server.database import AsyncSessionLocal, engine, run_sqlite_schema_migrations
 from ak5.server.models.base import Base
 from ak5.server.routers.actors import router as actors_router
 from ak5.server.routers.auth import router as auth_router
 from ak5.server.routers.boards import router as boards_router
 from ak5.server.routers.device_auth import router as device_auth_router
 from ak5.server.routers.events import router as events_router
+from ak5.server.routers.oidc_auth import router as oidc_auth_router
 from ak5.server.routers.subscriptions import router as subscriptions_router
 from ak5.server.routers.templates import router as templates_router
 from ak5.server.routers.tickets import router as tickets_router
 from ak5.server.routers.web_auth import router as web_auth_router
 from ak5.server.seed import seed_initial_data
 from ak5.server.services.workflow import WorkflowError
-from ak5.server.web_auth import COOKIE_NAME, get_web_auth_config, verify_session_cookie
+from ak5.server.web_auth import get_web_auth_config
 from ak5.server.web_ui_static import mount_web_ui, web_ui_available
 
 logger = logging.getLogger(__name__)
@@ -36,6 +40,7 @@ TAILSCALE_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1|100\.\d{1,3}\.\d{1,3
 
 _AUTH_PUBLIC_PREFIXES = (
     "/api/auth",
+    "/auth",
     "/api/v1",
     "/docs",
     "/redoc",
@@ -78,8 +83,17 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+def _web_gate_enabled() -> bool:
+    """Dashboard gate on when local password, OIDC, or legacy web auth is configured."""
+    return (
+        get_web_auth_config().enabled
+        or local_owner_configured()
+        or oidc_providers_configured()
+    )
+
+
 def _is_public_path(path: str) -> bool:
-    if path == "/" and not get_web_auth_config().enabled:
+    if path == "/" and not _web_gate_enabled():
         return True
     for prefix in _AUTH_PUBLIC_PREFIXES:
         if path == prefix or path.startswith(prefix + "/"):
@@ -90,6 +104,17 @@ def _is_public_path(path: str) -> bool:
         if lowered.endswith(ext):
             return True
     return False
+
+
+async def _request_has_web_session(request: Request) -> bool:
+    """Accept DB-backed ``ak5_session`` cookies (identity.md §3.2)."""
+    session_cookie = request.cookies.get(SESSION_COOKIE)
+    if not session_cookie:
+        return False
+    # Tests set ``app.state.session_factory`` to the in-memory test engine.
+    factory = getattr(request.app.state, "session_factory", None) or AsyncSessionLocal
+    async with factory() as db:
+        return await resolve_web_session(db, session_cookie) is not None
 
 
 def create_app() -> FastAPI:
@@ -162,6 +187,7 @@ def create_app() -> FastAPI:
     application.include_router(events_router, prefix=settings.API_V1_STR)
     application.include_router(subscriptions_router, prefix=settings.API_V1_STR)
     application.include_router(web_auth_router)
+    application.include_router(oidc_auth_router)
 
     # Optional MCP bridge: requires ak5[mcp] + AK5_ENABLE_MCP=1 (client.md §7)
     if os.environ.get("AK5_ENABLE_MCP", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -191,16 +217,14 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def web_dashboard_auth_gate(request: Request, call_next):
-        cfg = get_web_auth_config()
-        if not cfg.enabled:
+        if not _web_gate_enabled():
             return await call_next(request)
 
         path = request.url.path
         if _is_public_path(path):
             return await call_next(request)
 
-        cookie = request.cookies.get(COOKIE_NAME)
-        if verify_session_cookie(cookie):
+        if await _request_has_web_session(request):
             return await call_next(request)
 
         accept = request.headers.get("accept", "")

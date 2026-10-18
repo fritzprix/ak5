@@ -1,10 +1,7 @@
 import pytest
-from ak5.main import app
-from ak5.web_auth import (
-    COOKIE_NAME,
-    reset_rate_limits_for_tests,
-)
-from httpx import ASGITransport, AsyncClient
+from ak5.server.auth.sessions import SESSION_COOKIE
+from ak5.web_auth import reset_rate_limits_for_tests
+from httpx import AsyncClient
 
 
 @pytest.fixture(autouse=True)
@@ -22,10 +19,8 @@ def _clear_web_auth_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_web_auth_disabled_status():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/auth/status")
+async def test_web_auth_disabled_status(client: AsyncClient):
+    resp = await client.get("/api/auth/status")
     assert resp.status_code == 200
     body = resp.json()
     assert body["authEnabled"] is False
@@ -33,93 +28,89 @@ async def test_web_auth_disabled_status():
 
 
 @pytest.mark.asyncio
-async def test_web_auth_login_and_gate(monkeypatch):
+async def test_web_auth_login_and_gate(client: AsyncClient, monkeypatch):
     monkeypatch.setenv("AK5_AUTH_USERNAME", "admin")
     monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret-pass")
     reset_rate_limits_for_tests()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
-        denied = await client.get("/", headers={"Accept": "text/html"})
-        assert denied.status_code in {303, 307}
-        assert "/login" in denied.headers.get("location", "")
+    denied = await client.get("/", headers={"Accept": "text/html"}, follow_redirects=False)
+    assert denied.status_code in {303, 307}
+    assert "/login" in denied.headers.get("location", "")
 
-        bad = await client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
-        assert bad.status_code == 401
+    bad = await client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+    assert bad.status_code == 401
 
-        ok = await client.post("/api/auth/login", json={"username": "admin", "password": "secret-pass"})
-        assert ok.status_code == 200
-        assert ok.json().get("success") is True
-        assert COOKIE_NAME in ok.cookies
-        cookie_val = ok.cookies.get(COOKIE_NAME)
-        assert cookie_val
-        assert len(cookie_val) >= 32
-        # Must NOT be a deterministic password digest
-        assert cookie_val != "secret-pass"
+    ok = await client.post(
+        "/api/auth/login", json={"username": "admin", "password": "secret-pass"}
+    )
+    assert ok.status_code == 200
+    assert ok.json().get("success") is True
+    assert SESSION_COOKIE in ok.cookies
+    cookie_val = ok.cookies.get(SESSION_COOKIE)
+    assert cookie_val
+    assert len(cookie_val) >= 32
+    assert cookie_val != "secret-pass"
 
-        status = await client.get("/api/auth/status")
-        assert status.json()["authEnabled"] is True
-        assert status.json()["authenticated"] is True
-        assert status.json()["username"] == "admin"
+    status = await client.get("/api/auth/status")
+    assert status.json()["authEnabled"] is True
+    assert status.json()["authenticated"] is True
+    assert status.json()["username"] == "admin"
 
 
 @pytest.mark.asyncio
-async def test_web_auth_brute_force_lockout(monkeypatch):
+async def test_web_auth_brute_force_lockout(client: AsyncClient, monkeypatch):
     monkeypatch.setenv("AK5_AUTH_PASSWORD", "correct")
     reset_rate_limits_for_tests()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        for _ in range(5):
-            resp = await client.post("/api/auth/login", json={"username": "admin", "password": "nope"})
-            assert resp.status_code == 401
+    for _ in range(5):
+        resp = await client.post("/api/auth/login", json={"username": "admin", "password": "nope"})
+        assert resp.status_code == 401
 
-        locked = await client.post("/api/auth/login", json={"username": "admin", "password": "correct"})
-        assert locked.status_code == 429
-        assert "Retry-After" in locked.headers
+    locked = await client.post(
+        "/api/auth/login", json={"username": "admin", "password": "correct"}
+    )
+    assert locked.status_code == 429
+    assert "Retry-After" in locked.headers
 
 
 @pytest.mark.asyncio
-async def test_web_auth_login_rejects_wrong_length_without_500(monkeypatch):
+async def test_web_auth_login_rejects_wrong_length_without_500(
+    client: AsyncClient, monkeypatch
+):
     """Unequal credential lengths must be 401, never ValueError → 500."""
     monkeypatch.setenv("AK5_AUTH_USERNAME", "admin")
     monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret-pass")
     reset_rate_limits_for_tests()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/api/auth/login",
-            json={"username": "a", "password": "x"},
-        )
-        assert resp.status_code == 401
-        assert "error" in resp.json()
+    resp = await client.post(
+        "/api/auth/login",
+        json={"username": "a", "password": "x"},
+    )
+    assert resp.status_code == 401
+    assert "error" in resp.json()
 
 
 @pytest.mark.asyncio
-async def test_web_auth_logout_revokes_session(monkeypatch):
+async def test_web_auth_logout_revokes_session(client: AsyncClient, monkeypatch):
     monkeypatch.setenv("AK5_AUTH_USERNAME", "admin")
     monkeypatch.setenv("AK5_AUTH_PASSWORD", "secret-pass")
     reset_rate_limits_for_tests()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        ok = await client.post(
-            "/api/auth/login",
-            json={"username": "admin", "password": "secret-pass"},
-        )
-        assert ok.status_code == 200
-        assert client.cookies.get(COOKIE_NAME)
+    ok = await client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret-pass"},
+    )
+    assert ok.status_code == 200
+    assert client.cookies.get(SESSION_COOKIE)
 
-        status_ok = await client.get("/api/auth/status")
-        assert status_ok.json()["authenticated"] is True
+    status_ok = await client.get("/api/auth/status")
+    assert status_ok.json()["authenticated"] is True
 
-        logout = await client.post("/api/auth/logout")
-        assert logout.status_code == 200
+    logout = await client.post("/api/auth/logout")
+    assert logout.status_code == 200
 
-        status_after = await client.get("/api/auth/status")
-        # Cookie may still be sent empty/cleared; session store must reject it.
-        assert status_after.json()["authenticated"] is False
+    status_after = await client.get("/api/auth/status")
+    assert status_after.json()["authenticated"] is False
 
 
 def test_detect_tailscale_without_cli(monkeypatch):

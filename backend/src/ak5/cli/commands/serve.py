@@ -39,11 +39,35 @@ def is_loopback_bind(host: str) -> bool:
 
 
 def auth_is_configured() -> bool:
-    """True when web auth and/or identify secret gates are active."""
-    from ak5.security import get_identify_secret
-    from ak5.server.web_auth import get_web_auth_config
+    """True when identity.md §8 auth is active for exposed binds.
 
-    return get_web_auth_config().enabled or bool(get_identify_secret())
+    Non-loopback / Tailscale Serve require at least one OIDC provider.
+    Legacy web password or identify secret alone are not sufficient.
+    """
+    from ak5.server.auth.oidc_config import oidc_providers_configured
+
+    return oidc_providers_configured()
+
+
+def warn_co_located_agent_env() -> None:
+    """Warn when serve runs in an agent-marked environment (identity.md §8.2)."""
+    markers = (
+        "AK5_AGENT",
+        "AK5_AGENT_ID",
+        "AK5_AGENT_ROLE",
+        "CURSOR_AGENT",
+        "CLAUDE_AGENT",
+    )
+    hit = [name for name in markers if os.environ.get(name, "").strip()]
+    if not hit:
+        return
+    console.print(
+        "[bold yellow]Warning:[/bold yellow] Agent environment detected "
+        f"({', '.join(hit)}). On local hosts, agents that share the server OS "
+        "user can read JWT secrets and the DB under [cyan]AK5_DATA_DIR[/cyan] — "
+        "identity checks cannot stop that (identity.md §8.2). Run agents as a "
+        "different OS user/container, or move the server off-box."
+    )
 
 
 def assert_safe_bind(
@@ -79,15 +103,16 @@ def assert_safe_bind(
         console.print(
             "[bold red]✗ Refusing --tailscale-serve without authentication.[/bold red]\n"
             "  Tailscale Serve publishes this process to the tailnet over HTTPS.\n"
-            "  Set [cyan]AK5_AUTH_PASSWORD[/cyan] and/or [cyan]AK5_IDENTIFY_SECRET[/cyan],\n"
+            "  Set [cyan]AK5_OIDC_PROVIDERS[/cyan] (identity.md §8),\n"
             "  or pass [bold]--insecure[/bold] to override (not recommended)."
         )
     else:
         console.print(
-            f"[bold red]✗ Refusing to bind to {host} without authentication.[/bold red]\n"
-            "  Non-loopback binds require [cyan]AK5_AUTH_PASSWORD[/cyan] and/or "
-            "[cyan]AK5_IDENTIFY_SECRET[/cyan],\n"
-            "  or pass [bold]--insecure[/bold] to override (not recommended)."
+            f"[bold red]✗ Refusing to bind to {host} without OIDC.[/bold red]\n"
+            "  Non-loopback binds require [cyan]AK5_OIDC_PROVIDERS[/cyan] "
+            "(identity.md §8),\n"
+            "  or pass [bold]--insecure[/bold] to override (not recommended).\n"
+            "  Local owner password login remains loopback-only."
         )
     raise SystemExit(1)
 
@@ -405,6 +430,7 @@ def run_serve(
     assert_dev_insecure_identify_safe(
         host, dev_insecure_identify=dev_insecure_identify, tailscale_serve=tailscale_serve
     )
+    warn_co_located_agent_env()
     if dev_insecure_identify:
         os.environ["AK5_DEV_INSECURE_IDENTIFY"] = "1"
         console.print(
