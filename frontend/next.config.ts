@@ -20,6 +20,13 @@ if (embed) {
   nextConfig.rewrites = async () => [
     { source: "/api/auth/:path*", destination: `${gateway}/api/auth/:path*` },
     { source: "/api/v1/:path*", destination: `${gateway}/api/v1/:path*` },
+    // OIDC + OAuth device grant (#24/#25/#27) — Next owns /auth/device page UI.
+    { source: "/oauth/:path*", destination: `${gateway}/oauth/:path*` },
+    { source: "/auth/me", destination: `${gateway}/auth/me` },
+    { source: "/auth/login", destination: `${gateway}/auth/login` },
+    { source: "/auth/callback", destination: `${gateway}/auth/callback` },
+    { source: "/auth/logout", destination: `${gateway}/auth/logout` },
+    { source: "/auth/local/:path*", destination: `${gateway}/auth/local/:path*` },
     { source: "/docs", destination: `${gateway}/docs` },
     { source: "/docs/:path*", destination: `${gateway}/docs/:path*` },
     { source: "/openapi.json", destination: `${gateway}/openapi.json` },

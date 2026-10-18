@@ -8,9 +8,15 @@ import { AuthStatusButton } from "@/components/auth/AuthStatusButton";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isLogin = pathname === "/login" || pathname?.startsWith("/login/");
+  const bare =
+    pathname === "/login" ||
+    pathname?.startsWith("/login/") ||
+    pathname === "/device" ||
+    pathname?.startsWith("/device/") ||
+    pathname === "/auth/device" ||
+    pathname?.startsWith("/auth/device/");
 
-  if (isLogin) {
+  if (bare) {
     return <main className="min-h-dvh">{children}</main>;
   }
 

@@ -1,32 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthConfig, verifySessionCookie } from "./lib/auth";
 
+function isPublicPath(pathname: string): boolean {
+  const publicExact = new Set(["/login", "/device", "/auth/device", "/auth/me", "/auth/login", "/auth/callback", "/health", "/openapi.json"]);
+  if (publicExact.has(pathname)) return true;
+  const prefixes = ["/login/", "/device/", "/auth/device/", "/oauth/", "/auth/local/", "/docs", "/_next/"];
+  return prefixes.some((p) => pathname.startsWith(p));
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const { isEnabled } = getAuthConfig();
 
-  // If authentication is disabled, pass all requests
-  if (!isEnabled) {
-    return NextResponse.next();
-  }
-
-  const cookie = request.cookies.get("ak5_auth")?.value;
-  const isAuthenticated = await verifySessionCookie(cookie);
-
-  // Allow auth API routes unconditionally
-  if (pathname.startsWith("/api/auth/")) {
-    return NextResponse.next();
-  }
-
-  // If navigating to /login
-  if (pathname === "/login") {
-    if (isAuthenticated) {
-      return NextResponse.redirect(new URL("/", request.url));
+  if (pathname.startsWith("/api/auth/") || isPublicPath(pathname)) {
+    if (pathname === "/login" || pathname.startsWith("/login/")) {
+      const session = request.cookies.get("ak5_session")?.value;
+      const legacy = request.cookies.get("ak5_auth")?.value;
+      if (session || (legacy && (await verifySessionCookie(legacy)))) {
+        return NextResponse.redirect(new URL("/", request.url));
+      }
     }
     return NextResponse.next();
   }
 
-  // Unauthenticated requests
+  // Env-password gate off → gateway / embed owns auth.
+  if (!isEnabled) {
+    return NextResponse.next();
+  }
+
+  const sessionCookie = request.cookies.get("ak5_session")?.value;
+  const legacyCookie = request.cookies.get("ak5_auth")?.value;
+  const isAuthenticated = Boolean(sessionCookie) || (await verifySessionCookie(legacyCookie));
+
   if (!isAuthenticated) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

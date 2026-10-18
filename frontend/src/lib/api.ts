@@ -15,6 +15,7 @@ import {
   BlockedKind,
   ApiErrorBody,
 } from "./types";
+import { fetchWithCsrf, mapOauthDeviceRequest } from "./webSession";
 
 export type { CreateTicketOptions } from "./createTicketPayload";
 export { buildCreateTicketPayload } from "./createTicketPayload";
@@ -490,36 +491,53 @@ export interface DeviceRequestView {
   status: string;
   target_board_ids: string[];
   expires_at: string;
+  principal?: string;
+  workspace_id?: string;
 }
 
+/** Lookup pending OAuth device grant (identity.md §3.3) — requires web session. */
 export async function fetchDeviceRequest(code: string): Promise<DeviceRequestView> {
-  const res = await fetch(`${API_BASE}/auth/device/request?code=${encodeURIComponent(code)}`, {
-    cache: "no-store",
-  });
+  const res = await fetch(
+    `/oauth/device/request?code=${encodeURIComponent(code)}`,
+    { cache: "no-store", credentials: "same-origin" }
+  );
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Sign in required to approve a device grant");
+    }
     const detail = await readErrorDetail(res);
-    throw new Error(detail);
+    throw new Error(detail || "Device request not found");
   }
-  return res.json();
+  const raw = (await res.json()) as Record<string, unknown>;
+  return mapOauthDeviceRequest(raw);
 }
 
+/** Approve/deny OAuth device grant — CSRF header + session cookie. */
 export async function approveDeviceRequest(
   userCode: string,
   approved: boolean,
-  boardIds: string[] = []
+  boardIds: string[] = [],
+  options?: { workflowRole?: string; capabilities?: string[]; workspaceId?: string }
 ): Promise<unknown> {
-  const token = await getAuthToken();
-  const res = await fetch(`${API_BASE}/auth/device/approve`, {
+  const body: Record<string, unknown> = {
+    user_code: userCode,
+    approved,
+  };
+  if (approved && boardIds.length > 0) {
+    body.board_scope = boardIds;
+  }
+  if (options?.workflowRole) body.workflow_role = options.workflowRole;
+  if (options?.capabilities) body.capabilities = options.capabilities;
+  if (options?.workspaceId) body.workspace_id = options.workspaceId;
+
+  const res = await fetchWithCsrf("/oauth/device/approve", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ user_code: userCode, approved, board_ids: boardIds }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const detail = await readErrorDetail(res);
-    throw new Error(detail);
+    throw new Error(detail || "Device approval failed");
   }
   return res.json();
 }

@@ -84,11 +84,16 @@ function DeviceAuthContent() {
       await approveDeviceRequest(
         requestDetails.user_code,
         approved,
-        approved ? selectedBoards : []
+        approved ? selectedBoards : [],
+        {
+          workflowRole: requestDetails.role,
+          capabilities: requestDetails.capabilities,
+          workspaceId: requestDetails.workspace_id,
+        }
       );
       setActionResult({
         status: approved ? "approved" : "denied",
-        actorId: requestDetails.actor_id,
+        actorId: requestDetails.actor_id || requestDetails.name,
       });
       setRequestDetails((prev) => (prev ? { ...prev, status: approved ? "approved" : "denied" } : null));
     } catch (err) {
@@ -113,10 +118,10 @@ function DeviceAuthContent() {
             <ShieldCheck className="h-6 w-6" />
           </div>
           <h1 className="text-xl font-bold tracking-tight text-[var(--foreground)]">
-            Agent Authorization
+            Device Authorization
           </h1>
           <p className="mt-1 text-xs text-[var(--muted)]">
-            Authorize an autonomous agent or client to join your AK5 workspace
+            Approve a CLI or agent device grant for your AK5 workspace (OAuth)
           </p>
         </div>
 

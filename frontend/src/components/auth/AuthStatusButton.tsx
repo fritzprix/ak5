@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { LogOut, ShieldCheck } from "lucide-react";
+import { fetchWithCsrf } from "@/lib/webSession";
 
 interface AuthStatus {
   authEnabled: boolean;
@@ -29,16 +30,14 @@ export function AuthStatusButton() {
   const handleLogout = async () => {
     setLoggingOut(true);
     try {
-      const csrfMatch = document.cookie.match(/(?:^|; )ak5_csrf=([^;]*)/);
-      const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
-      const res = await fetch("/api/auth/logout", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: csrf ? { "X-CSRF-Token": csrf } : {},
-      });
+      const res = await fetchWithCsrf("/api/auth/logout", { method: "POST" });
       if (!res.ok) {
-        setLoggingOut(false);
-        return;
+        // Fallback: OIDC logout path
+        const oidc = await fetchWithCsrf("/auth/logout", { method: "POST" });
+        if (!oidc.ok) {
+          setLoggingOut(false);
+          return;
+        }
       }
       window.location.href = "/login";
     } catch {
