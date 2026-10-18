@@ -23,6 +23,8 @@ export { buildCreateTicketPayload } from "./createTicketPayload";
 /** Same-origin by default so embedded FastAPI (`ak5 web`) needs no CORS/port split. */
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 
+export const WORKSPACE_STORAGE_KEY = "ak5_workspace_id";
+
 export function getGatewayOrigin(): string {
   if (typeof window !== "undefined") {
     return window.location.origin;
@@ -51,16 +53,68 @@ export function getEventsStreamUrl(): string {
   return `${getAbsoluteApiBase()}/events/stream`;
 }
 
-/** Dashboard identity used by getAuthToken identify. */
+/** Dashboard identity used by getAuthToken identify (dev fallback). */
 export const DASHBOARD_ACTOR_ID = "user_pm";
 
 let cachedToken: string | null = null;
+let cachedWorkspaceId: string | null = null;
+
+export function getStoredWorkspaceId(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(WORKSPACE_STORAGE_KEY);
+}
+
+/** Persist workspace selection and drop the cached Principal JWT. */
+export function setStoredWorkspaceId(workspaceId: string | null): void {
+  if (typeof window === "undefined") return;
+  if (workspaceId) {
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, workspaceId);
+  } else {
+    localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+  }
+  cachedToken = null;
+  cachedWorkspaceId = null;
+}
+
+export function clearAuthTokenCache(): void {
+  cachedToken = null;
+  cachedWorkspaceId = null;
+}
 
 export async function getAuthToken(): Promise<string> {
-  if (cachedToken) return cachedToken;
+  const desiredWs = getStoredWorkspaceId();
+  if (
+    cachedToken &&
+    (!desiredWs || desiredWs === cachedWorkspaceId)
+  ) {
+    return cachedToken;
+  }
+
+  // Prefer web-session → Principal JWT so workspace APIs see the signed-in user (#27).
   try {
-    // credentials: include so a web-auth cookie can authorize identify when
-    // AK5_IDENTIFY_SECRET is set (no change to login UX for agents/CLI).
+    const res = await fetchWithCsrf("/auth/session/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(desiredWs ? { workspace_id: desiredWs } : {}),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        access_token: string;
+        workspace_id: string;
+      };
+      cachedToken = data.access_token;
+      cachedWorkspaceId = data.workspace_id;
+      if (typeof window !== "undefined" && data.workspace_id) {
+        localStorage.setItem(WORKSPACE_STORAGE_KEY, data.workspace_id);
+      }
+      return cachedToken;
+    }
+  } catch (err) {
+    console.warn("Session token mint failed:", err);
+  }
+
+  try {
+    // Dev fallback: insecure identify when no web session (local loopback).
     const res = await fetch(`${API_BASE}/auth/identify`, {
       method: "POST",
       credentials: "include",
@@ -76,6 +130,7 @@ export async function getAuthToken(): Promise<string> {
     if (res.ok) {
       const data = await res.json();
       cachedToken = data.access_token;
+      cachedWorkspaceId = desiredWs;
       return cachedToken!;
     }
   } catch (err) {
@@ -648,5 +703,194 @@ export async function fetchTicketHistory(ticketId: string): Promise<TicketHistor
   if (!res.ok) {
     throw new Error(await readErrorDetail(res));
   }
+  return res.json();
+}
+
+export interface WorkspaceSummary {
+  workspace_id: string;
+  name: string;
+  policy: Record<string, unknown>;
+  inbox_board_id: string | null;
+  membership_role: string | null;
+}
+
+export interface WorkspaceMember {
+  user_id: string;
+  email: string | null;
+  display_name: string;
+  role: string;
+  membership_id: string;
+}
+
+export interface AgentCredentialInfo {
+  credential_id: string;
+  board_scope: string[];
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  access_token?: string | null;
+}
+
+export interface WorkspaceAgent {
+  agent_id: string;
+  workspace_id: string;
+  name: string;
+  workflow_role: string;
+  capabilities: string[];
+  board_scope: string[];
+  created_by: string;
+  disabled_at: string | null;
+  credentials: AgentCredentialInfo[];
+}
+
+export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
+  const res = await fetch(`${API_BASE}/workspaces`, {
+    cache: "no-store",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function createWorkspace(name: string): Promise<WorkspaceSummary> {
+  const res = await fetch(`${API_BASE}/workspaces`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(await authHeaders()),
+    },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function fetchWorkspaceMembers(
+  workspaceId: string
+): Promise<WorkspaceMember[]> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/members`,
+    { cache: "no-store", headers: await authHeaders() }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function inviteWorkspaceMember(
+  workspaceId: string,
+  email: string,
+  role: "admin" | "member" = "member"
+): Promise<{ invite_id: string; token: string; email: string; role: string }> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/members`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeaders()),
+      },
+      body: JSON.stringify({ email, role }),
+    }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function updateWorkspaceMemberRole(
+  workspaceId: string,
+  userId: string,
+  role: "owner" | "admin" | "member"
+): Promise<WorkspaceMember> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeaders()),
+      },
+      body: JSON.stringify({ role }),
+    }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function fetchWorkspaceAgents(
+  workspaceId: string
+): Promise<WorkspaceAgent[]> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents`,
+    { cache: "no-store", headers: await authHeaders() }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function createWorkspaceAgent(
+  workspaceId: string,
+  body: {
+    name: string;
+    workflow_role: "triage" | "worker" | "gatekeeper";
+    capabilities?: string[];
+    board_scope?: string[];
+  }
+): Promise<WorkspaceAgent> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeaders()),
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function disableWorkspaceAgent(
+  workspaceId: string,
+  agentId: string
+): Promise<WorkspaceAgent> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/disable`,
+    { method: "POST", headers: await authHeaders() }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function issueAgentCredential(
+  workspaceId: string,
+  agentId: string
+): Promise<AgentCredentialInfo> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/credentials`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeaders()),
+      },
+      body: JSON.stringify({}),
+    }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+export async function revokeAgentCredential(
+  workspaceId: string,
+  agentId: string,
+  credentialId: string
+): Promise<AgentCredentialInfo> {
+  const res = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/credentials/${encodeURIComponent(credentialId)}/revoke`,
+    { method: "POST", headers: await authHeaders() }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json();
 }

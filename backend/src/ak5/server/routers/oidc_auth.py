@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ak5.contracts.stages import Role
 from ak5.server.auth.oidc import (
     build_authorize_url,
     discover_endpoints,
@@ -31,6 +32,7 @@ from ak5.server.auth.oidc_device import (
     start_upstream_device_flow,
     upstream_device_endpoints,
 )
+from ak5.server.auth.principal import Principal
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
     OIDC_STATE_COOKIE,
@@ -44,6 +46,7 @@ from ak5.server.auth.sessions import (
     revoke_web_session,
     store_oidc_pending,
 )
+from ak5.server.auth.tokens import issue_access_token
 from ak5.server.auth.users import (
     ensure_local_owner_user,
     local_owner_configured,
@@ -51,7 +54,13 @@ from ak5.server.auth.users import (
     verify_local_owner_password,
 )
 from ak5.server.database import get_db
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, User
+from ak5.server.schemas.workspace import SessionTokenOut, SessionTokenRequest
 from ak5.server.security import is_loopback_client
+from ak5.server.services.workspaces import (
+    get_membership,
+    list_workspaces_for_user,
+)
 
 router = APIRouter(tags=["oidc-auth"])
 
@@ -377,18 +386,86 @@ async def auth_me(
         return {
             "authenticated": False,
             "user_id": None,
+            "display_name": None,
             "oidc_configured": oidc_providers_configured(),
             "local_owner_configured": local_owner_configured(),
             "providers": providers,
         }
     user_id, _csrf_hash = resolved
+    user = await db.get(User, user_id)
     return {
         "authenticated": True,
         "user_id": user_id,
+        "display_name": user.display_name if user else None,
         "oidc_configured": oidc_providers_configured(),
         "local_owner_configured": local_owner_configured(),
         "providers": providers,
     }
+
+
+@router.post("/auth/session/token", response_model=None)
+async def mint_session_access_token(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    body: SessionTokenRequest | None = None,
+) -> SessionTokenOut | JSONResponse:
+    """Exchange a valid web session cookie for a user Principal JWT (#27).
+
+    Optional ``workspace_id`` selects the ``ws`` claim (must be a membership).
+    """
+    cookie = request.cookies.get(SESSION_COOKIE)
+    resolved = await resolve_web_session(db, cookie)
+    if resolved is None:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    user_id, csrf_hash = resolved
+    if not require_csrf_header(request.headers, csrf_hash):
+        return JSONResponse(status_code=403, content={"error": "CSRF validation failed"})
+
+    requested = (body.workspace_id if body else None) or None
+    membership = None
+    workspace_id = requested
+    if workspace_id:
+        membership = await get_membership(
+            db, workspace_id=workspace_id, user_id=user_id
+        )
+        if membership is None:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Not a member of this workspace"},
+            )
+    else:
+        workspaces = await list_workspaces_for_user(db, user_id)
+        if workspaces:
+            workspace_id = workspaces[0].workspace_id
+            membership = await get_membership(
+                db, workspace_id=workspace_id, user_id=user_id
+            )
+        else:
+            workspace_id = LOCAL_WORKSPACE_ID
+            membership = await get_membership(
+                db, workspace_id=workspace_id, user_id=user_id
+            )
+            if membership is None:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "No workspace membership"},
+                )
+
+    assert workspace_id is not None
+    principal = Principal(
+        principal_id=user_id,
+        principal_type="user",
+        workspace_id=workspace_id,
+        workflow_role=Role.HUMAN,
+        membership_role=membership.role if membership else None,
+    )
+    token = issue_access_token(principal)
+    return SessionTokenOut(
+        access_token=token,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        membership_role=membership.role if membership else None,
+    )
 
 
 @router.post("/auth/csrf-check")

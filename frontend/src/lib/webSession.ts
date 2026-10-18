@@ -84,6 +84,7 @@ export async function fetchWithCsrf(
 export interface AuthMeResponse {
   authenticated: boolean;
   user_id: string | null;
+  display_name?: string | null;
   oidc_configured: boolean;
   local_owner_configured: boolean;
   providers: Array<{ id: string; issuer: string }>;
