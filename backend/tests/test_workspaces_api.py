@@ -256,6 +256,137 @@ async def test_last_owner_protected(client: AsyncClient, test_db: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_admin_cannot_grant_or_remove_owner(
+    client: AsyncClient, test_db: AsyncSession
+):
+    """#62: non-owner admin must not escalate to owner or demote/remove owners."""
+    await ensure_local_tenancy(test_db)
+    admin_id = "usr_ws_admin"
+    member_id = "usr_ws_member"
+    test_db.add(User(user_id=admin_id, email="admin@example.com", display_name="Admin"))
+    test_db.add(User(user_id=member_id, email="mem@example.com", display_name="Mem"))
+    await _ensure_user_actor(test_db, admin_id, name="Admin")
+    await _ensure_user_actor(test_db, member_id, name="Mem")
+    test_db.add(
+        Membership(
+            membership_id=f"mem_{LOCAL_WORKSPACE_ID}_{admin_id}",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            user_id=admin_id,
+            role="admin",
+        )
+    )
+    test_db.add(
+        Membership(
+            membership_id=f"mem_{LOCAL_WORKSPACE_ID}_{member_id}",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            user_id=member_id,
+            role="member",
+        )
+    )
+    await test_db.commit()
+
+    admin_headers = _user_headers(admin_id, membership_role="admin")
+
+    self_owner = await client.patch(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members/{admin_id}",
+        headers=admin_headers,
+        json={"role": "owner"},
+    )
+    assert self_owner.status_code == 403, self_owner.text
+    assert self_owner.json()["error"]["code"] == "ROLE_FORBIDDEN"
+
+    promote_other = await client.patch(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members/{member_id}",
+        headers=admin_headers,
+        json={"role": "owner"},
+    )
+    assert promote_other.status_code == 403
+    assert promote_other.json()["error"]["code"] == "ROLE_FORBIDDEN"
+
+    demote_owner = await client.patch(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members/{LOCAL_USER_ID}",
+        headers=admin_headers,
+        json={"role": "admin"},
+    )
+    assert demote_owner.status_code == 403
+    assert demote_owner.json()["error"]["code"] == "ROLE_FORBIDDEN"
+
+    delete_owner = await client.delete(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members/{LOCAL_USER_ID}",
+        headers=admin_headers,
+    )
+    assert delete_owner.status_code == 403
+    assert delete_owner.json()["error"]["code"] == "ROLE_FORBIDDEN"
+
+    # Admin may still manage non-owner members.
+    promote_admin = await client.patch(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members/{member_id}",
+        headers=admin_headers,
+        json={"role": "admin"},
+    )
+    assert promote_admin.status_code == 200, promote_admin.text
+    assert promote_admin.json()["role"] == "admin"
+
+    # Owner can grant owner and demote a non-last owner after a second owner exists.
+    grant = await client.patch(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members/{admin_id}",
+        headers=_user_headers(),
+        json={"role": "owner"},
+    )
+    assert grant.status_code == 200, grant.text
+    assert grant.json()["role"] == "owner"
+
+    demote_ok = await client.patch(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members/{admin_id}",
+        headers=_user_headers(),
+        json={"role": "admin"},
+    )
+    assert demote_ok.status_code == 200, demote_ok.text
+    assert demote_ok.json()["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_accept_invite_requires_verified_identity(
+    client: AsyncClient, test_db: AsyncSession
+):
+    await ensure_local_tenancy(test_db)
+    home_ws = "ws_home_unver"
+    test_db.add(Workspace(workspace_id=home_ws, name="Home", policy="{}"))
+    invitee_id = "usr_unver"
+    test_db.add(
+        User(user_id=invitee_id, email="unver@example.com", display_name="Unver")
+    )
+    await _ensure_user_actor(test_db, invitee_id, name="Unver")
+    test_db.add(
+        Membership(
+            membership_id=f"mem_{home_ws}_{invitee_id}",
+            workspace_id=home_ws,
+            user_id=invitee_id,
+            role="owner",
+        )
+    )
+    await test_db.commit()
+
+    created = await client.post(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/members",
+        headers=_user_headers(),
+        json={"email": "unver@example.com", "role": "member"},
+    )
+    assert created.status_code == 200, created.text
+    token = created.json()["token"]
+
+    denied = await client.post(
+        "/api/v1/workspaces/invites/accept",
+        headers=_user_headers(
+            invitee_id, workspace_id=home_ws, membership_role="owner"
+        ),
+        json={"token": token},
+    )
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "ROLE_FORBIDDEN"
+
+
+@pytest.mark.asyncio
 async def test_policy_patch_writes_audit(
     client: AsyncClient, test_db: AsyncSession
 ):
