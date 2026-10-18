@@ -1,11 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthConfig, verifySessionCookie } from "./lib/auth";
+import {
+  authMeIndicatesSession,
+  isPublicPath,
+  looksLikeSessionCookie,
+} from "./lib/middlewareGate";
 
-function isPublicPath(pathname: string): boolean {
-  const publicExact = new Set(["/login", "/device", "/auth/device", "/auth/me", "/auth/login", "/auth/callback", "/health", "/openapi.json"]);
-  if (publicExact.has(pathname)) return true;
-  const prefixes = ["/login/", "/device/", "/auth/device/", "/oauth/", "/auth/local/", "/docs", "/_next/"];
-  return prefixes.some((p) => pathname.startsWith(p));
+async function verifyAk5Session(request: NextRequest): Promise<boolean> {
+  const sessionCookie = request.cookies.get("ak5_session")?.value;
+  if (!looksLikeSessionCookie(sessionCookie)) {
+    return false;
+  }
+  try {
+    const meUrl = new URL("/auth/me", request.url);
+    const res = await fetch(meUrl, {
+      headers: { cookie: request.headers.get("cookie") ?? "" },
+      cache: "no-store",
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { authenticated?: unknown };
+    return authMeIndicatesSession(body);
+  } catch {
+    return false;
+  }
 }
 
 export async function middleware(request: NextRequest) {
@@ -14,9 +31,9 @@ export async function middleware(request: NextRequest) {
 
   if (pathname.startsWith("/api/auth/") || isPublicPath(pathname)) {
     if (pathname === "/login" || pathname.startsWith("/login/")) {
-      const session = request.cookies.get("ak5_session")?.value;
+      const hasSession = await verifyAk5Session(request);
       const legacy = request.cookies.get("ak5_auth")?.value;
-      if (session || (legacy && (await verifySessionCookie(legacy)))) {
+      if (hasSession || (legacy && (await verifySessionCookie(legacy)))) {
         return NextResponse.redirect(new URL("/", request.url));
       }
     }
@@ -28,9 +45,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const sessionCookie = request.cookies.get("ak5_session")?.value;
+  const hasSession = await verifyAk5Session(request);
   const legacyCookie = request.cookies.get("ak5_auth")?.value;
-  const isAuthenticated = Boolean(sessionCookie) || (await verifySessionCookie(legacyCookie));
+  const isAuthenticated =
+    hasSession || (await verifySessionCookie(legacyCookie));
 
   if (!isAuthenticated) {
     if (pathname.startsWith("/api/")) {
