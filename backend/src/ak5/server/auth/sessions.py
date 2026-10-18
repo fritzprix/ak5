@@ -19,6 +19,7 @@ CSRF_HEADER = "X-CSRF-Token"
 # Binds OIDC `state` to the browser that started login (login CSRF / RFC 6749 §10.12).
 OIDC_STATE_COOKIE = "ak5_oidc_state"
 SESSION_TTL = timedelta(days=14)
+CLI_SESSION_TTL = timedelta(hours=12)
 OIDC_PENDING_TTL = timedelta(minutes=10)
 OIDC_PENDING_MAX = 256
 OIDC_STATE_COOKIE_MAX_AGE = int(OIDC_PENDING_TTL.total_seconds())
@@ -141,6 +142,25 @@ async def create_web_session_tokens(db: AsyncSession, user_id: str) -> tuple[str
     )
     await db.flush()
     return f"{session_id}.{cookie_token}", csrf_token
+
+
+async def create_cli_session_tokens(db: AsyncSession, user_id: str) -> tuple[str, str]:
+    """Return ``(refresh_token, session_id)`` for a CLI device-grant session (§3.3)."""
+    session_id = secrets.token_urlsafe(24)
+    refresh_token = secrets.token_urlsafe(48)
+    expires = datetime.now(UTC).replace(tzinfo=None) + CLI_SESSION_TTL
+    db.add(
+        UserSession(
+            session_id=session_id,
+            user_id=user_id,
+            refresh_token_hash=_hash_token(refresh_token),
+            client="cli",
+            expires_at=expires,
+            revoked_at=None,
+        )
+    )
+    await db.flush()
+    return refresh_token, session_id
 
 
 async def resolve_web_session(
