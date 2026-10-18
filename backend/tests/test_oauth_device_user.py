@@ -485,11 +485,14 @@ async def test_agent_token_cannot_approve_or_refresh_as_user(
 
 
 @pytest.mark.asyncio
-async def test_legacy_device_routes_emit_deprecation(anon_client: AsyncClient):
-    resp = await anon_client.post(
-        "/auth/device/code",
-        json={"actor_id": "legacy_dep_agent", "role": "Tester"},
+async def test_legacy_device_routes_removed(anon_client: AsyncClient):
+    """#35: v1 /auth/device (device_codes) is gone after its Sunset date; OAuth grant stays."""
+    for path in ("/auth/device/code", "/api/v1/auth/device/code", "/auth/device/token"):
+        resp = await anon_client.post(path, json={"actor_id": "legacy_dep_agent", "role": "Tester"})
+        assert resp.status_code in (404, 405), (path, resp.status_code)
+    schema = (await anon_client.get("/openapi.json")).json()
+    assert not [p for p in schema["paths"] if p.startswith(("/auth/device", "/api/v1/auth/device"))]
+    started = await anon_client.post(
+        "/oauth/device_authorization", json={"client_id": "ak5-cli", "principal": "user"}
     )
-    assert resp.status_code == 200
-    assert resp.headers.get("deprecation") == "true"
-    assert "/oauth/device_authorization" in (resp.headers.get("link") or "")
+    assert started.status_code == 200, started.text

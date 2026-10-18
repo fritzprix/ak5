@@ -500,28 +500,6 @@ async def ak5_list_available_agents(
 
 
 @server.tool()
-async def ak5_delegate_subtask(
-    parent_ticket_id: str,
-    title: str,
-    description: str = "",
-    target_agent_id: str | None = None,
-    priority: str = "medium",
-) -> list[TextContent]:
-    """[DEPRECATED] Alias of ``ak5_ticket_delegate`` (parented create_direct).
-
-    Workflow roles: triage, worker.
-    ``target_agent_id`` is ignored (pull model).
-    """
-    _ = target_agent_id
-    return await ak5_ticket_delegate(
-        parent_ticket_id=parent_ticket_id,
-        title=title,
-        description=description or None,
-        priority=priority,
-    )
-
-
-@server.tool()
 async def ak5_get_ticket_context(ticket_id: str) -> list[TextContent]:
     """Workflow roles: triage, worker, gatekeeper.
 
@@ -570,78 +548,6 @@ async def ak5_get_ticket_context(ticket_id: str) -> list[TextContent]:
         lines.append(f"\nExecution Context:\n{json.dumps(exec_ctx, indent=2)}")
 
     return [TextContent(type="text", text="\n".join(lines))]
-
-
-@server.tool()
-async def ak5_update_ticket_status(
-    ticket_id: str,
-    column_name: str,
-    status_note: str,
-    execution_context: dict[str, Any] | None = None,
-) -> list[TextContent]:
-    """[DEPRECATED] Free column moves are not workflow progress (workflow.md §8).
-
-    Workflow roles: triage, worker, gatekeeper.
-    Same-stage column moves only. Prefer ``ak5_ticket_claim`` / ``submit`` /
-    ``verdict`` / ``route`` transition tools for stage changes.
-    """
-    client = get_client()
-    try:
-        ticket = await client.update_ticket_status(
-            ticket_id=ticket_id,
-            column_name=column_name,
-            status_note=status_note,
-            execution_context=execution_context,
-        )
-    except AK5APIError as exc:
-        return _tool_error(exc)
-    except ValueError as exc:
-        return _json_content(
-            {
-                "error": {
-                    "code": "PAYLOAD_INVALID",
-                    "message": str(exc),
-                    "details": {},
-                }
-            }
-        )
-    result_text = (
-        f"✓ Ticket '{ticket_id}' updated.\n"
-        f"  New Column: {ticket['column_id']} | Status: {ticket['status']}\n"
-        f"  Note: {status_note}"
-    )
-    return [TextContent(type="text", text=result_text)]
-
-
-@server.tool()
-async def ak5_report_block(
-    ticket_id: str,
-    blocking_reason: str,
-    required_actor_id: str | None = None,
-    kind: BlockedKind = BlockedKind.EXTERNAL,
-    claim_token: str | None = None,
-) -> list[TextContent]:
-    """[DEPRECATED] Prefer ``ak5_ticket_block`` (cli.md ``ticket block``).
-
-    Workflow roles: triage, worker, gatekeeper.
-    Defaults to ``kind=external`` and posts a mention comment.
-    """
-    token = _resolve_claim_token(ticket_id, claim_token)
-    client = get_client()
-    try:
-        await client.report_block(
-            ticket_id=ticket_id,
-            blocking_reason=blocking_reason,
-            required_actor_id=required_actor_id,
-            kind=kind,
-            claim_token=token,
-        )
-    except AK5APIError as exc:
-        return _tool_error(exc)
-    _forget_claim(ticket_id)
-    mention_str = f" @{required_actor_id}" if required_actor_id else ""
-    result_text = f"⚠️ Ticket '{ticket_id}' is now BLOCKED.{mention_str}\n  Reason: {blocking_reason}"
-    return [TextContent(type="text", text=result_text)]
 
 
 @server.tool()

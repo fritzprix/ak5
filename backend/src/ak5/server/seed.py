@@ -20,7 +20,6 @@ from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
 from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
-from ak5.server.models.device_code import DeviceCode
 from ak5.server.models.event import Event
 from ak5.server.models.idempotency import IdempotencyKey
 from ak5.server.models.subscription import Subscription
@@ -315,6 +314,11 @@ async def rewrite_actor_refs_to_principals(db: AsyncSession) -> None:
     mapping = dict(ACTOR_TO_PRINCIPAL)
     if not mapping:
         return
+    # Per-(old, new) UPDATEs would apply a chain a→b, b→c twice (a→c); the old
+    # row-wise rewrite changed each value once (#86 review).
+    chained = sorted(old for old, new in mapping.items() if new != old and mapping.get(new, new) != new)
+    if chained:
+        raise RuntimeError(f"actor→principal mapping must not chain: {chained}")
 
     # board_members: unique(board_id, actor_id) — drop legacy row if alias already present
     members = list((await db.execute(select(BoardMember))).scalars().all())
@@ -336,7 +340,6 @@ async def rewrite_actor_refs_to_principals(db: AsyncSession) -> None:
         (AuditLog, ("actor_id",)),
         (TicketComment, ("actor_id",)),
         (TicketAttachment, ("actor_id",)),
-        (DeviceCode, ("actor_id",)),
         (Subscription, ("created_by",)),
         (Event, ("actor_id",)),
         (TicketRevision, ("author",)),
@@ -649,8 +652,7 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
         # 5. Delete audit logs
         await db.execute(delete(AuditLog))
 
-        # 6. Delete boards, board_members, device_codes, and columns
-        await db.execute(delete(DeviceCode))
+        # 6. Delete boards, board_members, and columns
         if not keep_boards:
             await db.execute(delete(BoardMember))
             await db.execute(delete(Column))

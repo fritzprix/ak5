@@ -219,3 +219,14 @@ async def test_migrate_rewrites_ticket_and_board_refs_to_principal_ids(
     await test_db.commit()
     await test_db.refresh(ticket)
     assert ticket.created_by == LOCAL_USER_ID
+
+
+@pytest.mark.asyncio
+async def test_rewrite_actor_refs_rejects_chained_mapping(test_db: AsyncSession, monkeypatch):
+    """#86 review: a→b, b→c would rewrite a twice with per-pair UPDATEs."""
+    from ak5.server.auth import bridge
+    from ak5.server.seed import rewrite_actor_refs_to_principals
+
+    monkeypatch.setattr(bridge, "ACTOR_TO_PRINCIPAL", {"a": "b", "b": "c"})
+    with pytest.raises(RuntimeError, match="must not chain"):
+        await rewrite_actor_refs_to_principals(test_db)
