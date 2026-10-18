@@ -245,12 +245,10 @@ async def test_foreign_principal_cannot_access_local_resources(
             pytest.fail(f"{method} {path_template} returned 204 for foreign principal")
         return
     if 200 <= resp.status_code < 300:
-        # Creating a resource in the caller's own workspace is fine.
-        if method == "POST" and path_template in {
-            "/api/v1/boards",
-            "/api/v1/subscriptions",
-        }:
+        # Creating a board in the caller's own workspace is fine.
+        if method == "POST" and path_template == "/api/v1/boards":
             return
+        # Subscription filtered to a local board must not succeed (403 above).
         if _is_collection_list(path_template, method):
             data = resp.json()
             if isinstance(data, list):

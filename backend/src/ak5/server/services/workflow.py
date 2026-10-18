@@ -980,8 +980,9 @@ async def create_inbox(
     priority: str = "medium",
     labels: list[str] | None = None,
     parent_ticket_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> Ticket:
-    """T1 — create unclassified ticket on the global inbox."""
+    """T1 — create unclassified ticket on the workspace inbox."""
     try:
         require_roles(actor, Role.HUMAN)
     except RoleForbiddenError as exc:
@@ -994,6 +995,12 @@ async def create_inbox(
     inbox = await db.get(Board, INBOX_BOARD_ID)
     if inbox is None:
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Global inbox board is missing")
+    if workspace_id is not None and inbox.workspace_id != workspace_id:
+        raise WorkflowError(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Inbox is outside the caller's workspace",
+            details={"board_id": INBOX_BOARD_ID, "workspace_id": workspace_id},
+        )
 
     column = await _column_for_stage(db, INBOX_BOARD_ID, Stage.UNCLASSIFIED)
     ticket_id = await _generate_ticket_id(db)

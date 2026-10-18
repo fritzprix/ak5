@@ -12,6 +12,7 @@ from ak5.server.authz import is_admin, is_admin_or_owner
 from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
+from ak5.server.models.board import Board
 from ak5.server.models.event import Event
 from ak5.server.models.subscription import Subscription
 from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
@@ -94,13 +95,13 @@ def _require_owned_sub(
     return sub
 
 
-@router.post("", response_model=SubscriptionOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=None, status_code=status.HTTP_201_CREATED)
 async def create_subscription(
     sub_in: SubscriptionCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
-) -> SubscriptionOut:
+) -> SubscriptionOut | JSONResponse:
     """Register a filter-only subscription (events.md §2). Hooks run on the client daemon."""
     sub_id = sub_in.subscription_id or f"sub-{uuid.uuid4().hex[:8]}"
 
@@ -112,6 +113,23 @@ async def create_subscription(
         )
 
     filt = sub_in.filter
+    if filt.board_id and filt.board_id not in ("*", "all"):
+        board = await db.get(Board, filt.board_id)
+        if board is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Board '{filt.board_id}' not found",
+            )
+        if board.workspace_id != workspace_id:
+            return JSONResponse(
+                status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
+                content=error_body(
+                    ErrorCode.WORKSPACE_FORBIDDEN,
+                    "Board is outside the caller's workspace",
+                    details={"board_id": filt.board_id, "workspace_id": workspace_id},
+                ),
+            )
+
     events_str = None
     if filt.events:
         events_str = ",".join(e.strip().upper() for e in filt.events if e.strip())

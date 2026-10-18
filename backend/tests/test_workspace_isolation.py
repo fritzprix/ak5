@@ -148,6 +148,56 @@ async def test_create_ticket_rejects_cross_workspace_board(
 
 
 @pytest.mark.asyncio
+async def test_foreign_principal_cannot_create_inbox_or_subscribe_local(
+    client: AsyncClient, test_db: AsyncSession
+):
+    from ak5.server.auth.bridge import register_bridge
+    from ak5.server.models.actor import Actor
+
+    await ensure_local_tenancy(test_db)
+    await _ensure_other_workspace(test_db)
+    if await test_db.get(Actor, "usr_other") is None:
+        test_db.add(
+            Actor(
+                actor_id="usr_other",
+                actor_type="human",
+                name="Other",
+                role="human",
+                capabilities="[]",
+                status="idle",
+            )
+        )
+    register_bridge("usr_other", "usr_other")
+    await test_db.commit()
+    token = issue_access_token(
+        Principal(
+            principal_id="usr_other",
+            principal_type="user",
+            workspace_id="ws_other",
+            workflow_role=Role.HUMAN,
+            membership_role="owner",
+        )
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    inbox = await client.post(
+        "/api/v1/tickets",
+        headers=headers,
+        json={"title": "into local inbox", "original_request": "leak"},
+    )
+    assert inbox.status_code == 403
+    assert inbox.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+    sub = await client.post(
+        "/api/v1/subscriptions",
+        headers=headers,
+        json={"filter": {"board_id": "proj-core-engine"}, "start": "now"},
+    )
+    assert sub.status_code == 403
+    assert sub.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+
+
+@pytest.mark.asyncio
 async def test_claim_and_comment_reject_cross_workspace_ticket(
     client: AsyncClient, auth_headers, test_db: AsyncSession
 ):

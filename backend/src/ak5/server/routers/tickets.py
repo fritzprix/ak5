@@ -238,6 +238,7 @@ async def create_ticket(
                 priority=req.priority,
                 labels=req.labels,
                 parent_ticket_id=req.parent_ticket_id,
+                workspace_id=workspace_id,
             )
         else:
             spec = req.spec or req.description
