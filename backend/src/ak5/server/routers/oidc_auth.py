@@ -14,6 +14,7 @@ from ak5.server.auth.oidc import (
     discover_endpoints,
     exchange_code,
     fetch_jwks,
+    fetch_oauth_userinfo,
     generate_pkce_pair,
     generate_state_nonce,
     verify_id_token,
@@ -163,26 +164,49 @@ async def oidc_callback(
         redirect_uri=redirect_uri,
         code_verifier=pending["code_verifier"],
     )
-    id_token = token_payload.get("id_token")
-    if not isinstance(id_token, str) or not id_token:
-        raise HTTPException(status_code=400, detail="Token response missing id_token")
-
-    jwks = None
-    if not cfg.id_token_hs_secret:
-        jwks_uri = endpoints.get("jwks_uri") or ""
-        if not jwks_uri:
-            raise HTTPException(status_code=500, detail="Provider JWKS URI missing")
-        jwks = await fetch_jwks(jwks_uri)
 
     try:
-        claims = verify_id_token(
-            cfg,
-            id_token,
-            nonce=pending["nonce"],
-            jwks=jwks,
-        )
+        if cfg.oauth_userinfo:
+            access_token = token_payload.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Token response missing access_token",
+                )
+            claims = await fetch_oauth_userinfo(
+                cfg,
+                endpoints=endpoints,
+                access_token=access_token,
+            )
+        else:
+            id_token = token_payload.get("id_token")
+            if not isinstance(id_token, str) or not id_token:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Token response missing id_token",
+                )
+            jwks = None
+            if not cfg.id_token_hs_secret:
+                jwks_uri = endpoints.get("jwks_uri") or ""
+                if not jwks_uri:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Provider JWKS URI missing",
+                    )
+                jwks = await fetch_jwks(jwks_uri)
+            claims = verify_id_token(
+                cfg,
+                id_token,
+                nonce=pending["nonce"],
+                jwks=jwks,
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"ID token rejected: {exc}") from exc
+        raise HTTPException(
+            status_code=401,
+            detail=f"Identity verification rejected: {exc}",
+        ) from exc
 
     user = await upsert_user_from_oidc(
         db,

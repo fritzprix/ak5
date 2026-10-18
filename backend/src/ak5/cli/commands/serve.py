@@ -49,6 +49,27 @@ def auth_is_configured() -> bool:
     return oidc_providers_configured()
 
 
+def warn_co_located_agent_env() -> None:
+    """Warn when serve runs in an agent-marked environment (identity.md §8.2)."""
+    markers = (
+        "AK5_AGENT",
+        "AK5_AGENT_ID",
+        "AK5_AGENT_ROLE",
+        "CURSOR_AGENT",
+        "CLAUDE_AGENT",
+    )
+    hit = [name for name in markers if os.environ.get(name, "").strip()]
+    if not hit:
+        return
+    console.print(
+        "[bold yellow]Warning:[/bold yellow] Agent environment detected "
+        f"({', '.join(hit)}). On local hosts, agents that share the server OS "
+        "user can read JWT secrets and the DB under [cyan]AK5_DATA_DIR[/cyan] — "
+        "identity checks cannot stop that (identity.md §8.2). Run agents as a "
+        "different OS user/container, or move the server off-box."
+    )
+
+
 def assert_safe_bind(
     host: str,
     *,
@@ -409,6 +430,7 @@ def run_serve(
     assert_dev_insecure_identify_safe(
         host, dev_insecure_identify=dev_insecure_identify, tailscale_serve=tailscale_serve
     )
+    warn_co_located_agent_env()
     if dev_insecure_identify:
         os.environ["AK5_DEV_INSECURE_IDENTIFY"] = "1"
         console.print(

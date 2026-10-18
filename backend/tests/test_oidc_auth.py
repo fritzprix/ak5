@@ -239,3 +239,84 @@ async def test_oidc_callback_rejects_missing_pkce_verifier(
         follow_redirects=False,
     )
     assert resp.status_code == 400
+
+
+def _github_providers_env() -> str:
+    return json.dumps(
+        [
+            {
+                "id": "github",
+                "issuer": "https://github.com",
+                "client_id": "gh-client",
+                "client_secret": "gh-secret",
+            }
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_github_userinfo_callback_creates_session(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("AK5_OIDC_PROVIDERS", _github_providers_env())
+    monkeypatch.setenv("AK5_PUBLIC_URL", "http://test")
+    store_oidc_pending(
+        state="gh-state",
+        provider_id="github",
+        nonce="unused",
+        code_verifier="verifier",
+    )
+
+    async def fake_exchange(*_a, **_k):
+        return {"access_token": "gho_test"}
+
+    async def fake_userinfo(*_a, **_k):
+        from ak5.server.auth.oidc import OidcClaims
+
+        return OidcClaims(
+            issuer="https://github.com",
+            subject="12345",
+            email="dev@users.noreply.github.com",
+            email_verified=True,
+            display_name="dev",
+        )
+
+    monkeypatch.setattr("ak5.server.routers.oidc_auth.exchange_code", fake_exchange)
+    monkeypatch.setattr(
+        "ak5.server.routers.oidc_auth.fetch_oauth_userinfo",
+        fake_userinfo,
+    )
+    resp = await client.get(
+        "/auth/callback",
+        params={"code": "abc", "state": "gh-state"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert SESSION_COOKIE in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_github_login_omits_nonce_query(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("AK5_OIDC_PROVIDERS", _github_providers_env())
+    resp = await client.get(
+        "/auth/login", params={"provider": "github"}, follow_redirects=False
+    )
+    assert resp.status_code == 302
+    qs = parse_qs(urlparse(resp.headers["location"]).query)
+    assert "nonce" not in qs
+    assert qs["code_challenge_method"] == ["S256"]
+
+
+def test_warn_co_located_agent_env(monkeypatch: pytest.MonkeyPatch, capsys):
+    from ak5.cli.commands.serve import warn_co_located_agent_env
+
+    monkeypatch.delenv("AK5_AGENT", raising=False)
+    monkeypatch.delenv("CURSOR_AGENT", raising=False)
+    warn_co_located_agent_env()
+    assert "Agent environment" not in capsys.readouterr().out
+
+    monkeypatch.setenv("AK5_AGENT", "1")
+    warn_co_located_agent_env()
+    assert "identity.md §8.2" in capsys.readouterr().out

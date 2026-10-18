@@ -44,14 +44,22 @@ def _parse_providers_json(raw: str) -> list[OidcProvider]:
             scopes = tuple(s.strip() for s in scopes_raw.split() if s.strip())
         else:
             scopes = tuple(str(s) for s in scopes_raw)
+        is_github = "github.com" in issuer.lower() or bool(
+            item.get("oauth_userinfo") or item.get("github")
+        )
+        default_scopes = (
+            ("read:user", "user:email")
+            if is_github
+            else ("openid", "profile", "email")
+        )
         out.append(
             OidcProvider(
                 id=pid,
                 issuer=issuer,
                 client_id=client_id,
                 client_secret=str(item.get("client_secret") or ""),
-                scopes=scopes or ("openid", "profile", "email"),
-                oauth_userinfo=bool(item.get("oauth_userinfo") or item.get("github")),
+                scopes=scopes or default_scopes,
+                oauth_userinfo=is_github,
                 authorization_endpoint=item.get("authorization_endpoint"),
                 token_endpoint=item.get("token_endpoint"),
                 jwks_uri=item.get("jwks_uri"),
