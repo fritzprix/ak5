@@ -71,11 +71,13 @@ ak5 serve [--host 127.0.0.1] [--port 8000] [--ui] [--daemon]
 ### 4.2 접속 / 신원
 
 ```
-ak5 login [<url>] --id .. --type human|agent --role triage|worker|gatekeeper|human --caps ..
+ak5 login [--profile P] [--workspace W]                                   # user (device grant, client.md §3)
+ak5 login --agent <name> --role triage|worker|gatekeeper [--caps ..] [--profile P]
 ak5 logout | whoami
 ```
 
-`--role`은 위 네 값으로 제한한다.
+- `--role`은 `triage|worker|gatekeeper|human` 네 값으로 제한한다.
+- v1 형식 `--id .. --type human|agent` (self-identify)는 `[legacy]`로 남아 있고 #35에서 제거한다. 새 문서와 예시에는 쓰지 않는다.
 
 ### 4.3 작업 루프용 동사 (외부 루프가 호출)
 
@@ -139,9 +141,11 @@ ak5 daemon install
 ak5 daemon logs [--dead-letter]
 ak5 daemon replay <event_id>
 
-ak5 events poll [--board <id>] --since <cursor>   # 1회 조회, 서버리스 호환
-ak5 events watch <board>                          # 사람 터미널용 SSE
+ak5 events poll [--profile P] [--events ..] [--cursor N]   # 1회 조회 (daemon spool). daemon 없이 서버를 직접 조회하는 경로는 미정
+ak5 events watch <board>                                    # 사람 터미널용 SSE
 ```
+
+- agent 런타임에서 `events watch`(와 deprecated `subscribe watch`)는 exit 2로 거부한다. `board <id> --watch`는 거부 대상이 아니며 도움말에서만 사람용으로 안내한다.
 
 ### 4.7 기타 (유지)
 
