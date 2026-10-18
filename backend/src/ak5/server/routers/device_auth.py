@@ -1,3 +1,9 @@
+"""Legacy actor device-code flow (pre-identity.md §3.3).
+
+Deprecated: new clients must use ``/oauth/device_authorization`` + ``/oauth/token``.
+These routes remain until CLI/SDK migration (#26) and emit ``Deprecation`` headers.
+"""
+
 import json
 import secrets
 import string
@@ -5,7 +11,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +32,23 @@ from ak5.server.schemas.device_auth import (
 )
 from ak5.server.seed import DEFAULT_SYSTEM_ACTORS
 
-router = APIRouter(prefix="/auth/device", tags=["device-auth"])
+_DEPRECATION_LINK = (
+    '</oauth/device_authorization>; rel="successor-version", '
+    '</oauth/token>; rel="successor-version"'
+)
+
+
+def _mark_legacy_device_deprecated(response: Response) -> None:
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = _DEPRECATION_LINK
+    response.headers["Sunset"] = "Sat, 18 Apr 2026 00:00:00 GMT"
+
+
+router = APIRouter(
+    prefix="/auth/device",
+    tags=["device-auth"],
+    dependencies=[Depends(_mark_legacy_device_deprecated)],
+)
 
 CODE_EXPIRE_MINUTES = 10
 POLL_INTERVAL_SECONDS = 3

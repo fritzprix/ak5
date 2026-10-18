@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.payloads import Finding, Verdict
 from ak5.contracts.stages import BlockedKind
+from ak5.server.authz import RoleForbiddenError, require_board_scope
 from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
@@ -53,6 +54,7 @@ from ak5.server.schemas.ticket import (
     UnblockRequest,
     VerdictRequest,
 )
+from ak5.server.seed import INBOX_BOARD_ID
 from ak5.server.services import workflow as wf
 from ak5.server.services.event_log import record_event
 from ak5.server.services.ticket_status import derive_status
@@ -77,6 +79,17 @@ def _workspace_forbidden_ticket(ticket_id: str, workspace_id: str) -> JSONRespon
             details={"ticket_id": ticket_id, "workspace_id": workspace_id},
         ),
     )
+
+
+def _enforce_agent_board_scope(actor: Actor, board_id: str) -> None:
+    """Raise HTTP 403 when an agent writes outside ``board_scope`` (identity.md §4.3)."""
+    try:
+        require_board_scope(actor, board_id, inbox_board_id=INBOX_BOARD_ID)
+    except RoleForbiddenError as exc:
+        raise HTTPException(
+            status_code=HTTP_STATUS[ErrorCode.ROLE_FORBIDDEN],
+            detail=error_body(ErrorCode.ROLE_FORBIDDEN, exc.message),
+        ) from exc
 
 
 async def _reject_cross_workspace_ticket(
@@ -826,6 +839,7 @@ async def add_comment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
     if ticket.workspace_id != workspace_id:
         return _workspace_forbidden_ticket(ticket_id, workspace_id)
+    _enforce_agent_board_scope(current_actor, ticket.board_id)
 
     comment_id = f"cmt_{uuid.uuid4().hex[:8]}"
     comment = TicketComment(
@@ -891,6 +905,7 @@ async def upload_attachment(
         )
     if ticket.workspace_id != workspace_id:
         return _workspace_forbidden_ticket(ticket_id, workspace_id)
+    _enforce_agent_board_scope(current_actor, ticket.board_id)
 
     raw_filename = file.filename or "attachment.bin"
     # Extract only the base name to prevent directory traversal

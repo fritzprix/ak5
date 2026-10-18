@@ -121,6 +121,53 @@ def require_roles(subject: Actor | Principal, *allowed: Role) -> Role:
     return role
 
 
+def board_in_scope(
+    subject: Actor | Principal,
+    board_id: str,
+    *,
+    inbox_board_id: str = "inbox",
+) -> bool:
+    """True when an agent may touch ``board_id`` (identity.md §4.3).
+
+    Empty ``board_scope`` means all boards. Inbox is always in scope.
+    Users and legacy Actor JWTs (no Principal) are unrestricted here.
+    """
+    principal = subject if isinstance(subject, Principal) else principal_of(subject)
+    if principal is None or principal.principal_type != "agent":
+        return True
+    if not principal.board_scope:
+        return True
+    if board_id == inbox_board_id:
+        return True
+    return board_id in principal.board_scope
+
+
+def require_board_scope(
+    subject: Actor | Principal,
+    board_id: str,
+    *,
+    inbox_board_id: str = "inbox",
+) -> None:
+    """Raise :class:`RoleForbiddenError` when ``board_id`` is outside agent scope."""
+    if board_in_scope(subject, board_id, inbox_board_id=inbox_board_id):
+        return
+    if isinstance(subject, Principal):
+        label = f"{subject.principal_type}:{subject.principal_id}"
+        scope = subject.board_scope
+    else:
+        attached = principal_of(subject)
+        label = (
+            f"{attached.principal_type}:{attached.principal_id}"
+            if attached is not None
+            else subject.actor_id
+        )
+        scope = attached.board_scope if attached is not None else ()
+    raise RoleForbiddenError(
+        f"Agent '{label}' cannot access board '{board_id}' "
+        f"(board_scope={list(scope)})",
+    )
+
+
 def actor_has_capabilities(actor: Actor, required: list[str] | tuple[str, ...] | None) -> bool:
     """True when ``required`` is empty or every required capability is on the actor."""
     if not required:
