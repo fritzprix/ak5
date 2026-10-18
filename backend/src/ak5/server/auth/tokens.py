@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
@@ -11,8 +12,9 @@ from typing import Annotated, Any
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.stages import Role
@@ -26,6 +28,9 @@ _security = HTTPBearer(auto_error=False)
 
 _AGENT_ROLES = frozenset({Role.TRIAGE.value, Role.WORKER.value, Role.GATEKEEPER.value})
 _AGENT_TOKEN_PREFIX = "ak5_agt_"
+# Throttle last_used_at writes so auth does not touch SQLite on every poll (#65).
+_LAST_USED_MIN_INTERVAL = timedelta(seconds=60)
+logger = logging.getLogger(__name__)
 
 
 def issue_access_token(
@@ -70,6 +75,59 @@ def _decode_claims(token: str) -> dict[str, Any]:
     return payload
 
 
+async def _touch_agent_credential_last_used(
+    db: AsyncSession,
+    credential_id: str,
+    *,
+    previous: datetime | None,
+    now: datetime,
+) -> None:
+    """Update ``last_used_at`` in a short-lived session on the same bind (#65).
+
+    Must not leave an uncommitted write on the request-scoped session — a
+    long-poll holds that session open and would otherwise keep SQLite's write
+    lock for the whole wait.
+    """
+    if previous is not None:
+        prev = previous.replace(tzinfo=None) if previous.tzinfo else previous
+        if now - prev < _LAST_USED_MIN_INTERVAL:
+            return
+    try:
+        # ``db.bind`` is the AsyncEngine; ``get_bind()`` returns a sync Engine
+        # and cannot be passed to ``async_sessionmaker``.
+        engine = db.bind
+        if engine is None:
+            from ak5.server.database import engine as app_engine
+
+            engine = app_engine
+
+        # In-memory tests use StaticPool (one connection). Opening a parallel
+        # session would deadlock, so commit a targeted UPDATE on this session
+        # immediately — still releases the write lock before long-poll waits.
+        if isinstance(engine.sync_engine.pool, StaticPool):
+            await db.execute(
+                update(AgentCredential)
+                .where(AgentCredential.credential_id == credential_id)
+                .values(last_used_at=now)
+            )
+            await db.commit()
+            return
+
+        factory = async_sessionmaker(
+            bind=engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+        async with factory() as session, session.begin():
+            row = await session.get(AgentCredential, credential_id)
+            if row is None or row.revoked_at is not None:
+                return
+            row.last_used_at = now
+    except Exception:  # noqa: BLE001 — auth must not fail on telemetry write
+        logger.debug("last_used_at touch failed for %s", credential_id, exc_info=True)
+
+
 async def _verify_opaque_agent_token(token: str, db: AsyncSession) -> Principal:
     """Resolve ``ak5_agt_…`` credential → Principal (identity.md §4.3)."""
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -98,8 +156,8 @@ async def _verify_opaque_agent_token(token: str, db: AsyncSession) -> Principal:
             detail="Agent not found or disabled",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    cred.last_used_at = now
-    await db.flush()
+    credential_id = cred.credential_id
+    previous_used = cred.last_used_at
     try:
         cred_scope = json.loads(cred.board_scope) if cred.board_scope else []
         if isinstance(cred_scope, list) and cred_scope:
@@ -108,7 +166,7 @@ async def _verify_opaque_agent_token(token: str, db: AsyncSession) -> Principal:
             scope = tuple(agent.board_scope_list)
     except (json.JSONDecodeError, TypeError):
         scope = tuple(agent.board_scope_list)
-    return Principal(
+    principal = Principal(
         principal_id=agent.agent_id,
         principal_type="agent",
         workspace_id=agent.workspace_id,
@@ -116,6 +174,11 @@ async def _verify_opaque_agent_token(token: str, db: AsyncSession) -> Principal:
         membership_role=None,
         board_scope=scope,
     )
+    # Separate short commit — never leave a write on the request session (#65).
+    await _touch_agent_credential_last_used(
+        db, credential_id, previous=previous_used, now=now
+    )
+    return principal
 
 
 async def verify_access_token(token: str, db: AsyncSession) -> Principal:
