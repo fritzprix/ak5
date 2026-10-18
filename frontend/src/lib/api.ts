@@ -20,7 +20,9 @@ import {
   expiresAtFromNow,
   fetchWithAuthRetry,
   isCachedTokenUsable,
+  sharedInFlight,
 } from "./authToken";
+import { attachmentUrl, fetchAttachmentBlob, saveBlob } from "./attachmentDownload";
 import { fetchWithCsrf, mapOauthDeviceRequest } from "./webSession";
 
 export type { CreateTicketOptions } from "./createTicketPayload";
@@ -63,6 +65,7 @@ export function getEventsStreamUrl(): string {
 export const DASHBOARD_ACTOR_ID = "user_pm";
 
 let cachedAuth: CachedAuthToken | null = null;
+const mintInFlight = new Map<string, Promise<string>>();
 
 export function getStoredWorkspaceId(): string | null {
   if (typeof window === "undefined") return null;
@@ -89,7 +92,11 @@ export async function getAuthToken(): Promise<string> {
   if (isCachedTokenUsable(cachedAuth, desiredWs)) {
     return cachedAuth.token;
   }
+  // Parallel API calls on board load share one mint (#72).
+  return sharedInFlight(mintInFlight, desiredWs ?? "", () => mintAuthToken(desiredWs));
+}
 
+async function mintAuthToken(desiredWs: string | null): Promise<string> {
   // Prefer web-session → Principal JWT so workspace APIs see the signed-in user (#27).
   try {
     const res = await fetchWithCsrf("/auth/session/token", {
@@ -338,12 +345,18 @@ export async function addComment(
   return res.json();
 }
 
-export function getAttachmentDownloadUrl(ticketId: string, attachmentId: string): string {
-  const base = `${API_BASE}/tickets/${ticketId}/attachments/${attachmentId}`;
-  if (isCachedTokenUsable(cachedAuth, null)) {
-    return `${base}?access_token=${encodeURIComponent(cachedAuth.token)}`;
-  }
-  return base;
+/** Download at click time via the authorized path (re-mints on 401; no token in the URL). */
+export async function downloadAttachment(
+  ticketId: string,
+  attachmentId: string,
+  filename: string
+): Promise<void> {
+  const blob = await fetchAttachmentBlob(attachmentUrl(API_BASE, ticketId, attachmentId), {
+    fetch: (url, init) => fetch(url, init),
+    getToken: getAuthToken,
+    invalidate: clearAuthTokenCache,
+  });
+  saveBlob(blob, filename);
 }
 
 export async function uploadAttachment(

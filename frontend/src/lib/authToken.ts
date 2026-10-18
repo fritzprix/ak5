@@ -48,3 +48,21 @@ export async function fetchWithAuthRetry(
   invalidate();
   return send(await getToken());
 }
+
+/**
+ * Share one in-flight promise per key so concurrent callers trigger a single
+ * mint; the entry is dropped once it settles.
+ */
+export function sharedInFlight<T>(
+  inflight: Map<string, Promise<T>>,
+  key: string,
+  run: () => Promise<T>
+): Promise<T> {
+  const existing = inflight.get(key);
+  if (existing) return existing;
+  const promise = run().finally(() => {
+    inflight.delete(key);
+  });
+  inflight.set(key, promise);
+  return promise;
+}

@@ -6,6 +6,7 @@ import {
   expiresAtFromNow,
   fetchWithAuthRetry,
   isCachedTokenUsable,
+  sharedInFlight,
 } from "./authToken";
 
 describe("expiresAtFromNow", () => {
@@ -105,5 +106,46 @@ describe("fetchWithAuthRetry", () => {
     );
     assert.equal(res.status, 401);
     assert.equal(calls, 2);
+  });
+});
+
+describe("sharedInFlight", () => {
+  it("runs once for concurrent callers with the same key", async () => {
+    const inflight = new Map<string, Promise<string>>();
+    let runs = 0;
+    let release!: (v: string) => void;
+    const run = () => {
+      runs += 1;
+      return new Promise<string>((resolve) => {
+        release = resolve;
+      });
+    };
+    const a = sharedInFlight(inflight, "ws_a", run);
+    const b = sharedInFlight(inflight, "ws_a", run);
+    release("tok");
+    assert.deepEqual(await Promise.all([a, b]), ["tok", "tok"]);
+    assert.equal(runs, 1);
+  });
+
+  it("starts a new run after the previous one settles, including on failure", async () => {
+    const inflight = new Map<string, Promise<string>>();
+    let runs = 0;
+    await assert.rejects(
+      sharedInFlight(inflight, "", async () => {
+        runs += 1;
+        throw new Error("boom");
+      })
+    );
+    assert.equal(await sharedInFlight(inflight, "", async () => `run-${++runs}`), "run-2");
+    assert.equal(inflight.size, 0);
+  });
+
+  it("keeps different workspaces independent", async () => {
+    const inflight = new Map<string, Promise<string>>();
+    const [a, b] = await Promise.all([
+      sharedInFlight(inflight, "ws_a", async () => "a"),
+      sharedInFlight(inflight, "ws_b", async () => "b"),
+    ]);
+    assert.deepEqual([a, b], ["a", "b"]);
   });
 });
