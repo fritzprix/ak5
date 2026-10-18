@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
@@ -17,12 +19,13 @@ from ak5.contracts.stages import Role
 from ak5.server.auth.principal import Principal
 from ak5.server.config import settings
 from ak5.server.database import get_db
-from ak5.server.models.workspace import Agent, Membership, User
+from ak5.server.models.workspace import Agent, AgentCredential, Membership, User
 from ak5.server.security import get_jwt_secret
 
 _security = HTTPBearer(auto_error=False)
 
 _AGENT_ROLES = frozenset({Role.TRIAGE.value, Role.WORKER.value, Role.GATEKEEPER.value})
+_AGENT_TOKEN_PREFIX = "ak5_agt_"
 
 
 def issue_access_token(
@@ -67,8 +70,58 @@ def _decode_claims(token: str) -> dict[str, Any]:
     return payload
 
 
+async def _verify_opaque_agent_token(token: str, db: AsyncSession) -> Principal:
+    """Resolve ``ak5_agt_…`` credential → Principal (identity.md §4.3)."""
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    cred = (
+        await db.execute(
+            select(AgentCredential).where(AgentCredential.token_hash == token_hash)
+        )
+    ).scalar_one_or_none()
+    if cred is None or cred.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent credential invalid or revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if cred.expires_at is not None and cred.expires_at <= now:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent credential expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    agent = await db.get(Agent, cred.agent_id)
+    if agent is None or agent.disabled_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent not found or disabled",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    cred.last_used_at = now
+    await db.flush()
+    try:
+        cred_scope = json.loads(cred.board_scope) if cred.board_scope else []
+        if isinstance(cred_scope, list) and cred_scope:
+            scope = tuple(str(item) for item in cred_scope)
+        else:
+            scope = tuple(agent.board_scope_list)
+    except (json.JSONDecodeError, TypeError):
+        scope = tuple(agent.board_scope_list)
+    return Principal(
+        principal_id=agent.agent_id,
+        principal_type="agent",
+        workspace_id=agent.workspace_id,
+        workflow_role=Role(agent.workflow_role),
+        membership_role=None,
+        board_scope=scope,
+    )
+
+
 async def verify_access_token(token: str, db: AsyncSession) -> Principal:
-    """Verify signature/exp and re-load Principal from DB (disabled agents rejected)."""
+    """Verify JWT or opaque agent credential; re-load Principal from DB."""
+    if token.startswith(_AGENT_TOKEN_PREFIX):
+        return await _verify_opaque_agent_token(token, db)
     payload = _decode_claims(token)
     principal_id = str(payload.get("sub") or "")
     principal_type = payload.get("principal_type")

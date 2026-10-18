@@ -28,6 +28,7 @@ class OAuthDeviceCode(Base):
     requested_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     requested_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
     requested_capabilities: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    requested_board_scope: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     last_poll_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     user_code_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
