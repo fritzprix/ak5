@@ -1,5 +1,7 @@
+from pathlib import Path
+
 import pytest
-from ak5.server.auth.sessions import SESSION_COOKIE
+from ak5.server.auth.sessions import CSRF_HEADER, SESSION_COOKIE
 from ak5.web_auth import reset_rate_limits_for_tests
 from httpx import AsyncClient
 
@@ -102,15 +104,56 @@ async def test_web_auth_logout_revokes_session(client: AsyncClient, monkeypatch)
     )
     assert ok.status_code == 200
     assert client.cookies.get(SESSION_COOKIE)
+    csrf = ok.json()["csrf"]
 
     status_ok = await client.get("/api/auth/status")
     assert status_ok.json()["authenticated"] is True
 
-    logout = await client.post("/api/auth/logout")
+    # Cookie-only CSRF must fail and keep the session (#56).
+    cookie_only = await client.post("/api/auth/logout")
+    assert cookie_only.status_code == 403
+    still = await client.get("/api/auth/status")
+    assert still.json()["authenticated"] is True
+
+    logout = await client.post(
+        "/api/auth/logout", headers={CSRF_HEADER: csrf}
+    )
     assert logout.status_code == 200
 
     status_after = await client.get("/api/auth/status")
     assert status_after.json()["authenticated"] is False
+
+
+@pytest.mark.asyncio
+async def test_oidc_logout_requires_csrf_header(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("AK5_AUTH_PASSWORD", "local-secret")
+    login = await client.post("/auth/local/login", json={"password": "local-secret"})
+    assert login.status_code == 200
+    csrf = login.json()["csrf"]
+
+    denied = await client.post("/auth/logout")
+    assert denied.status_code == 403
+    me = await client.get("/auth/me")
+    assert me.json()["authenticated"] is True
+
+    ok = await client.post("/auth/logout", headers={CSRF_HEADER: csrf})
+    assert ok.status_code == 200
+    me2 = await client.get("/auth/me")
+    assert me2.json()["authenticated"] is False
+
+
+def test_no_csrf_cookie_fallback_in_server_source():
+    """Regression lock: never treat CSRF cookie as the submitted token."""
+    root = Path(__file__).resolve().parents[1] / "src" / "ak5" / "server"
+    offenders: list[str] = []
+    needle = "or request.cookies.get(CSRF_COOKIE)"
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if needle in text:
+            offenders.append(str(path.relative_to(root)))
+    assert offenders == []
 
 
 def test_detect_tailscale_without_cli(monkeypatch):

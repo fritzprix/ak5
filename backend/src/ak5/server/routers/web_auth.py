@@ -5,15 +5,15 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
-    CSRF_HEADER,
     SESSION_COOKIE,
     create_web_session_tokens,
-    csrf_matches,
+    require_csrf_header,
     resolve_web_session,
     revoke_web_session,
 )
@@ -117,22 +117,27 @@ async def web_login(
     return {"success": True, "user_id": user.user_id, "csrf": csrf}
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=None)
 async def web_logout(
     request: Request,
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, bool]:
+) -> dict[str, bool] | JSONResponse:
+    """Revoke web session — CSRF **header only**; cookie fallback removed (#56)."""
     secure = _is_secure(request)
     cookie = request.cookies.get(SESSION_COOKIE)
     if cookie:
-        presented = request.headers.get(CSRF_HEADER) or request.cookies.get(CSRF_COOKIE)
         resolved = await resolve_web_session(db, cookie)
         if resolved is not None:
             _uid, csrf_hash = resolved
-            if csrf_matches(presented, csrf_hash):
-                await revoke_web_session(db, cookie)
-                await db.commit()
+            if not require_csrf_header(request.headers, csrf_hash):
+                # Keep session cookies — failed CSRF must not log the user out.
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "CSRF validation failed", "success": False},
+                )
+            await revoke_web_session(db, cookie)
+            await db.commit()
     for key in (SESSION_COOKIE, CSRF_COOKIE, COOKIE_NAME):
         response.set_cookie(
             key=key,
