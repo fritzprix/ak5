@@ -72,7 +72,14 @@ def _whoami_from_profile(profile_name: str) -> bool:
 @click.command("whoami")
 @click.option("--profile", default=None, help="Daemon profile to inspect")
 def whoami_command(profile: str | None) -> None:
-    """Show the active daemon profile or project-bound actor session."""
+    """Show the active daemon profile or project-bound actor session.
+
+    Agents:
+      - Prefer whoami over inventing a new --id.
+      - Copy the plain Actor ID (no leading @) into AK5_ACTOR_ID.
+      - If ambiguous, match role/caps under .ak5/identity/, then export + whoami.
+      - Next after a healthy session: ak5 subscribe create … && ak5 subscribe ls
+    """
     profile_name = resolve_profile_name(profile)
     if profile_name and _whoami_from_profile(profile_name):
         return
@@ -152,3 +159,8 @@ def whoami_command(profile: str | None) -> None:
         pass
 
     console.print(Panel(table, title="Current AK5 Session", expand=False))
+    console.print(
+        f"[dim]Bind shells:[/dim] export AK5_ACTOR_ID={actor_id}\n"
+        "[dim]Next (agents):[/dim] ak5 subscribe create <BOARD> "
+        f"--for-agent {actor_id} --exec '<YOUR_HARNESS_WAKE>' && ak5 subscribe ls"
+    )

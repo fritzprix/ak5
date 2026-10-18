@@ -226,7 +226,7 @@ def _legacy_identify_login(
     "--id",
     "actor_id",
     default=None,
-    help="[legacy] Actor id for insecure identify (dev only)",
+    help="[legacy] Stable actor id WITHOUT leading '@'. '@' is stripped if present.",
 )
 @click.option(
     "--role",
