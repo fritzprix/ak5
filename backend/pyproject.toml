@@ -33,13 +33,6 @@ classifiers = [
     "Environment :: Web Environment",
 ]
 
-[project.urls]
-Homepage = "https://github.com/fritzprix/ak5"
-Documentation = "https://github.com/fritzprix/ak5/blob/master/docs/MANUAL.md"
-Repository = "https://github.com/fritzprix/ak5"
-Issues = "https://github.com/fritzprix/ak5/issues"
-Changelog = "https://github.com/fritzprix/ak5/releases"
-PyPI = "https://pypi.org/project/ak5/"
 dependencies = [
     # Client / daemon / CLI (daemon UDS IPC uses FastAPI + uvicorn)
     "fastapi>=0.115.0",
@@ -49,6 +42,14 @@ dependencies = [
     "click>=8.1.0",
     "rich>=13.7.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/fritzprix/ak5"
+Documentation = "https://github.com/fritzprix/ak5/blob/master/docs/MANUAL.md"
+Repository = "https://github.com/fritzprix/ak5"
+Issues = "https://github.com/fritzprix/ak5/issues"
+Changelog = "https://github.com/fritzprix/ak5/releases"
+PyPI = "https://pypi.org/project/ak5/"
 
 [project.optional-dependencies]
 server = [
