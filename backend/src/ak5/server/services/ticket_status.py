@@ -1,8 +1,8 @@
 """Derive ticket ``status`` for API backward compatibility (workflow.md §2).
 
 ``status`` is a derived field: done → done, blocked → blocked, claimed →
-in_progress, else → open. Callers should persist the derived value when
-mutating claim / blocked / stage state.
+in_progress, else → open. It is not stored; ``Ticket.status`` is a hybrid
+property built on :func:`derive_status` (SQL side: ``Ticket._status_expression``).
 """
 
 from __future__ import annotations
@@ -16,25 +16,6 @@ class _TicketLike(Protocol):
     blocked_by: str | None
     claim_token: str | None
     lease_expires_at: datetime | None
-
-
-# Legacy mapping used by v1 move/create paths until transition API (#10).
-STAGE_TO_STATUS: dict[str, str] = {
-    "unclassified": "open",
-    "backlog": "open",
-    "open": "open",  # legacy stage name (pre-migration)
-    "in_progress": "in_progress",
-    "agent_review": "in_progress",
-    "review": "in_progress",  # legacy stage name (pre-migration)
-    "postmortem_pending": "in_progress",
-    "human_review": "in_progress",
-    "done": "done",
-}
-
-
-def status_for_column_stage(stage: str) -> str:
-    """Return the workflow status implied by a column stage (v1 compatibility)."""
-    return STAGE_TO_STATUS.get(stage, "open")
 
 
 def _resolve_stage(ticket: Any) -> str | None:

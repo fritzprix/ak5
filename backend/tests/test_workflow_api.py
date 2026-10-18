@@ -624,6 +624,49 @@ async def test_next_and_lease_reclaim(client: AsyncClient, roles, test_db: Async
 
 
 @pytest.mark.asyncio
+async def test_status_is_derived_in_api_and_sql_filters(
+    client: AsyncClient, roles, test_db: AsyncSession
+):
+    """#35: no stored status — API value and ``Ticket.status`` SQL filter agree."""
+    human = _h(roles, "user_pm", "human")
+    worker = _h(roles, "agent_worker")
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Derived"), headers=human)
+    ).json()["ticket_id"]
+
+    async def _filtered(value: str) -> set[str]:
+        res = await client.get(
+            "/api/v1/tickets",
+            params={"board_id": "proj-core-engine", "status": value},
+            headers=human,
+        )
+        assert res.status_code == 200, res.text
+        return {t["ticket_id"] for t in res.json()}
+
+    assert tid in await _filtered("open")
+    claim = await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)
+    assert claim.status_code == 200, claim.text
+    assert claim.json()["ticket"]["status"] == "in_progress"
+    assert tid in await _filtered("in_progress")
+    assert tid not in await _filtered("open")
+
+    # SQL expression honours lease expiry without any reclaim pass.
+    ticket = await test_db.get(Ticket, tid)
+    assert ticket is not None
+    ticket.lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+    await test_db.commit()
+    open_ids = set(
+        (await test_db.execute(select(Ticket.ticket_id).where(Ticket.status == "open")))
+        .scalars()
+        .all()
+    )
+    assert tid in open_ids
+    test_db.expire_all()
+    reloaded = await test_db.get(Ticket, tid)
+    assert reloaded is not None and reloaded.status == "open"
+
+
+@pytest.mark.asyncio
 async def test_forbidden_role_on_claim(client: AsyncClient, roles):
     human = _h(roles, "user_pm", "human")
     tid = (
@@ -700,7 +743,6 @@ async def test_agent_with_human_role_cannot_t15_to_done(client: AsyncClient, rol
     """High: role=human on actor_type=agent must not unlock T15 (done is human-only)."""
     from ak5.models.column import Column
     from ak5.models.ticket import Ticket as TicketModel
-    from ak5.services.ticket_status import derive_status
     from sqlalchemy.orm import selectinload
 
     human = _h(roles, "user_pm", "human")
@@ -730,7 +772,6 @@ async def test_agent_with_human_role_cannot_t15_to_done(client: AsyncClient, rol
     assert hr is not None
     ticket.column_id = hr.column_id
     ticket.column = hr
-    ticket.status = derive_status(ticket)
     await test_db.commit()
 
     spoof_headers = _h(roles, "agent_spoof_human", "agent")
@@ -870,7 +911,6 @@ async def test_move_t16_requires_reason_and_records_review(
     from ak5.models.column import Column
     from ak5.models.ticket import Ticket as TicketModel
     from ak5.models.ticket_review import TicketReview
-    from ak5.services.ticket_status import derive_status
     from sqlalchemy.orm import selectinload
 
     human = _h(roles, "user_pm", "human")
@@ -888,7 +928,6 @@ async def test_move_t16_requires_reason_and_records_review(
     assert hr is not None
     ticket.column_id = hr.column_id
     ticket.column = hr
-    ticket.status = derive_status(ticket)
     await test_db.commit()
 
     missing = await client.patch(

@@ -52,7 +52,6 @@ from ak5.server.services.templates import (
     get_template,
     template_column_dicts,
 )
-from ak5.server.services.ticket_status import derive_status
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -377,10 +376,6 @@ def is_claim_valid(ticket: Ticket, *, now: datetime | None = None) -> bool:
     return expires > ref
 
 
-def _sync_status(ticket: Ticket) -> None:
-    ticket.status = derive_status(ticket, now=_now())
-
-
 async def _column_for_stage(
     db: AsyncSession,
     board_id: str,
@@ -648,7 +643,6 @@ async def _finish_transition(
     extra_audit: dict[str, Any] | None = None,
     from_board_id: str | None = None,
 ) -> Ticket:
-    _sync_status(ticket)
     await _write_audit(
         db,
         actor_id=actor.actor_id,
@@ -733,7 +727,6 @@ async def _apply_escalation(db: AsyncSession, ticket: Ticket, actor: Actor) -> b
     ticket.blocked_by = f"attempt {ticket.attempt} reached max_attempts ({ticket.max_attempts})"
     ticket.blocked_since = now
     ticket.blocked_actor = "system"
-    _sync_status(ticket)
     await record_event(
         db,
         EventType.TICKET_BLOCKED,
@@ -790,7 +783,6 @@ async def reclaim_expired_leases(
             # T20: stay on stage, just unclaim
             to_stage = stage
             op = "lease_expire_t20"
-        _sync_status(ticket)
         await _write_audit(
             db,
             actor_id=system_actor_id,
@@ -814,23 +806,6 @@ async def reclaim_expired_leases(
     if affected:
         await db.flush()
     return affected
-
-
-async def recompute_all_ticket_statuses(db: AsyncSession) -> int:
-    """Idempotent startup pass: rewrite stored ``status`` via :func:`derive_status`."""
-    tickets = (
-        await db.execute(select(Ticket).options(selectinload(Ticket.column)))
-    ).scalars().all()
-    changed = 0
-    now = _now()
-    for ticket in tickets:
-        new_status = derive_status(ticket, now=now)
-        if ticket.status != new_status:
-            ticket.status = new_status
-            changed += 1
-    if changed:
-        await db.flush()
-    return changed
 
 
 async def clear_assignees_without_claim(db: AsyncSession) -> int:
@@ -1033,7 +1008,6 @@ async def create_inbox(
     )
     ticket.column = column
     ticket.board = inbox
-    _sync_status(ticket)
     db.add(ticket)
     await db.flush()
     await record_event(
@@ -1123,7 +1097,6 @@ async def create_direct(
     )
     ticket.column = column
     ticket.board = board
-    _sync_status(ticket)
     db.add(ticket)
     await db.flush()
 
@@ -1315,7 +1288,6 @@ async def heartbeat(
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "heartbeat requires in_progress stage")
     _require_own_claim(ticket, actor, claim_token)
     ticket.lease_expires_at = _naive(_now() + timedelta(seconds=settings.CLAIM_LEASE_TTL_SECONDS))
-    _sync_status(ticket)
     return await _reload_ticket(db, ticket.ticket_id)
 
 
@@ -1986,7 +1958,6 @@ async def block_ticket(
     ticket.blocked_by = reason
     ticket.blocked_since = _naive(_now())
     ticket.blocked_actor = actor.actor_id
-    _sync_status(ticket)
 
     await record_event(
         db,
@@ -2070,7 +2041,6 @@ async def unblock_ticket(
     ticket.blocked_by = None
     ticket.blocked_since = None
     ticket.blocked_actor = None
-    _sync_status(ticket)
 
     await record_event(
         db,
@@ -2214,7 +2184,6 @@ async def move_ticket_constrained(
             ticket.column_id = target_column_id
             ticket.column = target
             ticket.rank = rank_between(prev_rank, next_rank)
-            _sync_status(ticket)
             await db.flush()
         return await _reload_ticket(db, ticket.ticket_id)
 
@@ -2236,7 +2205,6 @@ async def move_ticket_constrained(
     ticket.board_id = target.board_id
     ticket.column = target
     ticket.rank = rank_between(prev_rank, next_rank)
-    _sync_status(ticket)
 
     await _write_audit(
         db,

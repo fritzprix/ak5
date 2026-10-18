@@ -404,7 +404,7 @@ async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
             await conn.execute(
                 text(
                     """
-                    SELECT t.column_id, c.stage, t.status
+                    SELECT t.column_id, c.stage
                     FROM tickets t
                     JOIN columns c ON c.column_id = t.column_id
                     WHERE t.ticket_id = 't_ip'
@@ -412,8 +412,9 @@ async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
                 )
             )
         ).one()
-        assert t_ip[1] == "backlog"
-        assert t_ip[2] == "open"
+        assert t_ip[1] == "backlog"  # derived status: open (no claim, not blocked)
+        cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(tickets)"))).fetchall()}
+        assert "status" not in cols  # #35: no stored status
 
     await engine.dispose()
 

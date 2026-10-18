@@ -517,17 +517,17 @@ async def update_ticket(
         ticket.label_list = data["labels"]
     if "status" in data and data["status"] is not None:
         requested_status = data["status"]
-        # Non-blocked status writes are derived; never bypass B1/B2 via PATCH.
-        if ticket.blocked_kind is None and ticket.blocked_by:
-            ticket.blocked_by = None
+        # status is derived (workflow.md §2); never bypass B1/B2 via PATCH.
         column = await db.get(Column, ticket.column_id)
         if column is not None:
             ticket.column = column
+        previous_status = derive_status(ticket)
+        if ticket.blocked_kind is None and ticket.blocked_by:
+            ticket.blocked_by = None
         synced_status = derive_status(ticket)
-        changes["status"] = (ticket.status, synced_status)
+        changes["status"] = (previous_status, synced_status)
         if requested_status != synced_status:
             changes["status_coerced_from"] = requested_status
-        ticket.status = synced_status
     if "execution_context" in data:
         changes["execution_context"] = True
         ticket.execution_context_dict = data["execution_context"]

@@ -543,6 +543,36 @@ def migrate_sqlite_column_stages(sync_conn: Connection) -> None:
     )
 
 
+def migrate_sqlite_drop_ticket_status(sync_conn: Connection) -> None:
+    """Drop the stored ``tickets.status`` column and its CHECK (#35, workflow.md §2).
+
+    ``status`` is derived from stage / claim / blocked. SQLite cannot DROP a
+    column referenced by a table CHECK, so rebuild ``tickets`` from the current
+    model DDL and copy the shared columns. Run after the ADD COLUMN passes so
+    every model column already exists in the old table.
+
+    Caller must disable foreign_keys outside any transaction (``_run_sqlite_table_rebuild``).
+    """
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    from ak5.server.models.ticket import Ticket
+
+    if "status" not in _table_column_names(sync_conn, "tickets"):
+        return
+    old_cols = _table_column_names(sync_conn, "tickets")
+    table = Ticket.__table__
+    tmp = "tickets__mig_status"
+    ddl = str(CreateTable(table).compile(dialect=sync_conn.dialect))
+    sync_conn.execute(text(ddl.replace("CREATE TABLE tickets ", f"CREATE TABLE {tmp} ", 1)))
+    cols = ", ".join(c.name for c in table.columns if c.name in old_cols)
+    sync_conn.execute(text(f"INSERT INTO {tmp} ({cols}) SELECT {cols} FROM tickets"))
+    sync_conn.execute(text("DROP TABLE tickets"))
+    # The copied self-FK text says "tickets", so it points at the renamed table.
+    sync_conn.execute(text(f"ALTER TABLE {tmp} RENAME TO tickets"))
+    for index in table.indexes:
+        sync_conn.execute(CreateIndex(index, if_not_exists=True))
+
+
 async def _run_sqlite_table_rebuild(
     async_engine: AsyncEngine,
     migrate_fn: Callable[[Connection], None],
@@ -589,6 +619,9 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
     # Table rebuilds may drop workspace_id — re-apply ADD COLUMN for any gaps.
     async with async_engine.begin() as conn:
         await conn.run_sync(migrate_sqlite_workspace_id_columns)
+
+    # Last: needs every model column present in the old tickets table.
+    await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_drop_ticket_status)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:

@@ -4,7 +4,6 @@ import pytest
 from ak5.models.actor import Actor
 from ak5.models.column import Column
 from ak5.models.ticket import Ticket
-from ak5.services.ticket_status import derive_status
 from helpers_workflow import board_ticket
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -131,7 +130,6 @@ async def test_board_done_limit_and_archive_filter(client: AsyncClient, auth_hea
         ).scalar_one()
         ticket.column_id = done_col.column_id
         ticket.column = done_col
-        ticket.status = derive_status(ticket)
     await test_db.commit()
 
     arc_res = await client.post(f"/api/v1/tickets/{created_ids[0]}/archive", headers=headers)

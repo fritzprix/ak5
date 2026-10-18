@@ -12,7 +12,8 @@ from ak5.contracts.stages import STANDARD_STAGES
 from ak5.database import run_sqlite_schema_migrations
 from ak5.models.base import Base
 from ak5.seed import seed_initial_data
-from sqlalchemy import event, text
+from ak5.server.models.ticket import Ticket
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -90,18 +91,39 @@ async def test_v1_fixture_migration_idempotent(tmp_path, monkeypatch):
         assert "open" not in stages and "review" not in stages
         assert {s.value for s in STANDARD_STAGES} <= stages
 
-        t_ip = (
+        t_ip_stage = (
             await conn.execute(
                 text(
                     """
-                    SELECT c.stage, t.status FROM tickets t
+                    SELECT c.stage FROM tickets t
                     JOIN columns c ON c.column_id = t.column_id
                     WHERE t.ticket_id = 't_ip'
                     """
                 )
             )
-        ).one()
-        assert t_ip[0] == "backlog"
-        assert t_ip[1] == "open"
+        ).scalar_one()
+        assert t_ip_stage == "backlog"
+
+        # #35: status is derived only — the stored column and its CHECK are gone.
+        cols = {r[1] for r in (await conn.execute(text("PRAGMA table_info(tickets)"))).fetchall()}
+        assert "status" not in cols
+        ddl = (
+            await conn.execute(text("SELECT sql FROM sqlite_master WHERE name = 'tickets'"))
+        ).scalar_one()
+        assert "check_ticket_status" not in ddl
+        indexes = {
+            r[1] for r in (await conn.execute(text("PRAGMA index_list(tickets)"))).fetchall()
+        }
+        assert {"idx_tickets_board", "idx_tickets_column_rank", "idx_tickets_parent"} <= indexes
+
+    async with session_factory() as session:
+        t_ip = await session.get(Ticket, "t_ip")
+        assert t_ip is not None and t_ip.status == "open"
+        open_ids = set(
+            (await session.execute(select(Ticket.ticket_id).where(Ticket.status == "open")))
+            .scalars()
+            .all()
+        )
+        assert "t_ip" in open_ids
 
     await engine.dispose()
