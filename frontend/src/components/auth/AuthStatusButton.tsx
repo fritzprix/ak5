@@ -29,7 +29,17 @@ export function AuthStatusButton() {
   const handleLogout = async () => {
     setLoggingOut(true);
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+      const csrfMatch = document.cookie.match(/(?:^|; )ak5_csrf=([^;]*)/);
+      const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
+      const res = await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: csrf ? { "X-CSRF-Token": csrf } : {},
+      });
+      if (!res.ok) {
+        setLoggingOut(false);
+        return;
+      }
       window.location.href = "/login";
     } catch {
       setLoggingOut(false);

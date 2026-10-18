@@ -6,6 +6,7 @@ import hashlib
 import secrets
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
@@ -180,3 +181,8 @@ def csrf_matches(presented: str | None, csrf_hash: str) -> bool:
     if not presented:
         return False
     return secrets.compare_digest(_hash_token(presented), csrf_hash)
+
+
+def require_csrf_header(headers: Mapping[str, str], csrf_hash: str) -> bool:
+    """Double-submit CSRF: validate ``X-CSRF-Token`` header only (never the cookie)."""
+    return csrf_matches(headers.get(CSRF_HEADER), csrf_hash)

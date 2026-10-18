@@ -33,14 +33,13 @@ from ak5.server.auth.oidc_device import (
 )
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
-    CSRF_HEADER,
     OIDC_STATE_COOKIE,
     OIDC_STATE_COOKIE_MAX_AGE,
     SESSION_COOKIE,
     create_web_session_tokens,
-    csrf_matches,
     oidc_state_matches,
     pop_oidc_pending,
+    require_csrf_header,
     resolve_web_session,
     revoke_web_session,
     store_oidc_pending,
@@ -356,8 +355,7 @@ async def oidc_logout(
     resolved = await resolve_web_session(db, cookie)
     if resolved is not None:
         _user_id, csrf_hash = resolved
-        presented = request.headers.get(CSRF_HEADER) or request.cookies.get(CSRF_COOKIE)
-        if not csrf_matches(presented, csrf_hash):
+        if not require_csrf_header(request.headers, csrf_hash):
             return JSONResponse(status_code=403, content={"error": "CSRF validation failed"})
         await revoke_web_session(db, cookie)
         await db.commit()
@@ -404,8 +402,7 @@ async def csrf_check(
     if resolved is None:
         return JSONResponse(status_code=401, content={"error": "Not authenticated"})
     _user_id, csrf_hash = resolved
-    presented = request.headers.get(CSRF_HEADER)
-    if not csrf_matches(presented, csrf_hash):
+    if not require_csrf_header(request.headers, csrf_hash):
         return JSONResponse(status_code=403, content={"error": "CSRF validation failed"})
     return JSONResponse({"ok": True})
 
