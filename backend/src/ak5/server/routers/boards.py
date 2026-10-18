@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.stages import STANDARD_STAGES, Stage
 from ak5.server.database import get_db
+from ak5.server.inbox import is_inbox_board_id, resolve_board_alias
 from ak5.server.models.actor import Actor
 from ak5.server.models.board import Board
 from ak5.server.models.board_member import BoardMember
@@ -30,7 +31,6 @@ from ak5.server.schemas.board import (
 from ak5.server.schemas.column import ColumnCreate, ColumnOut
 from ak5.server.schemas.device_auth import BoardMemberCreate, BoardMemberOut
 from ak5.server.schemas.ticket import SubtaskSummaryOut, TicketOut
-from ak5.server.seed import INBOX_BOARD_ID
 from ak5.server.services import workflow as wf
 from ak5.server.services.templates import (
     BoardTemplate,
@@ -60,9 +60,17 @@ def _payload_invalid_response(message: str, *, details: dict | None = None) -> J
 
 def _is_inbox(board: Board | str) -> bool:
     board_id = board if isinstance(board, str) else board.board_id
-    if board_id == INBOX_BOARD_ID:
+    if is_inbox_board_id(board_id):
         return True
     return isinstance(board, Board) and board.kind == "inbox"
+
+
+async def _board_path_id(
+    board_id: str,
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+) -> str:
+    """``{board_id}`` with the ``inbox`` alias resolved to the caller's inbox (#76)."""
+    return resolve_board_alias(board_id, workspace_id)
 
 
 def _to_board_out(board: Board) -> BoardOut:
@@ -190,7 +198,7 @@ async def list_boards(
 
 @router.get("/{board_id}/next", response_model=None)
 async def next_work_item(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
@@ -217,7 +225,7 @@ async def next_work_item(
 
 @router.get("/{board_id}", response_model=BoardDetailOut)
 async def get_board(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
@@ -336,7 +344,7 @@ async def create_board(
     """
     board_id = req.board_id or f"board_{uuid.uuid4().hex[:8]}"
 
-    if board_id == INBOX_BOARD_ID or req.template == "inbox":
+    if is_inbox_board_id(board_id) or req.template == "inbox":
         return _system_board_response(
             "Cannot create or recreate the system inbox board via the API"
         )
@@ -450,7 +458,7 @@ async def _apply_template_columns(
 
 @router.patch("/{board_id}", response_model=None)
 async def update_board(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     req: BoardUpdate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
@@ -486,7 +494,7 @@ async def update_board(
 
 @router.post("/{board_id}/columns", response_model=None)
 async def add_column(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     req: ColumnCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
@@ -530,7 +538,7 @@ async def add_column(
 
 @router.get("/{board_id}/members", response_model=None)
 async def list_board_members(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
@@ -633,7 +641,7 @@ async def _board_has_human_admin(board: Board, db: AsyncSession) -> bool:
 
 @router.post("/{board_id}/claim", response_model=None)
 async def claim_board(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -696,7 +704,7 @@ async def claim_board(
 
 @router.post("/{board_id}/members", response_model=None)
 async def add_board_member(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     req: BoardMemberCreate,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
@@ -751,7 +759,7 @@ async def add_board_member(
 
 @router.delete("/{board_id}/members/{actor_id}", response_model=None)
 async def remove_board_member(
-    board_id: str,
+    board_id: Annotated[str, Depends(_board_path_id)],
     actor_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],

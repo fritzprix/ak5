@@ -16,6 +16,7 @@ from ak5.contracts.stages import BlockedKind
 from ak5.server.authz import RoleForbiddenError, require_board_scope
 from ak5.server.config import settings
 from ak5.server.database import get_db
+from ak5.server.inbox import resolve_board_alias
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.column import Column
@@ -53,7 +54,6 @@ from ak5.server.schemas.ticket import (
     UnblockRequest,
     VerdictRequest,
 )
-from ak5.server.seed import INBOX_BOARD_ID
 from ak5.server.services import workflow as wf
 from ak5.server.services.event_log import record_event
 from ak5.server.services.ticket_status import derive_status
@@ -83,7 +83,7 @@ def _workspace_forbidden_ticket(ticket_id: str, workspace_id: str) -> JSONRespon
 def _enforce_agent_board_scope(actor: Actor, board_id: str) -> None:
     """Raise HTTP 403 when an agent writes outside ``board_scope`` (identity.md §4.3)."""
     try:
-        require_board_scope(actor, board_id, inbox_board_id=INBOX_BOARD_ID)
+        require_board_scope(actor, board_id)
     except RoleForbiddenError as exc:
         raise HTTPException(
             status_code=HTTP_STATUS[ErrorCode.ROLE_FORBIDDEN],
@@ -338,6 +338,7 @@ async def list_tickets(
         .where(Ticket.workspace_id == workspace_id)
     )
     if board_id:
+        board_id = resolve_board_alias(board_id, workspace_id)
         stmt = stmt.where(Ticket.board_id == board_id)
     if not include_all:
         stmt = stmt.where(Ticket.is_archived == is_archived)

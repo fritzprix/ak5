@@ -34,6 +34,7 @@ from ak5.server.authz import (
     workflow_role_of,
 )
 from ak5.server.config import settings
+from ak5.server.inbox import inbox_board_id_for, is_inbox_board_id
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
@@ -44,7 +45,7 @@ from ak5.server.models.ticket import Ticket
 from ak5.server.models.ticket_postmortem import TicketPostmortem
 from ak5.server.models.ticket_review import TicketReview
 from ak5.server.models.ticket_revision import TicketRevision
-from ak5.server.seed import INBOX_BOARD_ID, SYSTEM_ACTOR_ID
+from ak5.server.seed import SYSTEM_ACTOR_ID
 from ak5.server.services.event_log import record_event
 from ak5.server.services.lexorank import rank_between
 from ak5.server.services.templates import (
@@ -78,7 +79,7 @@ class WorkflowError(Exception):
 def _require_board_scope(actor: Actor, board_id: str) -> None:
     """Enforce agent ``board_scope`` (identity.md §4.3) → ``ROLE_FORBIDDEN``."""
     try:
-        require_board_scope(actor, board_id, inbox_board_id=INBOX_BOARD_ID)
+        require_board_scope(actor, board_id)
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
 
@@ -453,7 +454,7 @@ async def _emit_backlog_after_in_progress_freed(
     actor_id: str | None,
 ) -> None:
     """Wake workers waiting on WIP: emit WORK_AVAILABLE for oldest claimable backlog ticket."""
-    if board_id == INBOX_BOARD_ID:
+    if is_inbox_board_id(board_id):
         return
     if not await _in_progress_has_capacity(db, board_id):
         return
@@ -1003,22 +1004,28 @@ async def create_inbox(
     if not request:
         raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "original_request is required")
 
-    inbox = await db.get(Board, INBOX_BOARD_ID)
-    if inbox is None:
-        raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Global inbox board is missing")
+    # identity.md §7: one inbox per workspace — the caller's, never a global one (#76).
+    inbox_id = inbox_board_id_for(workspace_id)
+    inbox = await db.get(Board, inbox_id)
+    if inbox is None or inbox.kind != "inbox":
+        raise WorkflowError(
+            ErrorCode.SYSTEM_BOARD,
+            "Workspace inbox board is missing",
+            details={"board_id": inbox_id, "workspace_id": workspace_id},
+        )
     if workspace_id is not None and inbox.workspace_id != workspace_id:
         raise WorkflowError(
             ErrorCode.WORKSPACE_FORBIDDEN,
             "Inbox is outside the caller's workspace",
-            details={"board_id": INBOX_BOARD_ID, "workspace_id": workspace_id},
+            details={"board_id": inbox_id, "workspace_id": workspace_id},
         )
 
-    column = await _column_for_stage(db, INBOX_BOARD_ID, Stage.UNCLASSIFIED)
+    column = await _column_for_stage(db, inbox_id, Stage.UNCLASSIFIED)
     ticket_id = await _generate_ticket_id(db)
     ticket = Ticket(
         ticket_id=ticket_id,
         workspace_id=inbox.workspace_id,
-        board_id=INBOX_BOARD_ID,
+        board_id=inbox_id,
         column_id=column.column_id,
         parent_ticket_id=parent_ticket_id,
         title=(title or request[:256]).strip() or request[:256],
@@ -1039,10 +1046,10 @@ async def create_inbox(
     await record_event(
         db,
         EventType.TICKET_CREATED,
-        board_id=INBOX_BOARD_ID,
+        board_id=inbox_id,
         ticket_id=ticket_id,
         actor_id=actor.actor_id,
-        data={"ticket_id": ticket_id, "board_id": INBOX_BOARD_ID, "stage": Stage.UNCLASSIFIED.value},
+        data={"ticket_id": ticket_id, "board_id": inbox_id, "stage": Stage.UNCLASSIFIED.value},
     )
     await _finish_transition(
         db,
@@ -1080,7 +1087,7 @@ async def create_direct(
         except RoleForbiddenError as exc:
             raise WorkflowError(exc.code, exc.message) from exc
 
-    if board_id == INBOX_BOARD_ID:
+    if is_inbox_board_id(board_id):
         raise WorkflowError(
             ErrorCode.SYSTEM_BOARD,
             "create_direct cannot target the inbox board; omit board_id for T1",
@@ -1418,7 +1425,9 @@ async def bounce(
     _clear_claim(ticket)
     from_board_id = ticket.board_id
     board_id = from_board_id
-    await _move_ticket(db, ticket, board_id=INBOX_BOARD_ID, stage=Stage.UNCLASSIFIED)
+    await _move_ticket(
+        db, ticket, board_id=inbox_board_id_for(ticket.workspace_id), stage=Stage.UNCLASSIFIED
+    )
     result = await _finish_transition(
         db,
         ticket,
@@ -1524,7 +1533,7 @@ async def route_ticket(
         board = await db.get(Board, target_board_id)
         if board is None:
             raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{target_board_id}' not found")
-        if board.kind == "inbox" or target_board_id == INBOX_BOARD_ID:
+        if board.kind == "inbox" or is_inbox_board_id(target_board_id):
             raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot route onto the inbox board")
 
     _require_board_scope(actor, target_board_id)
@@ -1636,7 +1645,9 @@ async def verdict(
             db.add(review)
             _clear_claim(ticket)
             from_board_id = ticket.board_id
-            await _move_ticket(db, ticket, board_id=INBOX_BOARD_ID, stage=Stage.UNCLASSIFIED)
+            await _move_ticket(
+                db, ticket, board_id=inbox_board_id_for(ticket.workspace_id), stage=Stage.UNCLASSIFIED
+            )
             return await _finish_transition(
                 db,
                 ticket,
@@ -1901,11 +1912,13 @@ async def reroute(
 
     from_board_id = ticket.board_id
     if to_inbox:
-        await _move_ticket(db, ticket, board_id=INBOX_BOARD_ID, stage=Stage.UNCLASSIFIED)
+        await _move_ticket(
+            db, ticket, board_id=inbox_board_id_for(ticket.workspace_id), stage=Stage.UNCLASSIFIED
+        )
         to_stage = Stage.UNCLASSIFIED
     else:
         assert target_board_id is not None
-        if target_board_id == INBOX_BOARD_ID:
+        if is_inbox_board_id(target_board_id):
             raise WorkflowError(
                 ErrorCode.SYSTEM_BOARD,
                 "Use to_inbox=true to send a ticket to the inbox",
@@ -2264,11 +2277,11 @@ async def next_ticket(
     if board is None:
         raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
     # Out-of-scope boards yield 204 (no work), not ROLE_FORBIDDEN.
-    if not board_in_scope(actor, board_id, inbox_board_id=INBOX_BOARD_ID):
+    if not board_in_scope(actor, board_id):
         return None
 
     role = workflow_role_of(actor)
-    if board_id == INBOX_BOARD_ID or board.kind == "inbox":
+    if board.kind == "inbox":
         stages = [Stage.UNCLASSIFIED.value]
     else:
         # Prefer stage matching the caller's role; fall back to all claimable.

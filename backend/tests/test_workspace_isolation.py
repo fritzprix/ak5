@@ -12,6 +12,7 @@ from ak5.server.models.ticket import Ticket
 from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, Membership, User, Workspace
 from ak5.server.seed import LOCAL_USER_ID, ensure_local_tenancy
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -180,13 +181,19 @@ async def test_foreign_principal_cannot_create_inbox_or_subscribe_local(
     )
     headers = {"Authorization": f"Bearer {token}"}
 
+    # T1 targets the caller's own inbox (#76). This fixture workspace has none,
+    # so the request fails — and must never land in ws_local's inbox.
     inbox = await client.post(
         "/api/v1/tickets",
         headers=headers,
         json={"title": "into local inbox", "original_request": "leak"},
     )
     assert inbox.status_code == 403
-    assert inbox.json()["error"]["code"] == "WORKSPACE_FORBIDDEN"
+    assert inbox.json()["error"]["code"] == "SYSTEM_BOARD"
+    leaked = await test_db.execute(
+        select(Ticket).where(Ticket.board_id == "inbox", Ticket.original_request == "leak")
+    )
+    assert leaked.scalars().first() is None
 
     sub = await client.post(
         "/api/v1/subscriptions",

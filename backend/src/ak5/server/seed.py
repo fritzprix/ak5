@@ -13,6 +13,7 @@ from ak5.contracts.stages import STANDARD_STAGES
 from ak5.paths import get_app_data_dir
 from ak5.server.config import settings
 from ak5.server.database import AsyncSessionLocal
+from ak5.server.inbox import INBOX_BOARD_ID
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
@@ -37,7 +38,6 @@ from ak5.server.services.templates import DEFAULT_TEMPLATE, INBOX_TEMPLATE, get_
 from ak5.server.services.ticket_status import derive_status
 
 DEFAULT_SYSTEM_ACTORS = {"user_pm", "agent_image_worker", "agent_code_reviewer", "system"}
-INBOX_BOARD_ID = "inbox"
 SYSTEM_ACTOR_ID = "system"
 LOCAL_USER_ID = "usr_local_pm"
 LOCAL_AGENT_WORKER_ID = "agt_image_worker"
