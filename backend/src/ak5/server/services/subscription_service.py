@@ -271,6 +271,7 @@ class SubscriptionService:
         limit: int,
         board_id: str | None = None,
         sub: Subscription | None = None,
+        workspace_id: str | None = None,
     ) -> tuple[list[Event], int]:
         """Load events with ``seq > cursor``, applying visibility + optional filter.
 
@@ -288,6 +289,9 @@ class SubscriptionService:
         stmt = select(Event).where(Event.seq > cursor).order_by(Event.seq.asc()).limit(fetch_limit)
         if ceiling is not None:
             stmt = stmt.where(Event.seq <= ceiling)
+        ws = workspace_id if workspace_id is not None else (sub.workspace_id if sub else None)
+        if ws:
+            stmt = stmt.where(Event.workspace_id == ws)
         filter_board = board_id if board_id is not None else (sub.board_id if sub else None)
         if filter_board and filter_board not in ("*", "all"):
             stmt = stmt.where(Event.board_id == filter_board)
@@ -510,6 +514,7 @@ class SubscriptionService:
         board_id: str | None,
         since: int,
         limit: int,
+        workspace_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """One-shot event log poll without a subscription (``GET /events``)."""
         limit = max(1, min(int(limit), 100))
@@ -517,7 +522,11 @@ class SubscriptionService:
         await self.purge_expired_events(session)
         await self.ensure_cursor_valid(session, since)
         rows, next_cursor = await self.fetch_events_since(
-            session, cursor=since, limit=limit, board_id=board_id
+            session,
+            cursor=since,
+            limit=limit,
+            board_id=board_id,
+            workspace_id=workspace_id,
         )
         if not rows:
             return [], next_cursor

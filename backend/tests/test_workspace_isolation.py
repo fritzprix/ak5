@@ -209,6 +209,27 @@ def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
     from ak5.contracts.stages import Role
     from ak5.server.auth.principal import Principal
     from ak5.server.auth.scope import ScopeError, scoped
+    from ak5.server.models.ticket import TicketComment
+    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+
+    principal = Principal(
+        principal_id="usr_x",
+        principal_type="user",
+        workspace_id=LOCAL_WORKSPACE_ID,
+        workflow_role=Role.HUMAN,
+        membership_role="owner",
+    )
+    # TicketComment is listed as tenant but has no workspace_id yet → fail closed.
+    with pytest.raises(ScopeError):
+        scoped(select(TicketComment), principal, TicketComment)
+
+
+def test_scoped_applies_workspace_filter_for_column():
+    from sqlalchemy import select
+
+    from ak5.contracts.stages import Role
+    from ak5.server.auth.principal import Principal
+    from ak5.server.auth.scope import scoped
     from ak5.server.models.column import Column
     from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
@@ -219,6 +240,7 @@ def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
         workflow_role=Role.HUMAN,
         membership_role="owner",
     )
-    # Column is listed as tenant but (today) has no workspace_id → fail closed.
-    with pytest.raises(ScopeError):
-        scoped(select(Column), principal, Column)
+    stmt = scoped(select(Column), principal, Column)
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "workspace_id" in compiled
+    assert LOCAL_WORKSPACE_ID in compiled

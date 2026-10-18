@@ -87,15 +87,28 @@ async def record_event(
     ticket_id: str | None,
     actor_id: str | None,
     data: dict[str, Any],
+    workspace_id: str | None = None,
 ) -> Event:
     """Append an event to the caller's session (no commit).
 
     After the caller commits, the in-memory ``event_bus`` is notified.
+    ``workspace_id`` defaults from the board row when omitted.
     """
+    from ak5.server.models.board import Board
+    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+
     event_type = type.value if isinstance(type, EventType) else str(type)
+    resolved_ws = workspace_id
+    if resolved_ws is None and board_id:
+        board = await session.get(Board, board_id)
+        if board is not None:
+            resolved_ws = board.workspace_id
+    if resolved_ws is None:
+        resolved_ws = LOCAL_WORKSPACE_ID
     event = Event(
         event_id=f"evt_{uuid.uuid4().hex}",
         type=event_type,
+        workspace_id=resolved_ws,
         board_id=board_id,
         ticket_id=ticket_id,
         actor_id=actor_id,

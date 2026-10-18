@@ -79,6 +79,15 @@ def _workspace_forbidden_ticket(ticket_id: str, workspace_id: str) -> JSONRespon
     )
 
 
+async def _reject_cross_workspace_ticket(
+    db: AsyncSession, ticket_id: str, workspace_id: str
+) -> JSONResponse | None:
+    ticket = await db.get(Ticket, ticket_id)
+    if ticket is not None and ticket.workspace_id != workspace_id:
+        return _workspace_forbidden_ticket(ticket_id, workspace_id)
+    return None
+
+
 def _format_ticket_out(t: Ticket, subtask_stats: tuple[int, int] = (0, 0)) -> TicketOut:
     """Build TicketOut. Caller must not pass an expired ticket (refresh/reload first)."""
     count, done_count = subtask_stats
@@ -363,6 +372,9 @@ async def get_ticket_detail(
 
     Cross-workspace access → ``WORKSPACE_FORBIDDEN``.
     """
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     _ = current_actor
     stmt = (
         select(Ticket)
@@ -378,15 +390,6 @@ async def get_ticket_detail(
     ticket = result.scalar_one_or_none()
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
-    if ticket.workspace_id != workspace_id:
-        return JSONResponse(
-            status_code=HTTP_STATUS[ErrorCode.WORKSPACE_FORBIDDEN],
-            content=error_body(
-                ErrorCode.WORKSPACE_FORBIDDEN,
-                "Ticket is outside the caller's workspace",
-                details={"ticket_id": ticket_id, "workspace_id": workspace_id},
-            ),
-        )
 
     subtask_done = sum(1 for s in ticket.subtasks if s.status == "done")
     subtask_stats = (len(ticket.subtasks), subtask_done)
@@ -588,13 +591,16 @@ async def update_ticket(
 async def archive_ticket(
     ticket_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> TicketOut:
+) -> TicketOut | JSONResponse:
     """Archive a ticket and record audit log."""
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
 
+    if ticket.workspace_id != workspace_id:
+        return _workspace_forbidden_ticket(ticket_id, workspace_id)
     changes = {"is_archived": (ticket.is_archived, True)}
     ticket.is_archived = True
     ticket.archived_at = datetime.now(UTC)
@@ -625,13 +631,16 @@ async def archive_ticket(
 async def unarchive_ticket(
     ticket_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> TicketOut:
+) -> TicketOut | JSONResponse:
     """Unarchive an archived ticket back to active view."""
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Ticket '{ticket_id}' not found")
 
+    if ticket.workspace_id != workspace_id:
+        return _workspace_forbidden_ticket(ticket_id, workspace_id)
     changes = {"is_archived": (ticket.is_archived, False)}
     ticket.is_archived = False
     ticket.archived_at = None
@@ -663,10 +672,14 @@ async def move_ticket(
     ticket_id: str,
     req: TicketMoveRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
     """Move ticket under workflow.md §8 (same-stage free; human stage pairs only)."""
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
 
     async def _run() -> TicketOut:
         prev = await db.get(Ticket, ticket_id)
@@ -720,10 +733,14 @@ async def delegate_subtask(
     ticket_id: str,
     req: TicketDelegateRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
     """Delegate as create_direct with parent (cli.md §5 pull model)."""
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
 
     async def _run() -> TicketOut:
         parent = await db.get(Ticket, ticket_id)
@@ -856,6 +873,7 @@ async def upload_attachment(
     ticket_id: str,
     file: Annotated[UploadFile, File(...)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TicketAttachmentOut:
     """Upload an attachment file to a ticket."""
@@ -865,6 +883,8 @@ async def upload_attachment(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Ticket '{ticket_id}' not found",
         )
+    if ticket.workspace_id != workspace_id:
+        return _workspace_forbidden_ticket(ticket_id, workspace_id)
 
     raw_filename = file.filename or "attachment.bin"
     # Extract only the base name to prevent directory traversal
@@ -940,13 +960,17 @@ async def upload_attachment(
     return attachment_out
 
 
-@router.get("/{ticket_id}/attachments", response_model=list[TicketAttachmentOut])
+@router.get("/{ticket_id}/attachments", response_model=None)
 async def list_attachments(
     ticket_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
-) -> list[TicketAttachmentOut]:
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+) -> list[TicketAttachmentOut] | JSONResponse:
     """List all attachments for a ticket. Requires Bearer JWT."""
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     _ = current_actor
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
@@ -1018,14 +1042,18 @@ async def download_attachment(
     )
 
 
-@router.delete("/{ticket_id}/attachments/{attachment_id}")
+@router.delete("/{ticket_id}/attachments/{attachment_id}", response_model=None)
 async def delete_attachment(
     ticket_id: str,
     attachment_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """Delete an attachment file from a ticket."""
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     attachment = await db.get(TicketAttachment, attachment_id)
     if not attachment or attachment.ticket_id != ticket_id:
         raise HTTPException(
@@ -1131,9 +1159,13 @@ async def heartbeat_endpoint(
     ticket_id: str,
     req: HeartbeatRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.heartbeat(db, current_actor, ticket_id, claim_token=req.claim_token)
         return _format_ticket_out(ticket)
@@ -1161,9 +1193,13 @@ async def release_endpoint(
     ticket_id: str,
     req: ReleaseRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.release(
             db, current_actor, ticket_id, claim_token=req.claim_token, reason=req.reason
@@ -1193,9 +1229,13 @@ async def submit_endpoint(
     ticket_id: str,
     req: SubmitRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.submit(
             db,
@@ -1229,9 +1269,13 @@ async def bounce_endpoint(
     ticket_id: str,
     req: BounceRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.bounce(
             db, current_actor, ticket_id, claim_token=req.claim_token, reason=req.reason
@@ -1261,9 +1305,13 @@ async def route_endpoint(
     ticket_id: str,
     req: RouteRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.route_ticket(
             db, current_actor, ticket_id, claim_token=req.claim_token, plan=req.plan
@@ -1293,9 +1341,13 @@ async def verdict_endpoint(
     ticket_id: str,
     req: VerdictRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         findings = [
             Finding.model_validate(f) if not isinstance(f, Finding) else f
@@ -1342,9 +1394,13 @@ async def postmortem_endpoint(
     ticket_id: str,
     req: PostmortemRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.submit_postmortem(
             db,
@@ -1378,9 +1434,13 @@ async def block_endpoint(
     ticket_id: str,
     req: BlockRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.block_ticket(
             db,
@@ -1414,10 +1474,14 @@ async def block_endpoint(
 async def unblock_endpoint(
     ticket_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     req: UnblockRequest | None = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     body = req or UnblockRequest()
 
     async def _run() -> TicketOut:
@@ -1449,9 +1513,13 @@ async def reopen_endpoint(
     ticket_id: str,
     req: ReopenRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.reopen(db, current_actor, ticket_id, reason=req.reason)
         return _format_ticket_out(ticket)
@@ -1479,9 +1547,13 @@ async def reroute_endpoint(
     ticket_id: str,
     req: RerouteRequest,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     async def _run() -> TicketOut:
         ticket = await wf.reroute(
             db,
@@ -1515,8 +1587,12 @@ async def reroute_endpoint(
 async def history_endpoint(
     ticket_id: str,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TicketHistoryOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
     _ = current_actor
     try:
         hist = await wf.ticket_history(db, ticket_id)

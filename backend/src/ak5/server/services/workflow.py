@@ -1433,9 +1433,12 @@ async def _create_auto_board(
     if tmpl.name == "inbox":
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot auto-create the inbox template")
 
+    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+
     board_id = f"auto_{uuid.uuid4().hex[:10]}"
     board = Board(
         board_id=board_id,
+        workspace_id=LOCAL_WORKSPACE_ID,
         name=name,
         description=description,
         created_by=actor.actor_id,
@@ -1448,6 +1451,7 @@ async def _create_auto_board(
         db.add(
             Column(
                 column_id=f"{board_id}_{def_col['stage']}",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id=board_id,
                 name=def_col["name"],
                 stage=def_col["stage"],

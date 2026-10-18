@@ -15,7 +15,7 @@ from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
-from ak5.server.routers.auth import get_current_actor
+from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.event import EventOut, EventsPollOut
 from ak5.server.security import get_jwt_secret
 from ak5.server.services.event_bus import event_bus
@@ -60,6 +60,7 @@ async def _actor_from_bearer_or_query(
 async def poll_events(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     board_id: Annotated[str | None, Query(description="Filter by board")] = None,
     since: Annotated[int, Query(ge=0, description="Return events with seq > since")] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -72,6 +73,7 @@ async def poll_events(
             board_id=board_id,
             since=since,
             limit=limit,
+            workspace_id=workspace_id,
         )
     except SubscriptionServiceError as exc:
         return JSONResponse(

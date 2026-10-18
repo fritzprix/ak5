@@ -4,12 +4,16 @@ from sqlalchemy import DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
     subscription_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     board_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     # Filter fields (events.md §2) — no server-side exec_command.
     events: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated

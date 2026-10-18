@@ -354,6 +354,7 @@ async def create_board(
         col_id = f"{board_id}_{def_col['stage']}"
         col = Column(
             column_id=col_id,
+            workspace_id=workspace_id,
             board_id=board_id,
             name=def_col["name"],
             stage=def_col["stage"],
@@ -406,6 +407,7 @@ async def _apply_template_columns(
         db.add(
             Column(
                 column_id=col_id,
+                workspace_id=board.workspace_id,
                 board_id=board.board_id,
                 name=spec.name,
                 stage=spec.stage,
@@ -479,6 +481,7 @@ async def add_column(
 
     col = Column(
         column_id=req.column_id,
+        workspace_id=board.workspace_id,
         board_id=board_id,
         name=req.name,
         stage=req.stage,
