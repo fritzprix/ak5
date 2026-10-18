@@ -29,6 +29,7 @@ from ak5.server.routers.subscriptions import router as subscriptions_router
 from ak5.server.routers.templates import router as templates_router
 from ak5.server.routers.tickets import router as tickets_router
 from ak5.server.routers.web_auth import router as web_auth_router
+from ak5.server.routers.workspaces import router as workspaces_router
 from ak5.server.seed import seed_initial_data
 from ak5.server.services.workflow import WorkflowError
 from ak5.server.web_auth import get_web_auth_config
@@ -189,6 +190,7 @@ def create_app() -> FastAPI:
     application.include_router(tickets_router, prefix=settings.API_V1_STR)
     application.include_router(events_router, prefix=settings.API_V1_STR)
     application.include_router(subscriptions_router, prefix=settings.API_V1_STR)
+    application.include_router(workspaces_router, prefix=settings.API_V1_STR)
     application.include_router(web_auth_router)
     application.include_router(oidc_auth_router)
     application.include_router(oauth_router)
