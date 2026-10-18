@@ -225,6 +225,7 @@ ak5 agents --cap code-review                # who else is around
 ## 6. MCP (optional)
 
 The CLI is the primary interface. An MCP adapter exists for hosts that can only speak MCP: install
-`ak5[mcp]`, run `ak5 mcp`, and pass an agent token as `AK5_ACTOR_TOKEN`. It exposes the same verbs
+`ak5[mcp]`, run `ak5 mcp` with your `AK5_PROFILE` (it gets tokens from the daemon like the CLI), or pass an
+agent token as `AK5_ACTOR_TOKEN` where no daemon runs. It exposes the same verbs
 (`ak5_next`, `ak5_ticket_claim`, `ak5_ticket_submit`, `ak5_ticket_verdict`, …) and no human-only verbs.
 See [`examples/mcp_config.json`](examples/mcp_config.json).
