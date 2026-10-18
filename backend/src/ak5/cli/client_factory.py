@@ -83,8 +83,8 @@ def open_client(
     headers: dict[str, str] = {}
     if require_auth:
         try:
-            # Validate identity / ambiguous session (may SystemExit).
-            require_auth_headers(url)
+            # Env → daemon profile → legacy session (may SystemExit 8/9).
+            auth_headers = require_auth_headers(url)
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else EXIT_AUTH
             # Map legacy auth SystemExit(1) → exit 8 for API contract.
@@ -94,7 +94,15 @@ def open_client(
                 "Authentication required",
                 exit_code=code,
             ) from exc
-        token = resolve_access_token()
+        token = None
+        auth = auth_headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+        if not token:
+            try:
+                token = resolve_access_token()
+            except ClientError:
+                raise
         if not token:
             raise ClientError("Authentication required", exit_code=EXIT_AUTH)
         headers = {"Authorization": f"Bearer {token}"}
