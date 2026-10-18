@@ -311,6 +311,11 @@ async def rewrite_actor_refs_to_principals(db: AsyncSession) -> None:
     mapping = dict(ACTOR_TO_PRINCIPAL)
     if not mapping:
         return
+    # Per-(old, new) UPDATEs would apply a chain a→b, b→c twice (a→c); the old
+    # row-wise rewrite changed each value once (#86 review).
+    chained = sorted(old for old, new in mapping.items() if new != old and mapping.get(new, new) != new)
+    if chained:
+        raise RuntimeError(f"actor→principal mapping must not chain: {chained}")
 
     # board_members: unique(board_id, actor_id) — drop legacy row if alias already present
     members = list((await db.execute(select(BoardMember))).scalars().all())
