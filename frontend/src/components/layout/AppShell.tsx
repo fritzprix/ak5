@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Kanban } from "lucide-react";
+import { Kanban, Settings } from "lucide-react";
 import { BoardSwitcher } from "@/components/board/BoardSwitcher";
+import { WorkspaceSwitcher } from "@/components/workspace/WorkspaceSwitcher";
 import { AuthStatusButton } from "@/components/auth/AuthStatusButton";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -20,6 +21,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return <main className="min-h-dvh">{children}</main>;
   }
 
+  const settingsActive = pathname?.startsWith("/settings");
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
       <header className="sticky top-0 z-40 shrink-0 border-b border-[var(--border)] bg-[var(--background)]/90 pt-[env(safe-area-inset-top)] backdrop-blur-md">
@@ -31,9 +34,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="text-sm font-semibold tracking-tight">AK5</span>
           </Link>
 
+          <WorkspaceSwitcher />
           <BoardSwitcher />
 
           <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+            <Link
+              href="/settings"
+              className={`ak-btn-ghost p-1.5 ${settingsActive ? "text-[var(--accent)]" : ""}`}
+              title="Settings"
+              aria-label="Settings"
+            >
+              <Settings className="h-3.5 w-3.5" />
+            </Link>
             <a
               href="/docs"
               target="_blank"

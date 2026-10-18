@@ -14,6 +14,10 @@ from ak5.server.database import get_db
 from ak5.server.models.workspace import User, Workspace
 from ak5.server.routers.auth import AuthContext, get_auth_context
 from ak5.server.schemas.workspace import (
+    AgentCreate,
+    AgentCredentialIssue,
+    AgentCredentialOut,
+    AgentOut,
     InviteAccept,
     InviteCreate,
     InviteOut,
@@ -22,6 +26,16 @@ from ak5.server.schemas.workspace import (
     WorkspaceCreate,
     WorkspaceOut,
     WorkspaceUpdate,
+)
+from ak5.server.services.agents import (
+    agent_to_dict,
+    create_agent_with_credential,
+    disable_agent,
+    issue_credential,
+    list_agent_credentials,
+    list_workspace_agents,
+    parse_json_list,
+    revoke_credential,
 )
 from ak5.server.services.workspaces import (
     WorkspaceServiceError,
@@ -303,5 +317,171 @@ async def delete_member(
         )
         await db.commit()
         return Response(status_code=204)
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+def _agent_out(payload: dict) -> AgentOut:
+    creds = [
+        AgentCredentialOut(
+            credential_id=c["credential_id"],
+            board_scope=list(c.get("board_scope") or []),
+            expires_at=c.get("expires_at"),
+            revoked_at=c.get("revoked_at"),
+            last_used_at=c.get("last_used_at"),
+            access_token=c.get("access_token"),
+        )
+        for c in payload.get("credentials") or []
+    ]
+    return AgentOut(
+        agent_id=payload["agent_id"],
+        workspace_id=payload["workspace_id"],
+        name=payload["name"],
+        workflow_role=payload["workflow_role"],
+        capabilities=list(payload.get("capabilities") or []),
+        board_scope=list(payload.get("board_scope") or []),
+        created_by=payload["created_by"],
+        disabled_at=payload.get("disabled_at"),
+        credentials=creds,
+    )
+
+
+@router.get("/{workspace_id}/agents", response_model=None)
+async def get_agents(
+    workspace_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[AgentOut] | JSONResponse:
+    try:
+        principal = _require_user(ctx)
+        await require_membership(
+            db, workspace_id=workspace_id, user_id=principal.principal_id
+        )
+        agents = await list_workspace_agents(db, workspace_id)
+        out: list[AgentOut] = []
+        for agent in agents:
+            creds = await list_agent_credentials(db, agent.agent_id)
+            out.append(_agent_out(agent_to_dict(agent, creds)))
+        return out
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.post("/{workspace_id}/agents", response_model=None)
+async def post_agent(
+    workspace_id: str,
+    body: AgentCreate,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AgentOut | JSONResponse:
+    """Create agent and issue first opaque credential (identity.md §4.2)."""
+    try:
+        principal = _require_user(ctx)
+        await require_workspace_admin(
+            db, workspace_id=workspace_id, user_id=principal.principal_id
+        )
+        if await db.get(Workspace, workspace_id) is None:
+            raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
+        agent, cred, plaintext = await create_agent_with_credential(
+            db,
+            workspace_id=workspace_id,
+            name=body.name,
+            workflow_role=body.workflow_role,
+            created_by=principal.principal_id,
+            capabilities=body.capabilities,
+            board_scope=body.board_scope,
+        )
+        await db.commit()
+        payload = agent_to_dict(agent, [cred])
+        payload["credentials"][0]["access_token"] = plaintext
+        return _agent_out(payload)
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.post("/{workspace_id}/agents/{agent_id}/credentials", response_model=None)
+async def post_agent_credential(
+    workspace_id: str,
+    agent_id: str,
+    body: AgentCredentialIssue,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AgentCredentialOut | JSONResponse:
+    try:
+        principal = _require_user(ctx)
+        await require_workspace_admin(
+            db, workspace_id=workspace_id, user_id=principal.principal_id
+        )
+        cred, plaintext = await issue_credential(
+            db,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            board_scope=body.board_scope,
+        )
+        await db.commit()
+        return AgentCredentialOut(
+            credential_id=cred.credential_id,
+            board_scope=parse_json_list(cred.board_scope),
+            expires_at=cred.expires_at,
+            revoked_at=cred.revoked_at,
+            last_used_at=cred.last_used_at,
+            access_token=plaintext,
+        )
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.post(
+    "/{workspace_id}/agents/{agent_id}/credentials/{credential_id}/revoke",
+    response_model=None,
+)
+async def post_revoke_agent_credential(
+    workspace_id: str,
+    agent_id: str,
+    credential_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AgentCredentialOut | JSONResponse:
+    try:
+        principal = _require_user(ctx)
+        await require_workspace_admin(
+            db, workspace_id=workspace_id, user_id=principal.principal_id
+        )
+        cred = await revoke_credential(
+            db,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            credential_id=credential_id,
+        )
+        await db.commit()
+        return AgentCredentialOut(
+            credential_id=cred.credential_id,
+            board_scope=parse_json_list(cred.board_scope),
+            expires_at=cred.expires_at,
+            revoked_at=cred.revoked_at,
+            last_used_at=cred.last_used_at,
+        )
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.post("/{workspace_id}/agents/{agent_id}/disable", response_model=None)
+async def post_disable_agent(
+    workspace_id: str,
+    agent_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AgentOut | JSONResponse:
+    try:
+        principal = _require_user(ctx)
+        await require_workspace_admin(
+            db, workspace_id=workspace_id, user_id=principal.principal_id
+        )
+        agent = await disable_agent(
+            db, workspace_id=workspace_id, agent_id=agent_id
+        )
+        await db.commit()
+        creds = await list_agent_credentials(db, agent.agent_id)
+        return _agent_out(agent_to_dict(agent, creds))
     except WorkspaceServiceError as exc:
         return _err(exc)
