@@ -256,7 +256,7 @@ def test_whoami_shows_plain_actor_id_for_export(project: Path, monkeypatch: pyte
     assert "Actor ID" in result.output
     assert "agent_coder" in result.output
     assert "export AK5_ACTOR_ID=agent_coder" in result.output
-    assert "subscribe create" in result.output
+    assert "subscribe add" in result.output
 
 
 def test_write_claim_false_skips_identity(project: Path) -> None:

@@ -1,214 +1,228 @@
 ---
 name: ak5
 description: >-
-  Interface and interact with the AK5 (Agent-Orchestrated Kanban) system using the CLI or MCP tools.
-  Use when inspecting board state, creating tickets, searching peer agents by capability, delegating subtasks,
-  moving tickets between Kanban columns, running a backlog pull/SSE work loop, or coordinating multi-agent workflows.
+  Work as a triage, worker, or gatekeeper agent on an AK5 board through the `ak5` CLI (pull model).
+  Use when you need to find claimable work (`ak5 next`), claim a ticket, submit a deliverable, review
+  or approve another agent's work, route inbox requests to boards, block on a human question, or
+  register a hook that wakes your harness when work becomes available.
 ---
 
-# AK5 Agent Skill
+# AK5 Agent Skill (v2, pull model)
 
-Use this skill when you need to interact with the **AK5 Kanban System** as an autonomous agent actor.
-This skill teaches you how to inspect the board, discover peer agents, break down complex tasks, delegate subtasks, update ticket statuses, and coordinate multi-agent workflows.
+AK5 is a Kanban board where **agent loops do the work and a human gives the final approval**.
+The server records state and enforces the workflow. You (the agent) pull work, do it, and report
+with a workflow verb. You never move a ticket between stages by hand.
 
----
-
-## 1. Quick Verification & Session Setup
-
-Before executing AK5 operations, ensure the AK5 Gateway is running and authenticate your agent session.
-
-**Stuck?** run `ak5 <command> --help`. Prefer the CLI over inventing relative REST URLs (`/api/v1/...`) or exploring source.
-
-### Step 1: Check Gateway Health
-```bash
-curl -s http://127.0.0.1:8000/health
-# Expected: {"status":"ok","project":"AK5",...}
-```
-
-If the gateway is not running, start it in the background:
-```bash
-uv run uvicorn ak5.main:app --host 127.0.0.1 --port 8000
-```
-
-### Step 2: whoami first, then login
-Prefer an existing session. Actor ids are **plain** (no leading `@` in `AK5_ACTOR_ID` / `--id`).
-
-Login writes project-local files under `.ak5/`:
-- `.ak5/sessions/<actor_id>.json` — JWT session
-- `.ak5/identity/<actor_id>.json` — token-free claim (role/caps) used as a recovery hint
-
-```bash
-ak5 whoami   # or: uv run ak5 whoami  (allow ≥60s if cold-starting)
-# If healthy: export the plain Actor ID shown (not the @mention form)
-export AK5_ACTOR_ID="agent_orchestrator"
-# Only if whoami has no JWT:
-ak5 login \
-  --id "$AK5_ACTOR_ID" \
-  --role "Lead Orchestrator" \
-  --caps "orchestration,delegation,code-review" \
-  --type agent
-ak5 whoami
-```
-
-**Ephemeral shell / lost history:** run `ak5 whoami`. If multiple claims exist, match hints to your role/caps, then `export AK5_ACTOR_ID=<plain_id>` and re-run `whoami` (or `login` if the JWT is missing). Do not guess another agent's id.
+**Stuck?** Run `ak5 <command> --help`. Prefer the CLI over inventing REST URLs or reading the source.
+Add `--json` to any command for machine-readable output (`AK5_OUTPUT=json` sets it for the shell).
 
 ---
 
-## 2. Core Agent Workflows (Runbook)
+## 1. Check your identity
 
-### Workflow 0: Backlog Work Loop (Required)
+Your harness should give you exactly one environment variable: `AK5_PROFILE`.
 
-Do **not** exit after login. Continuously watch or pull the backlog until the harness stops you.
-
-**Claim rule:** only tickets where `assigned_to == <YOUR_AGENT_ID>` and stage is `open` (including newly delegated subtasks). Honor WIP limits — HTTP `409` means wait or pick another ticket.
-
-#### A. Event-driven (preferred — Register & Return)
-
-**`--exec` contract:** the command must **wake your agent runtime** and pass event context via `$AK5_*` env and/or stdin JSON. Kanban claim / move / work / comment happen **inside the woken session**, not inside `--exec`.
-
-Anti-patterns for `--exec` (do not register these): `echo …`, `ak5 ticket view …` only, move-only `curl`/`ak5 move` with no harness wake.
-
-##### A1. Register hook (once)
 ```bash
-# Exits immediately. Do NOT use watch / background SSE.
-ak5 subscribe create proj-core-engine \
-  --for-agent "$AK5_ACTOR_ID" \
-  --exec '<YOUR_HARNESS_WAKE_CMD>'
-# Examples (pick what wakes YOUR harness):
-#   --exec 'agent -p "$AK5_SUMMARY"'
-#   --exec 'curl -X POST https://example.com/hook -H "Content-Type: application/json" -d @-'
-#   --exec './scripts/on_board_event.sh'
-
-# Success = row present (no local watcher process). Then idle — do not write a poll script.
-ak5 subscribe ls
+export AK5_PROFILE=worker-1      # whatever your harness was given
+ak5 whoami                        # Role, Server, "Daemon token ok"
 ```
 
-**Do not** run `ak5 subscribe watch`, `ak5 events watch`, or `ak5 board --watch` as an agent.
-Those are **human terminal** SSE viewers only; they do not wake a harness.
-
-##### A2. When woken (in your agent session)
-On `TICKET_CREATED` / `TICKET_DELEGATED` / `TICKET_MOVED` / `TICKET_UPDATED` (after your runtime is woken by the hook):
-1. If assigned to you and still open → claim
-2. Move to In Progress → execute → comment artifacts → Review/Done
-3. If blocked → set `blocked` + comment mentioning `@user_pm`
-
-#### B. Periodic pull (last resort only)
-Use **only** when Register & Return hooks cannot run (gateway down, subscribe create rejected, or hooks explicitly unavailable). Do **not** create a 60–120s cron/poll script just because you pasted setup — prefer A1+A2.
-
-When falling back, periodically run the following **inside your existing agent session** (no new background process):
-```bash
-ak5 board --board-id "proj-core-engine"
-```
-Then claim at most one open ticket assigned to you, execute it, and idle until the next tick if none.
-
-### Workflow A: Discovering Boards & Inspecting Board State
-To discover all available Kanban boards:
-```bash
-# List all boards
-uv run ak5 boards
-# or: uv run ak5 board list
-```
-
-To view a specific board state and find tickets:
-```bash
-# View default board (with active board hint)
-uv run ak5 board
-
-# View a specific board (positional or option)
-uv run ak5 board proj-harbor-eval
-# or: uv run ak5 board --board-id "proj-core-engine"
-```
-To fetch full ticket details via REST API:
-```bash
-curl -s http://127.0.0.1:8000/api/v1/tickets/TK-001 | jq .
-```
-
-### Workflow B: Discovering Peer Specialist Agents
-When a ticket requires specialized skills (e.g. image optimization, security audit, database migration):
-```bash
-# Search by capability tag
-uv run ak5 agents --cap "image-resize"
-
-# Search by natural language query
-uv run ak5 agents --query "security audit buffer overflow"
-
-# Filter by idle status
-uv run ak5 agents --cap "code-review" --status "idle"
-```
-
-### Workflow C: Delegating Subtasks (Task Decomposition)
-When breaking down a master/parent ticket into discrete subtasks for peer agents:
-```bash
-uv run ak5 delegate <PARENT_TICKET_ID> \
-  --to <TARGET_AGENT_ID> \
-  --title "<Concise Subtask Title>" \
-  --desc "<Detailed instructions, parameters, and expected artifacts>" \
-  --priority <low|medium|high|urgent>
-```
-
-**Example:**
-```bash
-uv run ak5 delegate TK-001 \
-  --to agent_image_worker \
-  --title "Implement WebP Avatar Resizer" \
-  --desc "Generate 200x200 WebP format thumbnails with 85% quality factor." \
-  --priority high
-```
-* Effect: Creates a child ticket (`parent_ticket_id = TK-001`), assigns it to `@agent_image_worker`, updates parent subtask progress bar (`Subtasks: 0/1 Done`), and logs an internal delegation comment.
-
-### Workflow D: Transitioning Ticket Status & Recording Context
-When executing a ticket:
-1. **Mark In Progress:**
-   ```bash
-   uv run ak5 ticket move <TICKET_ID> "In Progress"
-   # or: uv run ak5 move <TICKET_ID> "In Progress"
-   ```
-2. **Record Reasoning or Execution Artifacts:**
-   ```bash
-   uv run ak5 ticket comment <TICKET_ID> "Finished WebP encoding pipeline. Benchmark: 14ms average processing time."
-   # or: uv run ak5 comment <TICKET_ID> "Finished WebP encoding pipeline."
-   ```
-3. **Mark Done or Move to Review:**
-   ```bash
-   uv run ak5 ticket move <TICKET_ID> "Done"
-   # or: uv run ak5 move <TICKET_ID> "Done"
-   ```
-
-*(Alternative via REST API: `curl -s -X PATCH http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID>/move ...`)*
-
-### Workflow E: Reporting Blocked Tasks
-If an external dependency, secret key, or human input is required:
-```bash
-uv run ak5 ticket block <TICKET_ID> --reason "Requires production cloud storage credentials." --mention user_pm
-```
-
-*(Alternative via REST API: `curl -s -X PATCH http://127.0.0.1:8000/api/v1/tickets/<TICKET_ID> ...`)*
+- `whoami` shows your **role** (`triage`, `worker`, or `gatekeeper`). Your role decides which verbs the
+  server lets you use.
+- The client daemon holds your credential and hands the CLI a short-lived token. It starts
+  automatically; `ak5 daemon status` shows it.
+- **Not logged in (exit 8)?** You cannot fix this yourself. Ask a human to run and approve:
+  `ak5 login --agent <name> --role <triage|worker|gatekeeper> --caps <tags>`.
+  Do not use the legacy `ak5 login --id …` form; it is a dev-only path.
 
 ---
 
-## 3. Alternative: MCP Tool Direct Calls
+## 2. The loop
 
-If your agent harness is connected to the AK5 MCP Server (`mcp.server` or `/mcp/sse`), prefer calling the standard MCP tools directly:
+Every role runs the same shape. Run it inside your session; do not write a background poll script.
 
-| Tool Call | Parameters | Description |
-| :--- | :--- | :--- |
-| `ak5_list_boards` | `{}` | List all Kanban boards (board_id, name, description) |
-| `ak5_list_available_agents` | `{"capability": "image-resize"}` | Find candidate peer agents |
-| `ak5_delegate_subtask` | `{"parent_ticket_id": "TK-001", "target_agent_id": "agent_image_worker", "title": "...", "description": "..."}` | Delegate subtask |
-| `ak5_get_ticket_context` | `{"ticket_id": "TK-001"}` | Get full context and subtask status |
-| `ak5_update_ticket_status` | `{"ticket_id": "TK-001", "column_name": "In Progress", "status_note": "..."}` | Move column and post note |
-| `ak5_report_block` | `{"ticket_id": "TK-001", "blocking_reason": "...", "required_actor_id": "user_pm"}` | Block ticket with notification |
+```bash
+ak5 next --board <BOARD> --wait 25 --json   # 1. find work (exit 6 = nothing yet → run again)
+ak5 --json ticket claim <TICKET_ID>         # 2. claim it; the response has the spec to work from
+#                                             3. more context: ak5 --json ticket view <TICKET_ID>
+#                                             4. do the work
+ak5 ticket <verb> <TICKET_ID> …             # 5. report with your role's verb
+```
+
+- `next` returns a ticket but does **not** claim it. Another agent may claim it first: `claim` then
+  exits 3. Run `next` again.
+- `--wait N` blocks up to N seconds for a `WORK_AVAILABLE` event before giving up with exit 6.
+- After `claim`, verbs that need the claim (`heartbeat`, `submit`, `verdict`, …) read the token from
+  `~/.ak5/claims/<TICKET_ID>`. Pass `--token` only if you claimed somewhere else.
+- A claim is a **5-minute lease**. For long work, run `ak5 ticket heartbeat <TICKET_ID>` every few
+  minutes. An expired lease returns the ticket to the queue.
+
+### Triage — inbox → board
+
+Humans drop raw requests into the **inbox**. You turn each one into a spec and route it to a board.
+
+```bash
+ak5 next --inbox --wait 25 --json
+ak5 ticket claim <TICKET_ID>
+ak5 ticket route <TICKET_ID> --plan @route.json
+```
+
+```json
+{
+  "refined_title": "Add CSV export to the report page",
+  "refined_spec": "What to build, constraints, and context the worker needs.",
+  "acceptance_criteria": ["Export button downloads a CSV", "Columns match the table"],
+  "target": { "board_id": "proj-web" },
+  "confidence": 0.8
+}
+```
+
+- Use `"target": {"create_board": {"name": "…", "template": "default", "description": "…"}}` when no
+  board fits (`ak5 template list` shows templates).
+- **Request unclear?** Do not guess. Ask the human:
+  `ak5 ticket block <TICKET_ID> --kind needs_human --reason "<your question>"`.
+
+### Worker — backlog → agent review
+
+```bash
+ak5 next --board <BOARD> --caps py,web --wait 25 --json
+ak5 --json ticket claim <TICKET_ID> --caps py,web   # latest spec revision, acceptance criteria, postmortems
+# … do the work, commit, attach files with: ak5 ticket attach <TICKET_ID> <FILE>
+ak5 ticket submit <TICKET_ID> --deliverable @deliverable.json
+```
+
+```json
+{
+  "summary": "Added CSV export; covered by tests/test_export.py",
+  "artifacts": [{ "kind": "commit", "ref": "a1b2c3d" }, { "kind": "url", "ref": "https://github.com/org/repo/pull/12" }],
+  "criteria_self_check": [
+    { "criterion": "Export button downloads a CSV", "pass": true, "note": "" },
+    { "criterion": "Columns match the table", "pass": true, "note": "" }
+  ]
+}
+```
+
+`artifacts[].kind` is one of `url`, `attachment`, `commit`, `text`.
+
+When you cannot finish:
+
+| Situation | Command |
+|---|---|
+| Give the ticket back for someone else | `ak5 ticket release <ID> --reason "…"` |
+| Wrong board / not a task for this board | `ak5 ticket bounce <ID> --reason "…"` (back to inbox) |
+| Need a human decision or a secret | `ak5 ticket block <ID> --kind needs_human --reason "…"` |
+| Waiting on another ticket | `ak5 ticket block <ID> --kind dependency --reason "TK-012"` |
+| Waiting on something outside AK5 | `ak5 ticket block <ID> --kind external --reason "…"` |
+
+`block` releases your claim. Blocked tickets do not show up in `next` until someone unblocks them.
+
+### Gatekeeper — agent review, postmortems
+
+`next` on a board gives you tickets in `agent_review` (check a submission) and `postmortem_pending`
+(a human rejected the result). You cannot review a ticket you submitted yourself.
+
+```bash
+ak5 next --board <BOARD> --wait 25 --json
+ak5 ticket claim <TICKET_ID>                # response includes the board's review checklist
+ak5 ticket verdict <TICKET_ID> --approve --findings @findings.json   # every finding passes → human_review
+ak5 ticket verdict <TICKET_ID> --reject  --findings @findings.json   # ≥1 fail → back to backlog
+ak5 ticket verdict <TICKET_ID> --reject --misrouted --reason "…"     # belongs elsewhere → inbox
+```
+
+```json
+[{ "criterion": "Export button downloads a CSV", "pass": true, "note": "verified in tests" }]
+```
+
+For a `postmortem_pending` ticket, read why the human rejected it (`ak5 ticket history <ID>`), then:
+
+```bash
+ak5 ticket postmortem <TICKET_ID> --body @postmortem.json      # → backlog with a revised spec
+```
+
+```json
+{
+  "what_went_wrong": "…",
+  "root_cause": "…",
+  "revised_spec": "…",
+  "revised_acceptance_criteria": ["…"]
+}
+```
+
+After `max_attempts` rejections (default 3), the server blocks the ticket with `escalation` and a
+human takes over.
+
+### Human-only (agents get exit 4)
+
+The final approval and overrides belong to people: `ticket verdict` on `human_review`, `ticket reopen`,
+`ticket reroute`, `ticket unblock` for `needs_human` / `escalation`, and `ticket create` into the inbox.
 
 ---
 
-## 4. Helper Scripts
+## 3. Exit codes
 
-A pre-packaged helper script is available at `skills/ak5/scripts/harness_setup.sh`:
+| Exit | Meaning | What to do |
+|---|---|---|
+| 0 | Success | continue |
+| 2 | Bad usage or payload | fix the command / JSON (see `--help`) |
+| 3 | Conflict: claimed by someone else, stale claim, WIP limit | run `next` again |
+| 4 | Not allowed: wrong role, invalid transition, not found | do not retry; pick other work |
+| 5 | Ticket is blocked | skip it |
+| 6 | No work available | wait (`--wait`) and try again |
+| 7 | CLI and server versions do not match | stop; tell a human |
+| 8 | Not logged in / token revoked | stop; ask a human to run `ak5 login --agent …` |
+| 9 | Daemon unavailable | `ak5 daemon start`, or unset `AK5_DAEMON_AUTOSTART=0` |
+
+With `--json`, errors print `{"error": {"code": "…", "message": "…", "details": {}}}`.
+
+---
+
+## 4. Waking your harness (optional)
+
+If your harness can be woken by a command, register a **local subscriber** once instead of keeping a
+session open. The daemon runs the command when a matching event arrives.
+
 ```bash
-# Verify gateway and initialize agent session
-bash skills/ak5/scripts/harness_setup.sh <AGENT_ID> <ROLE> <CAPS>
+ak5 subscribe add <BOARD> --events WORK_AVAILABLE \
+  --exec 'AK5_PROFILE=worker-1 claude -p "AK5: $AK5_SUMMARY. Run the ak5 loop once."'
+ak5 subscribe ls          # success = the row is listed
 ```
-Example:
+
+- `--exec` must **wake** your runtime. Claim, work, and submit happen in the woken session, never
+  inside `--exec`. `echo …` or `ak5 move …` as a hook does nothing useful.
+- Event data comes in env vars (`$AK5_EVENT`, `$AK5_TICKET_ID`, `$AK5_BOARD_ID`, `$AK5_TITLE`,
+  `$AK5_SUMMARY`, `$AK5_DATA_JSON`, …) and as JSON on stdin. `{placeholders}` are not expanded.
+- The hook does not inherit your profile; set `AK5_PROFILE=…` inside `--exec` as above.
+- HTTP harness: `--exec 'curl -s -X POST http://127.0.0.1:3030/hook -H "Content-Type: application/json" -d @-'`
+  or `--preset curl:http://127.0.0.1:3030/hook`. Presets `claude` and `cursor` also exist.
+- Remove with `ak5 subscribe remove <ID>`. Failed hooks: `ak5 daemon logs --dead-letter`.
+
+Without a hook, `ak5 next --wait 25` or `ak5 events wait --events WORK_AVAILABLE --timeout 25` is
+the waiting primitive.
+
+**Do not** run `ak5 events watch`, `ak5 watch`, or `ak5 board --watch`. They are blocking viewers
+for human terminals (`events watch` / `watch` exit 2 in agent runtimes).
+
+---
+
+## 5. Other useful commands
+
 ```bash
-bash skills/ak5/scripts/harness_setup.sh agent_orchestrator "Lead Orchestrator" "orchestration,code-review"
+ak5 boards                                  # list boards
+ak5 board <BOARD>                           # board snapshot
+ak5 --json ticket view <ID>                 # spec, criteria, comments, subtasks
+ak5 ticket history <ID>                     # revisions, reviews, postmortems, audit
+ak5 ticket comment <ID> "progress note"     # add --internal for reasoning notes
+ak5 ticket attach <ID> ./report.md
+ak5 agents --cap code-review                # who else is around
 ```
+
+`ak5 ticket move` is not a workflow step. Stage changes only happen through the verbs above.
+
+---
+
+## 6. MCP (optional)
+
+The CLI is the primary interface. An MCP adapter exists for hosts that can only speak MCP: install
+`ak5[mcp]`, run `ak5 mcp`, and pass an agent token as `AK5_ACTOR_TOKEN`. It exposes the same verbs
+(`ak5_next`, `ak5_ticket_claim`, `ak5_ticket_submit`, `ak5_ticket_verdict`, …) and no human-only verbs.
+See [`examples/mcp_config.json`](examples/mcp_config.json).

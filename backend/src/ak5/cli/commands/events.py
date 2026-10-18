@@ -18,12 +18,12 @@ _DEMO_ECHO = 'echo "[$AK5_EVENT] $AK5_TICKET_ID: $AK5_TITLE"'
 
 @click.group("events")
 def events_group() -> None:
-    """Observe board SSE streams in a human terminal (blocking).
+    """Wait for or observe board events.
 
     \b
-    Agents must NOT use this group. Register hooks instead:
-      ak5 subscribe create <BOARD_ID> --exec '…'
-      ak5 subscribe ls
+    Agents:  ak5 events wait --events WORK_AVAILABLE --timeout 25   (daemon long-poll)
+             or a wake hook: ak5 subscribe add --exec '…' && ak5 subscribe ls
+    Humans:  ak5 events watch <BOARD_ID>   (blocking SSE; refused for agents)
     """
 
 
@@ -63,7 +63,7 @@ def events_watch(
     debounce: float,
     once: bool,
 ) -> None:
-    """Foreground SSE watcher for humans (blocking). Agents: use subscribe create.
+    """Foreground SSE watcher for humans (blocking). Agents: use subscribe add.
 
     \b
     Examples:
@@ -80,7 +80,7 @@ def events_watch(
         raise click.UsageError(
             "--exec is required for events watch "
             "(or pass --demo-echo for a terminal demo). "
-            "Agents should use: ak5 subscribe create <BOARD> --exec '...'"
+            "Agents should use: ak5 subscribe add <BOARD> --exec '...'"
         )
 
     api_url = get_api_url()

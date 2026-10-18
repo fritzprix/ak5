@@ -342,64 +342,44 @@ def do_remove_subscription(subscription_id: str) -> None:
 
 @click.group("subscribe")
 def subscribe_group() -> None:
-    """Manage server-side board event hooks (Register & Return).
+    """Manage local daemon subscribers that wake your agent (Register & Return).
 
     \b
-    [Agent Best Practices & Event Subscription Guide]
-      1. DO NOT specify --events unless strictly necessary!
-         - Omit --events (default: ALL / core lifecycle):
-           Automatically receives all core events:
-           • TICKET_CREATED   (new ticket assigned to agent)
-           • TICKET_DELEGATED (subtask delegated to agent)
-           • TICKET_UPDATED   (assignee changed, priority changed, etc.)
-           • TICKET_MOVED     (ticket moved between columns)
-           • COMMENT_ADDED    (new comment or discussion mention)
-         - Explicitly listing --events is an overhead and common cause of dropped tasks
-           (e.g. omitting DELEGATED drops subtasks, omitting UPDATED drops re-assignments).
-         - If specified, supports 'DEFAULT', 'TICKET' (all ticket events), and aliases (e.g. TICKET_COMMENTED).
+    Subscribers live in the client daemon, not on the server (client.md §4.3).
+    The daemon keeps one server subscription per profile and fans events out
+    to every local subscriber. `subscribe add` stores the hook and exits 0.
 
     \b
-      2. --for-agent <AGENT_ID>
-         - Safely accepts actor ID with or without '@' (e.g. "my-agent" or "@my-agent").
-         - Filters events to tickets/subtasks assigned to your agent.
-
-    \b
-      3. Register & Return pattern:
-         - `ak5 subscribe create` registers a persistent server-side hook and exits immediately (exit 0).
-         - Verify registration with: `ak5 subscribe ls`.
-         - Do NOT run background polling loops or local SSE processes.
+    [Agents]
+      - Usually filter on WORK_AVAILABLE (your role has claimable work).
+      - --exec must WAKE your harness; claim / work / submit run in the woken
+        session, never inside --exec.
+      - Verify with `ak5 subscribe ls`. Do not run background poll loops;
+        to block until work exists use `ak5 next --wait 25` instead.
 
     \b
     [How hooks work]
-      - create registers a literal --exec command and exits immediately (exit 0).
-      - On matching board events, the AK5 Gateway runs that command as-is.
-      - Event data is NOT interpolated into --exec. Use env vars / stdin instead.
-      - Each event spawn gets a fresh process env for that event (runtime per invocation).
+      - The daemon runs --exec literally in a shell for each matching event.
+      - Event data is NOT interpolated into --exec. Use env vars / stdin.
       - Do NOT use curly-brace tokens like {ticket_id} (they are not expanded).
-      - Gateway --exec stdout is not your chat; --exec must wake the harness.
+      - The hook does not inherit your profile: set it inside --exec
+        (e.g. --exec 'AK5_PROFILE=worker-1 claude -p "$AK5_SUMMARY"').
 
     \b
     [Event payload]
-      Env:  $AK5_EVENT  $AK5_EVENT_TYPE  $AK5_BOARD_ID  $AK5_TICKET_ID
-            $AK5_TITLE  $AK5_ACTOR_ID  $AK5_EVENT_ACTOR_ID  $AK5_STATUS
-            $AK5_SUMMARY  $AK5_DATA_JSON
-      $AK5_ACTOR_ID binds the woken session (--for-agent / subscription owner).
-      $AK5_EVENT_ACTOR_ID is who caused the event.
-      stdin: JSON {"event": "...", "data": {...}}  (e.g. curl -d @-)
+      Env:  $AK5_EVENT  $AK5_EVENT_TYPE  $AK5_EVENT_ID  $AK5_CURSOR
+            $AK5_BOARD_ID  $AK5_TICKET_ID  $AK5_TITLE  $AK5_STATUS
+            $AK5_SUMMARY  $AK5_ACTOR_ID  $AK5_EVENT_ACTOR_ID  $AK5_DATA_JSON
+      $AK5_ACTOR_ID / $AK5_EVENT_ACTOR_ID: who caused the event.
+      stdin: event JSON (e.g. curl -d @-)
 
     \b
     [Examples]
-      # Recommended for Agents (no --events needed; auto-subscribes all core lifecycle):
-      ak5 subscribe create proj-core-engine --for-agent "$AK5_ACTOR_ID" \
-        --exec 'agent -p "$AK5_SUMMARY"'
-
-    \b
-      # Webhook forwarding (all events):
-      ak5 subscribe create proj-core-engine \
-        --exec 'curl -X POST https://example.com/hook -H "Content-Type: application/json" -d @-'
-
-    \b
-      # Inspect & remove:
+      ak5 subscribe add proj-core-engine --events WORK_AVAILABLE \\
+        --exec 'AK5_PROFILE=worker-1 claude -p "$AK5_SUMMARY"'
+      ak5 subscribe add --events HUMAN_ACTION_REQUIRED \\
+        --exec 'notify-send "AK5" "$AK5_SUMMARY"'
+      ak5 subscribe add --preset curl:http://127.0.0.1:3030/hook
       ak5 subscribe list
       ak5 subscribe remove <ID>
 
@@ -416,9 +396,10 @@ def subscribe_group() -> None:
     "--exec",
     "-x",
     "exec_command",
-    required=True,
+    default=None,
     help=(
-        "Literal shell command that WAKES your agent runtime on match (required). "
+        "Literal shell command that WAKES your agent runtime on match "
+        "(required unless --preset). "
         "Pass context via $AK5_EVENT / $AK5_TICKET_ID / $AK5_SUMMARY / stdin JSON. "
         "Do not put claim/move/work here (those run in the woken session). "
         "No {placeholder} expansion."
@@ -440,7 +421,7 @@ def subscribe_group() -> None:
 )
 def subscribe_add(
     board_id: str | None,
-    exec_command: str,
+    exec_command: str | None,
     events: str | None,
     custom_id: str | None,
     dry_run: bool,
@@ -466,6 +447,8 @@ def subscribe_add(
             )
         else:
             raise click.UsageError(f"unknown preset: {preset}")
+    if not exec_command:
+        raise click.UsageError("Provide --exec '<command>' or --preset claude|cursor|curl:<url>.")
 
     _warn_legacy_placeholders(exec_command)
 
@@ -595,14 +578,14 @@ def subscribe_watch(
     debounce: float,
     once: bool,
 ) -> None:
-    """DEPRECATED. Agents: subscribe create. Humans: ak5 events watch."""
+    """DEPRECATED. Agents: subscribe add. Humans: ak5 events watch."""
     from ak5.cli.agent_env import refuse_blocking_watch_for_agents
     from ak5.cli.commands.events import events_watch
 
     console.print(
         "[bold yellow]DEPRECATED:[/bold yellow] "
         "[cyan]ak5 subscribe watch[/cyan] is not agent subscription.\n"
-        "  Agents: [cyan]ak5 subscribe create <BOARD> --exec '…'[/cyan] then [cyan]ak5 subscribe ls[/cyan]\n"
+        "  Agents: [cyan]ak5 subscribe add <BOARD> --exec '…'[/cyan] then [cyan]ak5 subscribe ls[/cyan]\n"
         "  Humans: [cyan]ak5 events watch <BOARD> --exec '…'[/cyan]"
     )
     refuse_blocking_watch_for_agents()

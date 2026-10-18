@@ -150,11 +150,13 @@ def test_cli_help_agent_happy_path_pull_model():
     runner = CliRunner()
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert "ak5 next --json" in result.output
+    # cli.md §6 happy path (daemon autostarts, so no explicit `daemon start`)
+    assert "ak5 login --agent worker-1" in result.output
+    assert "export AK5_PROFILE=worker-1" in result.output
+    assert "ak5 next --wait 25 --json" in result.output
     assert "ticket claim" in result.output
     assert "ticket submit" in result.output
-    assert "subscribe add" in result.output
-    assert "daemon start" in result.output
+    assert "subscribe add --events WORK_AVAILABLE --exec" in result.output
     # poll-loop prohibition removed per cli.md §6
     assert "Do not invent relative REST URLs or poll loops" not in result.output
 

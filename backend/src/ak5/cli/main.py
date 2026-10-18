@@ -59,11 +59,12 @@ class AK5Group(click.Group):
 def cli(ctx: click.Context, json_output: bool) -> None:
     """AK5 (Agent K5) - Agent-Orchestrated Kanban Command Line Interface.
 
+    \b
     Agent happy path (pull model):
-      ak5 login --type agent --role worker --caps ..
-      ak5 subscribe add <board> --events WORK_AVAILABLE --hook-exec '<wake harness>'
-      ak5 daemon start
-      # on wake: ak5 next --json → ak5 ticket claim → work → ak5 ticket submit
+      ak5 login --agent worker-1 --role worker --caps ..   # a human approves in the browser
+      export AK5_PROFILE=worker-1
+      # loop: ak5 next --wait 25 --json → ak5 ticket claim → work → ak5 ticket submit
+      # or a wake hook: ak5 subscribe add --events WORK_AVAILABLE --exec '<curl or harness CLI>'
 
     Stuck? run `ak5 <command> --help`. Prefer this CLI over inventing relative REST URLs.
     """
