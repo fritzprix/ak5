@@ -56,8 +56,10 @@ def live_daemon_server(tmp_path: Path):
     env["XDG_RUNTIME_DIR"] = str(runtime)
     env["AK5_DAEMON_SOCK"] = str(sock)
     env["AK5_DAEMON_AUTOSTART"] = "1"
-    env["AK5_DEV_INSECURE_IDENTIFY"] = "1"
     env["AK5_AUTH_PASSWORD"] = _AUTH_PASSWORD
+    # tests/conftest.py autouse enables insecure identify; keep it off so a
+    # tokenless CLI request cannot pass as ``cli_user``.
+    env.pop("AK5_DEV_INSECURE_IDENTIFY", None)
     env.pop("AK5_TOKEN", None)
     env.pop("AK5_ACTOR_TOKEN", None)
     env.pop("AK5_ACTOR_ID", None)
@@ -185,6 +187,11 @@ def _mint_user_jwt(base: str) -> tuple[str, str]:
         login.raise_for_status()
         csrf = login.json()["csrf"]
 
+        # The approving web session user becomes the token's principal.
+        me = client.get("/auth/me")
+        me.raise_for_status()
+        user_id = str(me.json()["user_id"])
+
         approve = client.post(
             "/oauth/device/approve",
             json={"user_code": user_code, "approved": True},
@@ -201,8 +208,7 @@ def _mint_user_jwt(base: str) -> tuple[str, str]:
             },
         )
         token.raise_for_status()
-        body = token.json()
-        return body["access_token"], str(body.get("user_id") or "usr_local_pm")
+        return token.json()["access_token"], user_id
 
 
 def _seed_profile(
@@ -260,17 +266,19 @@ def _cli_env(live: dict, *, profile: str) -> dict[str, str]:
     return env
 
 
-def test_device_login_daemon_profile_workflow_without_env_token(live_daemon_server):
+def test_device_login_daemon_profile_workflow_without_env_token(
+    live_daemon_server, monkeypatch: pytest.MonkeyPatch
+):
     live = live_daemon_server
     user_token, user_id = _mint_user_jwt(live["base"])
     agent_token, agent_id = _mint_agent_opaque(live["base"])
 
     # Subprocess CLI inherits HOME / AK5_HOME / sock from live env.
-    os.environ["HOME"] = live["env"]["HOME"]
-    os.environ["AK5_HOME"] = live["env"]["AK5_HOME"]
-    os.environ["XDG_RUNTIME_DIR"] = live["env"]["XDG_RUNTIME_DIR"]
-    os.environ["AK5_DAEMON_SOCK"] = live["env"]["AK5_DAEMON_SOCK"]
-    os.environ["AK5_PROJECT_ROOT"] = live["env"]["AK5_PROJECT_ROOT"]
+    monkeypatch.setenv("HOME", live["env"]["HOME"])
+    monkeypatch.setenv("AK5_HOME", live["env"]["AK5_HOME"])
+    monkeypatch.setenv("XDG_RUNTIME_DIR", live["env"]["XDG_RUNTIME_DIR"])
+    monkeypatch.setenv("AK5_DAEMON_SOCK", live["env"]["AK5_DAEMON_SOCK"])
+    monkeypatch.setenv("AK5_PROJECT_ROOT", live["env"]["AK5_PROJECT_ROOT"])
 
     _seed_profile(
         name="human",
@@ -298,7 +306,10 @@ def test_device_login_daemon_profile_workflow_without_env_token(live_daemon_serv
         "Daemon-profile live ticket",
     )
     assert created.returncode == 0, created.stdout + created.stderr
-    tid = json.loads(created.stdout)["ticket_id"]
+    created_body = json.loads(created.stdout)
+    tid = created_body["ticket_id"]
+    # Identity gate: without the daemon token the CLI would act as ``cli_user``.
+    assert created_body["created_by"] == user_id, created_body
 
     nxt = _ak5(
         _cli_env(live, profile="triage"),
@@ -318,7 +329,9 @@ def test_device_login_daemon_profile_workflow_without_env_token(live_daemon_serv
         tid,
     )
     assert claimed.returncode == 0, claimed.stdout + claimed.stderr
-    assert "claim_token" in json.loads(claimed.stdout)
+    claim_body = json.loads(claimed.stdout)
+    assert "claim_token" in claim_body
+    assert claim_body["ticket"]["claimed_by"] == agent_id, claim_body
 
     # Mutation: profile credential exists but daemon path is off → exit 9 (#69).
     stop_daemon()
