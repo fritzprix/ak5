@@ -6,6 +6,7 @@ from sqlalchemy import DateTime, Index, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 
 class IdempotencyKey(Base):
@@ -13,6 +14,9 @@ class IdempotencyKey(Base):
     __table_args__ = (Index("idx_idempotency_actor_op", "actor", "op"),)
 
     key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     op: Mapped[str] = mapped_column(String(64), nullable=False)
     response_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

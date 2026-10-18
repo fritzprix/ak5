@@ -69,4 +69,5 @@ def web_command(
         reload=reload,
         insecure=insecure,
         no_browser=no_browser,
+        dev_insecure_identify=False,
     )

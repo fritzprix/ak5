@@ -157,6 +157,9 @@ class TicketComment(Base):
     __tablename__ = "ticket_comments"
 
     comment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     ticket_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("tickets.ticket_id", ondelete="CASCADE"),
@@ -186,6 +189,9 @@ class TicketAttachment(Base):
     __table_args__ = (Index("idx_attachments_ticket", "ticket_id"),)
 
     attachment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     ticket_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("tickets.ticket_id", ondelete="CASCADE"),

@@ -207,7 +207,7 @@ def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
     from ak5.contracts.stages import Role
     from ak5.server.auth.principal import Principal
     from ak5.server.auth.scope import ScopeError, scoped
-    from ak5.server.models.ticket import TicketComment
+    from ak5.server.models.event_log_meta import EventLogMeta
     from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
     from sqlalchemy import select
 
@@ -218,9 +218,9 @@ def test_scoped_fail_closed_for_tenant_model_without_workspace_id():
         workflow_role=Role.HUMAN,
         membership_role="owner",
     )
-    # TicketComment is listed as tenant but has no workspace_id yet → fail closed.
+    # EventLogMeta is listed as tenant but has no workspace_id → fail closed.
     with pytest.raises(ScopeError):
-        scoped(select(TicketComment), principal, TicketComment)
+        scoped(select(EventLogMeta), principal, EventLogMeta)
 
 
 def test_scoped_applies_workspace_filter_for_column():

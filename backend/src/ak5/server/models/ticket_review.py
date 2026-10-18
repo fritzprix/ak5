@@ -7,12 +7,16 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, fun
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 
 class TicketReview(Base):
     __tablename__ = "ticket_reviews"
 
     review_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+    )
     ticket_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("tickets.ticket_id", ondelete="CASCADE"),

@@ -18,13 +18,14 @@ _TENANT_MODEL_NAMES: frozenset[str] = frozenset(
         "TicketReview",
         "TicketComment",
         "TicketAttachment",
-        "Postmortem",
+        "TicketPostmortem",
         "BoardMember",
         "Event",
-        "EventLogMeta",
         "Subscription",
         "IdempotencyKey",
         "AuditLog",
+        # Global watermark — fail-closed until explicitly scoped per workspace.
+        "EventLogMeta",
     }
 )
 

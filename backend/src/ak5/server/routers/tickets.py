@@ -554,6 +554,7 @@ async def update_ticket(
     )
     if not should_block and not should_unblock:
         audit = AuditLog(
+            workspace_id=ticket.workspace_id,
             actor_id=current_actor.actor_id,
             action=action,
             target_type="ticket",
@@ -606,6 +607,7 @@ async def archive_ticket(
     ticket.archived_at = datetime.now(UTC)
 
     audit = AuditLog(
+            workspace_id=ticket.workspace_id,
         actor_id=current_actor.actor_id,
         action="ARCHIVED",
         target_type="ticket",
@@ -646,6 +648,7 @@ async def unarchive_ticket(
     ticket.archived_at = None
 
     audit = AuditLog(
+            workspace_id=ticket.workspace_id,
         actor_id=current_actor.actor_id,
         action="UNARCHIVED",
         target_type="ticket",
@@ -762,6 +765,7 @@ async def delegate_subtask(
         )
         comment = TicketComment(
             comment_id=f"cmt_{uuid.uuid4().hex[:8]}",
+            workspace_id=parent.workspace_id,
             ticket_id=parent.ticket_id,
             actor_id=current_actor.actor_id,
             content=f"Delegated subtask {subtask.ticket_id} ('{req.subtask_title}') to board backlog (pull model)",
@@ -825,6 +829,7 @@ async def add_comment(
     comment_id = f"cmt_{uuid.uuid4().hex[:8]}"
     comment = TicketComment(
         comment_id=comment_id,
+        workspace_id=ticket.workspace_id,
         ticket_id=ticket_id,
         actor_id=current_actor.actor_id,
         content=req.content,
@@ -920,6 +925,7 @@ async def upload_attachment(
 
     attachment = TicketAttachment(
         attachment_id=attachment_id,
+        workspace_id=ticket.workspace_id,
         ticket_id=ticket_id,
         actor_id=current_actor.actor_id,
         filename=clean_filename,
@@ -930,6 +936,7 @@ async def upload_attachment(
     db.add(attachment)
 
     audit = AuditLog(
+        workspace_id=ticket.workspace_id,
         actor_id=current_actor.actor_id,
         action="ATTACHMENT_UPLOADED",
         target_type="ticket",
@@ -1072,6 +1079,7 @@ async def delete_attachment(
     filename = attachment.filename
     await db.delete(attachment)
     audit = AuditLog(
+            workspace_id=ticket.workspace_id,
         actor_id=current_actor.actor_id,
         action="ATTACHMENT_DELETED",
         target_type="ticket",
