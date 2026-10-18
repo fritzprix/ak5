@@ -276,3 +276,70 @@ async def test_user_code_lookup_rate_limit(
     limited = await client.get("/oauth/device/request", params={"code": "AAAA-AAAA"})
     assert limited.status_code == 400
     assert limited.json()["error"] == "slow_down"
+
+
+@pytest.mark.asyncio
+async def test_agent_token_cannot_approve_or_refresh_as_user(
+    client: AsyncClient,
+    anon_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Agents must not mint user sessions or approve device grants (§4.3 / #25)."""
+    start = await anon_client.post(
+        "/oauth/device_authorization",
+        json={
+            "client_id": "ak5-cli",
+            "principal": "agent",
+            "name": "no-mint",
+            "workflow_role": "worker",
+        },
+    )
+    device_code = start.json()["device_code"]
+    user_code = start.json()["user_code"]
+    csrf = await _login(client, monkeypatch)
+    await client.post(
+        "/oauth/device/approve",
+        json={"user_code": user_code, "approved": True},
+        headers={CSRF_HEADER: csrf},
+    )
+    token = await anon_client.post(
+        "/oauth/token",
+        json={
+            "grant_type": DEVICE_GRANT,
+            "device_code": device_code,
+            "client_id": "ak5-cli",
+        },
+    )
+    opaque = token.json()["access_token"]
+
+    # Second grant — agent bearer must not approve (no web session).
+    start2 = await anon_client.post(
+        "/oauth/device_authorization",
+        json={"client_id": "ak5-cli", "principal": "user"},
+    )
+    user_code2 = start2.json()["user_code"]
+    agent_approve = await anon_client.post(
+        "/oauth/device/approve",
+        json={"user_code": user_code2, "approved": True},
+        headers={"Authorization": f"Bearer {opaque}", CSRF_HEADER: "ignored"},
+    )
+    assert agent_approve.status_code == 401
+
+    # Opaque agent token is not a CLI refresh token.
+    refresh_attempt = await anon_client.post(
+        "/oauth/token",
+        json={"grant_type": "refresh_token", "refresh_token": opaque},
+    )
+    assert refresh_attempt.status_code == 400
+    assert refresh_attempt.json()["error"] == "invalid_grant"
+
+
+@pytest.mark.asyncio
+async def test_legacy_device_routes_emit_deprecation(anon_client: AsyncClient):
+    resp = await anon_client.post(
+        "/auth/device/code",
+        json={"actor_id": "legacy_dep_agent", "role": "Tester"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("deprecation") == "true"
+    assert "/oauth/device_authorization" in (resp.headers.get("link") or "")
