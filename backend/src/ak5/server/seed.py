@@ -18,7 +18,6 @@ from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
 from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
-from ak5.server.models.device_code import DeviceCode
 from ak5.server.models.event import Event
 from ak5.server.models.idempotency import IdempotencyKey
 from ak5.server.models.subscription import Subscription
@@ -333,7 +332,6 @@ async def rewrite_actor_refs_to_principals(db: AsyncSession) -> None:
         (AuditLog, ("actor_id",)),
         (TicketComment, ("actor_id",)),
         (TicketAttachment, ("actor_id",)),
-        (DeviceCode, ("actor_id",)),
         (Subscription, ("created_by",)),
         (Event, ("actor_id",)),
         (TicketRevision, ("author",)),
@@ -628,8 +626,7 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
         # 5. Delete audit logs
         await db.execute(delete(AuditLog))
 
-        # 6. Delete boards, board_members, device_codes, and columns
-        await db.execute(delete(DeviceCode))
+        # 6. Delete boards, board_members, and columns
         if not keep_boards:
             await db.execute(delete(BoardMember))
             await db.execute(delete(Column))

@@ -15,12 +15,10 @@ from ak5.mcp.tools import (
     V2_CLI_TOOL_MAP,
     V2_TOOL_NAMES,
     ak5_archive_ticket,
-    ak5_delegate_subtask,
     ak5_get_ticket_context,
     ak5_list_available_agents,
     ak5_list_boards,
     ak5_next,
-    ak5_report_block,
     ak5_search_tickets,
     ak5_ticket_block,
     ak5_ticket_claim,
@@ -29,7 +27,6 @@ from ak5.mcp.tools import (
     ak5_ticket_submit,
     ak5_ticket_unblock,
     ak5_ticket_verdict,
-    ak5_update_ticket_status,
     clear_claim_token_cache,
     server,
 )
@@ -189,15 +186,11 @@ async def test_mcp_agent_tools_declare_workflow_role():
 
 
 @pytest.mark.asyncio
-async def test_mcp_deprecated_tools_still_registered():
+async def test_mcp_deprecated_v1_tools_removed():
+    """#35: v1 aliases are gone; use ak5_ticket_delegate / ak5_ticket_block."""
     registered = {t.name for t in await server.list_tools()}
-    assert "ak5_update_ticket_status" in registered
-    assert "ak5_report_block" in registered
-    assert "ak5_delegate_subtask" in registered
-    tools = {t.name: t for t in await server.list_tools()}
-    assert "DEPRECATED" in (tools["ak5_update_ticket_status"].description or "")
-    assert "DEPRECATED" in (tools["ak5_report_block"].description or "")
-    assert "DEPRECATED" in (tools["ak5_delegate_subtask"].description or "")
+    assert not {"ak5_update_ticket_status", "ak5_report_block", "ak5_delegate_subtask"} & registered
+    assert {"ak5_ticket_delegate", "ak5_ticket_block"} <= registered
 
 
 # ---------------------------------------------------------------------------
@@ -478,10 +471,9 @@ async def test_mcp_tools_flow(anon_client: AsyncClient, auth_headers, test_db: A
     )
     parent_id = t_resp.json()["ticket_id"]
 
-    # 2. Test ak5_delegate_subtask (deprecated alias of ak5_ticket_delegate)
-    del_res = await ak5_delegate_subtask(
+    # 2. Test ak5_ticket_delegate (parented create_direct)
+    del_res = await ak5_ticket_delegate(
         parent_ticket_id=parent_id,
-        target_agent_id="agent_image_worker",
         title="Worker Subtask from MCP",
         description="Detailed MCP description",
         priority="high",
@@ -497,25 +489,14 @@ async def test_mcp_tools_flow(anon_client: AsyncClient, auth_headers, test_db: A
     assert f"Ticket Context: {parent_id}" in ctx_res[0].text
     assert "Worker Subtask from MCP" in ctx_res[0].text
 
-    # 4. Test ak5_update_ticket_status (same-stage column only; stage jumps need
-    # workflow transition commands — workflow.md §8)
-    upd_res = await ak5_update_ticket_status(
+    # 4. Test ak5_ticket_block (B1)
+    block_res = await ak5_ticket_block(
         ticket_id=parent_id,
-        column_name="Backlog",
-        status_note="Orchestrator started coordinating subtasks",
-        execution_context={"branch": "feat/mcp-flow", "ci_status": "passing"},
+        kind="external",
+        reason="Missing API keys for cloud WebP optimizer",
     )
-    assert len(upd_res) == 1
-    assert f"Ticket '{parent_id}' updated" in upd_res[0].text
-
-    # 5. Test ak5_report_block (deprecated → v2 block)
-    block_res = await ak5_report_block(
-        ticket_id=parent_id,
-        blocking_reason="Missing API keys for cloud WebP optimizer",
-        required_actor_id="user_pm",
-    )
-    assert "is now BLOCKED" in block_res[0].text
-    assert "@user_pm" in block_res[0].text
+    block_body = _parse(block_res)
+    assert block_body["blocked_kind"] == "external"
 
     # 6. Test ak5_search_tickets (active only by default)
     search_res = await ak5_search_tickets(query="Master Feature")

@@ -22,13 +22,14 @@ from ak5.server.schemas.board import (
     BoardClaimOut,
     BoardCreate,
     BoardDetailOut,
+    BoardMemberCreate,
+    BoardMemberOut,
     BoardOut,
     BoardTicketOut,
     BoardUpdate,
     ColumnWithTicketsOut,
 )
 from ak5.server.schemas.column import ColumnCreate, ColumnOut
-from ak5.server.schemas.device_auth import BoardMemberCreate, BoardMemberOut
 from ak5.server.schemas.ticket import SubtaskSummaryOut, TicketOut
 from ak5.server.seed import INBOX_BOARD_ID
 from ak5.server.services import workflow as wf

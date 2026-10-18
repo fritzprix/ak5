@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ak5.server.schemas.actor import ActorOut
 from ak5.server.schemas.column import ColumnOut
 from ak5.server.schemas.ticket import SubtaskSummaryOut, TicketOut
 
@@ -68,3 +69,17 @@ class BoardDetailOut(BoardOut):
         default=False,
         description="True if a human already has board admin (creator or BoardMember)",
     )
+
+
+class BoardMemberCreate(BaseModel):
+    actor_id: str = Field(..., description="Actor ID to add as a board member")
+    role: str | None = Field(default="member", description="Role within the board")
+
+
+class BoardMemberOut(BaseModel):
+    id: int
+    board_id: str
+    actor_id: str
+    role: str | None
+    created_at: datetime
+    actor: ActorOut | None = None

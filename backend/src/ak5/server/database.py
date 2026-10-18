@@ -233,7 +233,6 @@ def migrate_sqlite_workspace_id_columns(sync_conn: Connection) -> None:
         "board_members",
         "ticket_comments",
         "ticket_attachments",
-        "device_codes",
         "event_log_meta",
     )
     for table in tenant_tables:
@@ -543,6 +542,11 @@ def migrate_sqlite_column_stages(sync_conn: Connection) -> None:
     )
 
 
+def migrate_sqlite_drop_legacy_device_codes(sync_conn: Connection) -> None:
+    """Drop the v1 ``/auth/device`` table (#35). OAuth device grants use ``oauth_device_codes``."""
+    sync_conn.execute(text("DROP TABLE IF EXISTS device_codes"))
+
+
 def migrate_sqlite_drop_ticket_status(sync_conn: Connection) -> None:
     """Drop the stored ``tickets.status`` column and its CHECK (#35, workflow.md §2).
 
@@ -607,6 +611,7 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_blocked_by_to_text)
 
     async with async_engine.begin() as conn:
+        await conn.run_sync(migrate_sqlite_drop_legacy_device_codes)
         await conn.run_sync(migrate_sqlite_archive_fields)
         await conn.run_sync(migrate_sqlite_board_workflow_fields)
         await conn.run_sync(migrate_sqlite_ticket_workflow_fields)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
-    "BoardEvent",
     "discover_agents",
     "event_bus",
     "initial_rank",
@@ -15,7 +14,7 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name in {"BoardEvent", "event_bus"}:
+    if name == "event_bus":
         from ak5.server.services import event_bus as mod
 
         return getattr(mod, name)

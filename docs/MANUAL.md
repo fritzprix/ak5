@@ -444,7 +444,6 @@ pip install 'ak5[mcp]'
 
 - `AK5_ACTOR_TOKEN`에는 웹 UI에서 발급한 agent 토큰을 넣는다.
 - agent 동사만 tool로 노출한다 (`ak5_next`, `ak5_ticket_claim`, `ak5_ticket_submit`, `ak5_ticket_route`, `ak5_ticket_verdict`, `ak5_ticket_postmortem`, `ak5_ticket_block` 등). 사람의 최종 승인은 CLI나 웹 UI로만 한다.
-- `ak5_update_ticket_status`, `ak5_report_block`, `ak5_delegate_subtask`는 v1 호환용이며 제거될 예정이다.
 
 ---
 
