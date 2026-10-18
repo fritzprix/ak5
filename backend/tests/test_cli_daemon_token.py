@@ -128,6 +128,8 @@ def test_whoami_json_is_pure_json(daemon_home, monkeypatch):
 
 
 def test_daemon_autostart_disabled_exit_9(daemon_home, monkeypatch):
+    from ak5.contracts.errors import ErrorCode
+
     _seed_profile(daemon_home, name="me", token="tok")
     monkeypatch.setenv("AK5_PROFILE", "me")
     monkeypatch.setenv("AK5_DAEMON_AUTOSTART", "0")
@@ -135,3 +137,11 @@ def test_daemon_autostart_disabled_exit_9(daemon_home, monkeypatch):
     with pytest.raises(ClientError) as exc:
         resolve_access_token()
     assert exc.value.exit_code == EXIT_DAEMON
+    assert exc.value.code == ErrorCode.DAEMON_UNAVAILABLE
+
+    # --json must keep ErrorCode (not bare CLIENT_ERROR) through open_client (#69).
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "next", "--inbox"])
+    assert result.exit_code == EXIT_DAEMON, result.output
+    body = json.loads(result.output)
+    assert body["error"]["code"] == ErrorCode.DAEMON_UNAVAILABLE.value

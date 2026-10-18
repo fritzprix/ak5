@@ -11,8 +11,9 @@ import httpx
 
 from ak5.cli.config import get_api_url, get_token, require_auth_headers
 from ak5.client.auth import resolve_access_token, set_access_token_resolver
-from ak5.client.errors import EXIT_AUTH, ClientError
+from ak5.client.errors import EXIT_AUTH, EXIT_DAEMON, ClientError
 from ak5.client.http import AK5Client
+from ak5.contracts.errors import ErrorCode
 
 # Wire CLI session/env token resolution through the client chokepoint (#13).
 set_access_token_resolver(get_token)
@@ -83,16 +84,24 @@ def open_client(
     headers: dict[str, str] = {}
     if require_auth:
         try:
-            # Env → daemon profile → legacy session (may SystemExit 8/9).
+            # Env → daemon profile → legacy session (raises ClientError, exit 8/9).
             auth_headers = require_auth_headers(url)
+        except ClientError:
+            raise
         except SystemExit as exc:
-            code = exc.code if isinstance(exc.code, int) else EXIT_AUTH
-            # Map legacy auth SystemExit(1) → exit 8 for API contract.
-            if code == 1:
-                code = EXIT_AUTH
+            # Legacy callers may still SystemExit; preserve daemon exit 9 (#69).
+            raw = exc.code if isinstance(exc.code, int) else EXIT_AUTH
+            if raw == 1:
+                raw = EXIT_AUTH
+            if raw == EXIT_DAEMON:
+                raise ClientError(
+                    "ak5 daemon is not running",
+                    code=ErrorCode.DAEMON_UNAVAILABLE,
+                    exit_code=EXIT_DAEMON,
+                ) from exc
             raise ClientError(
                 "Authentication required",
-                exit_code=code,
+                exit_code=raw,
             ) from exc
         token = None
         auth = auth_headers.get("Authorization") or ""

@@ -551,8 +551,9 @@ def require_auth_headers(api_url: str | None = None) -> dict[str, str]:
 
     try:
         token = resolve_access_token()
-    except ClientError as exc:
-        raise SystemExit(exc.exit_code) from exc
+    except ClientError:
+        # Re-raise so ``--json`` keeps ErrorCode (e.g. DAEMON_UNAVAILABLE, exit 9) (#69).
+        raise
     if token:
         return {"Authorization": f"Bearer {token}"}
 
