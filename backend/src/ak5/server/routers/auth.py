@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
-from ak5.server.auth.bridge import actor_id_for_principal
+from ak5.server.auth.bridge import actor_id_for_principal, principal_id_for_actor
 from ak5.server.auth.principal import Principal
 from ak5.server.auth.tokens import verify_access_token
-from ak5.server.authz import RESERVED_ADMIN_IDS, RESERVED_ADMIN_ROLES
+from ak5.server.authz import RESERVED_ADMIN_IDS, RESERVED_ADMIN_ROLES, attach_principal
 from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
@@ -60,6 +60,36 @@ def _overlay_actor_from_principal(actor: Actor, principal: Principal) -> None:
     else:
         set_committed_value(actor, "actor_type", "agent")
         set_committed_value(actor, "role", principal.workflow_role.value)
+    attach_principal(actor, principal)
+
+
+async def _load_actor_for_subject(
+    db: AsyncSession,
+    *,
+    subject_id: str,
+    prefer_principal_id: str | None = None,
+) -> Actor | None:
+    """Load Actor preferring principal-id alias rows (identity.md §9)."""
+    candidates: list[str] = []
+    if prefer_principal_id:
+        candidates.append(prefer_principal_id)
+    candidates.append(subject_id)
+    bridged = principal_id_for_actor(subject_id)
+    if bridged not in candidates:
+        candidates.append(bridged)
+    legacy = (
+        actor_id_for_principal(prefer_principal_id)
+        if prefer_principal_id is not None
+        else actor_id_for_principal(subject_id)
+    )
+    if legacy not in candidates:
+        candidates.append(legacy)
+
+    for actor_id in candidates:
+        actor = await db.get(Actor, actor_id)
+        if actor is not None:
+            return actor
+    return None
 
 
 async def resolve_auth_context(token: str, db: AsyncSession) -> AuthContext:
@@ -83,19 +113,22 @@ async def resolve_auth_context(token: str, db: AsyncSession) -> AuthContext:
     principal: Principal | None = None
     if payload.get("principal_type") in ("user", "agent"):
         principal = await verify_access_token(token, db)
-        actor_id = actor_id_for_principal(principal.principal_id)
         workspace_id = principal.workspace_id
+        actor = await _load_actor_for_subject(
+            db,
+            subject_id=actor_id_for_principal(principal.principal_id),
+            prefer_principal_id=principal.principal_id,
+        )
+        lookup_label = principal.principal_id
     else:
-        actor_id = subject
         workspace_id = LOCAL_WORKSPACE_ID
+        actor = await _load_actor_for_subject(db, subject_id=subject)
+        lookup_label = subject
 
-    stmt = select(Actor).where(Actor.actor_id == actor_id)
-    result = await db.execute(stmt)
-    actor = result.scalar_one_or_none()
     if not actor:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Actor '{actor_id}' not found",
+            detail=f"Actor '{lookup_label}' not found",
         )
     if principal is not None:
         _overlay_actor_from_principal(actor, principal)

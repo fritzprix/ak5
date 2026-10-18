@@ -10,33 +10,52 @@ from ak5.server.models.actor import Actor
 RESERVED_ADMIN_ROLES: frozenset[str] = frozenset({"admin", "system_admin", "root", "superuser"})
 RESERVED_ADMIN_IDS: frozenset[str] = frozenset({"admin", "system", "root"})
 
+# Request-scoped Principal attached by AuthContext (not an ORM column).
+_ACTOR_PRINCIPAL_ATTR = "_ak5_principal"
+
+
+def attach_principal(actor: Actor, principal: Principal) -> None:
+    """Bind a Principal to an Actor for this request (identity.md §2)."""
+    actor.__dict__[_ACTOR_PRINCIPAL_ATTR] = principal
+
+
+def principal_of(actor: Actor) -> Principal | None:
+    """Return the Principal attached for this request, if any."""
+    value = actor.__dict__.get(_ACTOR_PRINCIPAL_ATTR)
+    return value if isinstance(value, Principal) else None
+
+
 def is_admin(actor: Actor) -> bool:
     """Check if the given actor possesses administrative privileges."""
     return actor.role.lower() in RESERVED_ADMIN_ROLES or actor.actor_id.lower() in RESERVED_ADMIN_IDS
+
+
+def same_subject(ref: str | None, actor: Actor) -> bool:
+    """True when ``ref`` and ``actor`` denote the same principal/actor identity."""
+    if ref is None:
+        return False
+    if ref == actor.actor_id:
+        return True
+    principal = principal_of(actor)
+    if principal is not None and ref == principal.principal_id:
+        return True
+    from ak5.server.auth.bridge import principal_id_for_actor
+
+    return principal_id_for_actor(ref) == principal_id_for_actor(actor.actor_id)
 
 
 def is_admin_or_owner(actor: Actor, created_by: str | None) -> bool:
     """Check if the actor has administrative privileges or matches the owner/creator ID."""
     if is_admin(actor):
         return True
-    return created_by == actor.actor_id
+    return same_subject(created_by, actor)
 
 
 def resolve_workflow_role(actor: Actor) -> Role | None:
-    """Map an actor's stored role to a workflow :class:`Role`.
+    """Map an actor's stored role to a workflow :class:`Role` (legacy Actor JWTs only).
 
-    Role and ``actor_type`` must agree:
-
-    - :attr:`Role.HUMAN` only when ``actor_type == "human"`` (legacy display
-      roles like ``PM`` still count as human).
-    - ``triage`` / ``worker`` / ``gatekeeper`` only when ``actor_type == "agent"``.
-
-    Mismatches (e.g. agent with stored role ``human``) return ``None`` so
-    callers raise :class:`~ak5.contracts.errors.ErrorCode.ROLE_FORBIDDEN`.
-
-    Prefer :class:`~ak5.server.auth.principal.Principal` when available
-    (identity.md §2 — single role rule). Principal JWTs overlay Actor fields
-    for the request via :func:`ak5.server.routers.auth._overlay_actor_from_principal`.
+    Prefer :func:`workflow_role_of` — Principal JWTs must not use Actor columns
+    for role (identity.md §2).
     """
     raw = (actor.role or "").strip().lower()
     actor_type = (actor.actor_type or "").strip().lower()
@@ -55,6 +74,21 @@ def resolve_workflow_role(actor: Actor) -> Role | None:
     return None
 
 
+def workflow_role_of(subject: Actor | Principal) -> Role | None:
+    """Sole workflow-role rule for authz (identity.md §2).
+
+    - :class:`Principal` → ``workflow_role`` directly.
+    - :class:`Actor` with attached Principal → that Principal's ``workflow_role``.
+    - Legacy Actor JWT (no Principal) → :func:`resolve_workflow_role`.
+    """
+    if isinstance(subject, Principal):
+        return subject.workflow_role
+    attached = principal_of(subject)
+    if attached is not None:
+        return attached.workflow_role
+    return resolve_workflow_role(subject)
+
+
 class RoleForbiddenError(Exception):
     """Raised when an actor lacks a required workflow role."""
 
@@ -67,15 +101,18 @@ class RoleForbiddenError(Exception):
 def require_roles(subject: Actor | Principal, *allowed: Role) -> Role:
     """Return the subject's workflow role or raise :class:`RoleForbiddenError`.
 
-    :class:`Principal` uses ``workflow_role`` directly (identity.md §2).
-    :class:`Actor` uses :func:`resolve_workflow_role` (legacy / overlaid).
+    Principal JWTs use :attr:`Principal.workflow_role` only (no Actor role path).
     """
+    role = workflow_role_of(subject)
     if isinstance(subject, Principal):
-        role: Role | None = subject.workflow_role
         label = f"{subject.principal_type}:{subject.principal_id}"
     else:
-        role = resolve_workflow_role(subject)
-        label = subject.role
+        attached = principal_of(subject)
+        label = (
+            f"{attached.principal_type}:{attached.principal_id}"
+            if attached is not None
+            else subject.role
+        )
     if role is None or role not in allowed:
         allowed_names = ", ".join(sorted(r.value for r in allowed))
         raise RoleForbiddenError(

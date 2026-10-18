@@ -28,7 +28,8 @@ from ak5.server.authz import (
     RoleForbiddenError,
     actor_has_capabilities,
     require_roles,
-    resolve_workflow_role,
+    same_subject,
+    workflow_role_of,
 )
 from ak5.server.config import settings
 from ak5.server.models.actor import Actor
@@ -673,7 +674,7 @@ async def _finish_transition(
 def _require_own_claim(ticket: Ticket, actor: Actor, token: str | None) -> None:
     if not is_claim_valid(ticket):
         raise WorkflowError(ErrorCode.STALE_CLAIM, "Claim token missing or lease expired")
-    if ticket.claimed_by != actor.actor_id:
+    if not same_subject(ticket.claimed_by, actor):
         raise WorkflowError(ErrorCode.STALE_CLAIM, "Claim is held by another actor")
     if not token or token != ticket.claim_token:
         raise WorkflowError(ErrorCode.STALE_CLAIM, "Claim token mismatch")
@@ -1180,7 +1181,7 @@ async def claim_ticket(
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
 
-    if stage == Stage.AGENT_REVIEW and ticket.submitted_by == actor.actor_id:
+    if stage == Stage.AGENT_REVIEW and same_subject(ticket.submitted_by, actor):
         raise WorkflowError(
             ErrorCode.SEPARATION_OF_DUTIES,
             "Submitter cannot claim their own submission for agent review",
@@ -1557,7 +1558,7 @@ async def verdict(
         except RoleForbiddenError as exc:
             raise WorkflowError(exc.code, exc.message) from exc
         _require_own_claim(ticket, actor, claim_token)
-        if ticket.submitted_by == actor.actor_id:
+        if same_subject(ticket.submitted_by, actor):
             raise WorkflowError(
                 ErrorCode.SEPARATION_OF_DUTIES,
                 "Submitter cannot review their own submission",
@@ -1930,8 +1931,8 @@ async def block_ticket(
             f"Cannot block ticket in stage '{stage.value}'",
         )
 
-    role = resolve_workflow_role(actor)
-    is_holder = is_claim_valid(ticket) and ticket.claimed_by == actor.actor_id
+    role = workflow_role_of(actor)
+    is_holder = is_claim_valid(ticket) and same_subject(ticket.claimed_by, actor)
     # Humans and claim holders may always block. Unclaimed tickets also accept
     # external/dependency blocks from any authenticated actor (MCP report-block).
     unclaimed = not is_claim_valid(ticket)
@@ -2001,7 +2002,7 @@ async def unblock_ticket(
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "Ticket is not blocked")
 
     kind = ticket.blocked_kind
-    role = resolve_workflow_role(actor)
+    role = workflow_role_of(actor)
     needs_human_resolution = kind in (
         BlockedKind.NEEDS_HUMAN.value,
         BlockedKind.ESCALATION.value,
@@ -2032,7 +2033,7 @@ async def unblock_ticket(
         db.add(rev)
     else:
         # dependency / external — blocker or human
-        if role != Role.HUMAN and ticket.blocked_actor != actor.actor_id:
+        if role != Role.HUMAN and not same_subject(ticket.blocked_actor, actor):
             raise WorkflowError(
                 ErrorCode.ROLE_FORBIDDEN,
                 "Only the blocking actor or a human can unblock dependency/external",
@@ -2100,7 +2101,7 @@ async def move_ticket_constrained(
         ) from exc
 
     if from_stage != to_stage:
-        role = resolve_workflow_role(actor)
+        role = workflow_role_of(actor)
         if role != Role.HUMAN:
             raise WorkflowError(
                 ErrorCode.INVALID_TRANSITION,
@@ -2236,7 +2237,7 @@ async def next_ticket(
     if board is None:
         raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
 
-    role = resolve_workflow_role(actor)
+    role = workflow_role_of(actor)
     if board_id == INBOX_BOARD_ID or board.kind == "inbox":
         stages = [Stage.UNCLASSIFIED.value]
     else:
@@ -2296,9 +2297,8 @@ async def next_ticket(
                     continue
             if required_caps and not actor_has_capabilities(actor, required_caps):
                 continue
-        if (
-            ticket_stage(ticket) == Stage.AGENT_REVIEW
-            and ticket.submitted_by == actor.actor_id
+        if ticket_stage(ticket) == Stage.AGENT_REVIEW and same_subject(
+            ticket.submitted_by, actor
         ):
             continue
         return ticket

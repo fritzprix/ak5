@@ -37,10 +37,13 @@ def _to_actor_out(actor: Actor) -> ActorOut:
 
 async def _actor_ids_in_workspace(db: AsyncSession, workspace_id: str) -> set[str]:
     """Actors visible in a workspace: members, agents, and board enrollees."""
+    from ak5.server.auth.bridge import principal_id_for_actor
+
     ids: set[str] = set()
     for (uid,) in (
         await db.execute(select(Membership.user_id).where(Membership.workspace_id == workspace_id))
     ).all():
+        ids.add(uid)
         ids.add(actor_id_for_principal(uid))
     for (aid,) in (
         await db.execute(
@@ -50,6 +53,7 @@ async def _actor_ids_in_workspace(db: AsyncSession, workspace_id: str) -> set[st
             )
         )
     ).all():
+        ids.add(aid)
         ids.add(actor_id_for_principal(aid))
     for (aid,) in (
         await db.execute(
@@ -59,6 +63,8 @@ async def _actor_ids_in_workspace(db: AsyncSession, workspace_id: str) -> set[st
         )
     ).all():
         ids.add(aid)
+        ids.add(principal_id_for_actor(aid))
+        ids.add(actor_id_for_principal(aid))
     return ids
 
 

@@ -117,12 +117,7 @@ def _fill_path(template: str) -> str:
 
 def _is_collection_list(path: str, method: str) -> bool:
     """True for list-style GETs that may return [] instead of 403."""
-    if method != "GET":
-        return False
-    # No path params → collection
-    if "{" not in path:
-        return True
-    return False
+    return method == "GET" and "{" not in path
 
 
 @pytest.fixture
