@@ -1,6 +1,6 @@
-# Hosted Operations Basics — Spec (DRAFT)
+# Hosted Operations Basics — Spec
 
-> **상태: 결정 반영 중 (#37).** §9-8(hosted는 v2.0.0 범위)은 **확정**(2026-10-19, #98 §9-7과 동일 결정). §9-1~7(특히 RPO/RTO)은 권장안 대기 — 모두 확정되면 "확정"으로 바꾸고 구현을 위임한다.
+> **상태: 확정 (#37, 2026-10-19).** §9의 모든 항목이 확정되었다(권장안 승인, 8번은 #98 §9-7과 동일 결정). 구현은 §8 순서의 이슈로 분할해 위임한다.
 > 선행/관련: [deployment.md](./deployment.md) (공유 저장소·다중 인스턴스, #20 초안) · [identity.md](./identity.md) · [events.md](./events.md)
 
 ## 0. 범위와 원칙
@@ -126,7 +126,7 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | `ak5_db_pool_in_use` | gauge | |
 
 - **라벨에 workspace_id/ticket_id/principal을 쓰지 않는다**(카디널리티 폭발·프라이버시). workspace별 사용량은 §3 usage API로 본다.
-- `/metrics`는 기본 비활성(`AK5_METRICS=1`로 켬). 켜면 **관리 토큰(`AK5_METRICS_TOKEN`) 또는 내부 bind에서만** 접근 가능하고, 공개 인터페이스에서는 인증 없이 열리지 않는다.
+- `/metrics`는 기본 비활성(`AK5_METRICS_ENABLED=1`로 켬). 켜면 **관리 토큰(`AK5_METRICS_TOKEN`) 또는 내부 bind에서만** 접근 가능하고, 공개 인터페이스에서는 인증 없이 열리지 않는다.
 - 서버리스에서는 pull 모델이 맞지 않으므로 로그 기반 메트릭(JSON 로그 → 플랫폼 집계)을 1차로 하고 `/metrics`는 상시 서버용이다.
 
 ### 4.4 로깅 금지 항목
@@ -179,7 +179,7 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | `AK5_MAX_CONNECTIONS` | 무제한 | 500 |
 | `AK5_QUOTA_CEILING` | 없음 | 서버 상한 JSON |
 | `AK5_LOG_FORMAT` / `AK5_LOG_LEVEL` | `text` / `INFO` | `json` / `INFO` |
-| `AK5_METRICS` / `AK5_METRICS_TOKEN` | 꺼짐 | 선택 |
+| `AK5_METRICS_ENABLED` / `AK5_METRICS_TOKEN` | 꺼짐 | 선택 |
 
 `AK5_PROFILE=hosted`인데 `AK5_TRUSTED_PROXIES`가 비어 있고 비-loopback bind면 시작을 거부한다(IP 단위 한도가 무의미해지므로).
 
@@ -195,15 +195,15 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 
 1은 #20 구현 전에도 진행 가능하다. 2·3은 deployment.md의 공유 저장소 결정(#20 §9)에 의존한다.
 
-## 9. 결정 필요 (권장안 포함)
+## 9. 결정 사항
 
-| # | 질문 | 권장 |
+| # | 질문 | 결정 |
 |---|---|---|
-| 1 | rate limit 저장소 | **DB 테이블 기본**, Redis는 선택 어댑터 |
-| 2 | 알고리즘 | 고정 윈도우로 시작, 문제가 보이면 슬라이딩/토큰 버킷 |
-| 3 | 연결 한도의 전역 정확도 | 인스턴스 로컬 + principal/workspace는 근사치 허용 |
-| 4 | quota 집계 방식 | 가벼운 값은 `COUNT`, 첨부 합계는 `workspace_usage` 카운터 |
+| 1 | rate limit 저장소 | ✅ 확정(2026-10-19): **DB 테이블 기본**, Redis는 선택 어댑터 |
+| 2 | 알고리즘 | ✅ 확정(2026-10-19): 고정 윈도우로 시작, 문제가 보이면 슬라이딩/토큰 버킷 |
+| 3 | 연결 한도의 전역 정확도 | ✅ 확정(2026-10-19): 인스턴스 로컬 + principal/workspace는 근사치 허용 |
+| 4 | quota 집계 방식 | ✅ 확정(2026-10-19): 가벼운 값은 `COUNT`, 첨부 합계는 `workspace_usage` 카운터 |
 | 5 | RPO / RTO 목표 | ✅ **확정(2026-10-19): RPO ≤ 5분(PITR), RTO ≤ 1시간** |
-| 6 | `/metrics` 노출 | 기본 꺼짐, 켜면 토큰 또는 내부 bind만 |
-| 7 | 요청 본문/첨부 내용 로깅 | 영구 금지(§4.4) |
+| 6 | `/metrics` 노출 | ✅ 확정(2026-10-19): 기본 꺼짐, 켜면 토큰 또는 내부 bind만 |
+| 7 | 요청 본문/첨부 내용 로깅 | ✅ 확정(2026-10-19): 영구 금지(§4.4) |
 | 8 | hosted가 v2.0.0 범위인가 | ✅ **확정: 포함** (deployment.md §9-7, #36 "wave 5 포함 전체 2.0.0"과 일치). §8의 구현 순서 전체가 2.0.0 대상이며, 1번(요청 ID/로그/healthz)부터 진행 |
