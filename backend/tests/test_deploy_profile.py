@@ -14,8 +14,8 @@ import logging
 import re
 from pathlib import Path
 
-import pytest
 import ak5.server.config as config_mod
+import pytest
 from ak5.server.config import get_deploy_profile, hosted_profile
 
 
