@@ -10,7 +10,12 @@ import click
 import httpx
 from ak5.cli.client_factory import json_flag_from_ctx, open_client
 from ak5.cli.config import get_api_url, require_auth_headers
-from ak5.client.claims import clear_claim_token, resolve_claim_token, save_claim_token
+from ak5.client.claims import (
+    clear_claim_token,
+    load_claim_token,
+    resolve_claim_token,
+    save_claim_token,
+)
 from ak5.client.errors import EXIT_USAGE, ClientError
 from ak5.client.output import handle_client_error, is_json_mode, print_result
 from ak5.client.payload import load_json_object
@@ -322,13 +327,14 @@ def bounce_cmd(ctx: click.Context, ticket_id: str, token: str | None, reason: st
 @click.option("--plan", required=True, help="Route plan JSON: @file.json or -")
 @click.pass_context
 def route_cmd(ctx: click.Context, ticket_id: str, token: str | None, plan: str) -> None:
-    """Route unclassified inbox ticket to a board (triage)."""
+    """Route unclassified inbox ticket to a board (triage or human)."""
     json_mode = _jm(ctx)
     try:
         plan_body = load_json_object(plan)
-        claim_token = resolve_claim_token(ticket_id, token)
+        # human route may omit the token
+        claim_token = token.strip() if token else load_claim_token(ticket_id)
         with open_client() as client:
-            result = client.route(ticket_id, claim_token=claim_token, plan=plan_body)
+            result = client.route(ticket_id, plan=plan_body, claim_token=claim_token)
         clear_claim_token(ticket_id)
         _ok(
             result,
@@ -467,13 +473,7 @@ def block_ticket_cmd(
     _ = mention
     json_mode = _jm(ctx)
     try:
-        claim_token = None
-        if token:
-            claim_token = token
-        else:
-            from ak5.client.claims import load_claim_token
-
-            claim_token = load_claim_token(ticket_id)
+        claim_token = token or load_claim_token(ticket_id)
         with open_client() as client:
             result = client.block(
                 ticket_id,

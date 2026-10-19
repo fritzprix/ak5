@@ -347,12 +347,15 @@ class AK5Client:
         self,
         ticket_id: str,
         *,
-        claim_token: str,
         plan: dict[str, Any],
+        claim_token: str | None = None,
     ) -> dict[str, Any]:
+        body: dict[str, Any] = {"plan": plan}
+        if claim_token is not None:
+            body["claim_token"] = claim_token
         return self.post(
             f"/tickets/{ticket_id}/route",
-            json={"claim_token": claim_token, "plan": plan},
+            json=body,
         )
 
     def verdict(

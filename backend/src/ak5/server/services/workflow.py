@@ -123,8 +123,8 @@ TRANSITION_TABLE: tuple[TransitionSpec, ...] = (
         "route",
         Stage.UNCLASSIFIED,
         Stage.BACKLOG,
-        frozenset({Role.TRIAGE}),
-        requires_own_claim=True,
+        frozenset({Role.TRIAGE, Role.HUMAN}),
+        requires_own_claim=False,
         note="T4",
     ),
     TransitionSpec(
@@ -1475,12 +1475,12 @@ async def route_ticket(
     actor: Actor,
     ticket_id: str,
     *,
-    claim_token: str,
+    claim_token: str | None = None,
     plan: RoutePlan,
 ) -> Ticket:
-    """T4 — triage routes unclassified ticket to a board backlog."""
+    """T4 — triage (or human) routes unclassified ticket to a board backlog."""
     try:
-        require_roles(actor, Role.TRIAGE)
+        actor_role = require_roles(actor, Role.TRIAGE, Role.HUMAN)
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
     ticket = await _load_ticket(db, ticket_id, for_update=True)
@@ -1488,8 +1488,41 @@ async def route_ticket(
     stage = ticket_stage(ticket)
     if stage != Stage.UNCLASSIFIED:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "route requires unclassified stage")
-    _require_own_claim(ticket, actor, claim_token)
-    _require_unblocked(ticket)
+    if actor_role == Role.HUMAN:
+        if ticket.blocked_kind == BlockedKind.NEEDS_HUMAN:
+            unblocked_kind = ticket.blocked_kind
+            ticket.blocked_kind = None
+            ticket.blocked_by = None
+            ticket.blocked_since = None
+            ticket.blocked_actor = None
+            await record_event(
+                db,
+                EventType.TICKET_UNBLOCKED,
+                board_id=ticket.board_id,
+                ticket_id=ticket.ticket_id,
+                actor_id=actor.actor_id,
+                data={
+                    "previous_kind": unblocked_kind,
+                    "via": "route",
+                    "board_id": ticket.board_id,
+                },
+            )
+        else:
+            _require_unblocked(ticket)
+    else:
+        if not claim_token:
+            raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "claim_token is required for agent route")
+        _require_own_claim(ticket, actor, claim_token)
+        _require_unblocked(ticket)
+        if (
+            not (plan.refined_title or "").strip()
+            or not (plan.refined_spec or "").strip()
+            or not plan.acceptance_criteria
+        ):
+            raise WorkflowError(
+                ErrorCode.PAYLOAD_INVALID,
+                "triage route requires refined_title, refined_spec and acceptance_criteria (>=1)",
+            )
 
     if isinstance(plan.target, RouteTargetCreate):
         board = await _create_auto_board(
@@ -1510,20 +1543,27 @@ async def route_ticket(
 
     _require_board_scope(actor, target_board_id)
 
-    ticket.title = plan.refined_title
-    ticket.description = plan.refined_spec
+    refined_title = plan.refined_title or ticket.title
+    refined_spec = plan.refined_spec or ticket.description or ticket.original_request or ticket.title
+    ticket.title = refined_title
+    ticket.description = refined_spec
     _clear_claim(ticket)
     from_board_id = ticket.board_id
     await _move_ticket(db, ticket, board_id=target_board_id, stage=Stage.BACKLOG)
 
+    if plan.acceptance_criteria is not None:
+        criteria = list(plan.acceptance_criteria)
+    else:
+        latest = await _latest_revision(db, ticket.ticket_id)
+        criteria = list(latest.acceptance_criteria) if (latest and latest.acceptance_criteria) else []
     revision = TicketRevision(
         ticket_id=ticket.ticket_id,
-        spec=plan.refined_spec,
+        spec=refined_spec,
         author=actor.actor_id,
         reason="route",
         source="route",
     )
-    revision.acceptance_criteria = list(plan.acceptance_criteria)
+    revision.acceptance_criteria = criteria
     db.add(revision)
     await db.flush()
 

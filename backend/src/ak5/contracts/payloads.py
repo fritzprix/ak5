@@ -24,11 +24,11 @@ class RouteTargetCreate(BaseModel):
 class RoutePlan(BaseModel):
     """Route payload (workflow.md §5.1)."""
 
-    refined_title: str = Field(..., min_length=1)
-    refined_spec: str = Field(..., min_length=1)
-    acceptance_criteria: list[str] = Field(..., min_length=1)
     target: RouteTargetBoard | RouteTargetCreate
-    confidence: float = Field(..., ge=0.0, le=1.0)
+    refined_title: str | None = None
+    refined_spec: str | None = None
+    acceptance_criteria: list[str] | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class Artifact(BaseModel):

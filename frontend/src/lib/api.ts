@@ -620,6 +620,39 @@ export async function submitVerdict(
   return res.json();
 }
 
+export interface RouteTicketPlan {
+  target:
+    | { board_id: string }
+    | { create_board: { name: string; template: string; description?: string } };
+  refined_title?: string;
+  refined_spec?: string;
+  acceptance_criteria?: string[];
+  confidence?: number;
+}
+
+/** POST /tickets/{id}/route — T4 triage or human direct routing. */
+export async function routeTicket(
+  ticketId: string,
+  plan: RouteTicketPlan,
+  claimToken?: string | null
+): Promise<Ticket> {
+  const body: Record<string, unknown> = { plan };
+  if (claimToken != null) {
+    body.claim_token = claimToken;
+  }
+  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/route`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res));
+  }
+  return res.json();
+}
+
 /** POST /tickets/{id}/reopen — T17 done → postmortem_pending. */
 export async function reopenTicket(ticketId: string, reason: string): Promise<Ticket> {
   const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/reopen`, {
