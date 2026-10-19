@@ -1,11 +1,12 @@
-"""Long-poll and SSE connection limits (operations.md §2.5, #115).
+"""Long-poll and SSE connection limits (operations.md §2.5, #115, #130).
 
-* Tracks active long-poll and SSE stream connections per instance, principal, and workspace.
+* Tracks active long-poll and SSE stream connections per instance (process), principal, and workspace.
 * Off by default in local mode (``AK5_PROFILE=local``).
   In ``AK5_PROFILE=hosted``:
-  - principal: 5 concurrent connections (429 CONNECTION_LIMIT)
-  - workspace: 50 concurrent connections (429 CONNECTION_LIMIT)
-  - instance: AK5_MAX_CONNECTIONS (default 500, 503 + Retry-After)
+  - principal: 5 concurrent connections per instance (429 CONNECTION_LIMIT)
+  - workspace: 50 concurrent connections per instance (429 CONNECTION_LIMIT)
+  - instance: AK5_MAX_CONNECTIONS per process (default 500, 503 + Retry-After)
+* Multi-instance deployments: enforced per-process in memory (aligned with Scale-by-Replicas, operations.md §4.3).
 * Overrides: ``AK5_CONNECTION_LIMITS`` (JSON dict), ``AK5_MAX_CONNECTIONS`` (int).
 """
 
