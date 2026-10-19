@@ -368,6 +368,10 @@ async def remove_member(
     await db.flush()
 
 
+MAX_PENDING_INVITES_PER_WORKSPACE = 100
+INVITE_COOLDOWN_MINUTES = 10
+
+
 async def create_invite(
     db: AsyncSession,
     *,
@@ -383,6 +387,7 @@ async def create_invite(
     if not normalized or "@" not in normalized:
         raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Valid email required")
 
+    now = _now()
     ws = await db.get(Workspace, workspace_id)
     if ws is not None:
         try:
@@ -393,6 +398,50 @@ async def create_invite(
                 f"Workspace quota '{exc.quota}' exceeded",
                 details={"quota": exc.quota, "limit": exc.limit, "current": exc.current},
             ) from exc
+
+    # Pending invites cap (operations.md §6 / #118: max 100 pending invites per workspace)
+    pending_count = (
+        await db.execute(
+            select(func.count(WorkspaceInvite.invite_id)).where(
+                WorkspaceInvite.workspace_id == workspace_id,
+                WorkspaceInvite.accepted_at.is_(None),
+                WorkspaceInvite.revoked_at.is_(None),
+                WorkspaceInvite.expires_at > now,
+            )
+        )
+    ).scalar_one()
+    if pending_count >= MAX_PENDING_INVITES_PER_WORKSPACE:
+        raise WorkspaceServiceError(
+            ErrorCode.QUOTA_EXCEEDED,
+            f"Workspace pending invites limit ({MAX_PENDING_INVITES_PER_WORKSPACE}) exceeded",
+            details={
+                "quota": "pending_invites",
+                "limit": MAX_PENDING_INVITES_PER_WORKSPACE,
+                "current": pending_count,
+            },
+        )
+
+    # Same email re-invite cooldown check (operations.md §6 / #118: 10 minutes)
+    cooldown_cutoff = now - timedelta(minutes=INVITE_COOLDOWN_MINUTES)
+    recent_invite = (
+        await db.execute(
+            select(WorkspaceInvite).where(
+                WorkspaceInvite.workspace_id == workspace_id,
+                WorkspaceInvite.email == normalized,
+                WorkspaceInvite.created_at >= cooldown_cutoff,
+            )
+        )
+    ).scalars().first()
+    if recent_invite is not None:
+        raise WorkspaceServiceError(
+            ErrorCode.RATE_LIMITED,
+            f"Invite cooldown in effect: please wait {INVITE_COOLDOWN_MINUTES} minutes before reinviting the same email",
+            details={
+                "limit": 1,
+                "window_seconds": INVITE_COOLDOWN_MINUTES * 60,
+                "scope": "email_cooldown",
+            },
+        )
 
     # Revoke prior pending invites for same email.
     pending = (
@@ -405,7 +454,6 @@ async def create_invite(
             )
         )
     ).scalars().all()
-    now = _now()
     for old in pending:
         old.revoked_at = now
     plaintext = secrets.token_urlsafe(32)
@@ -434,14 +482,15 @@ async def accept_invite(
             select(WorkspaceInvite).where(WorkspaceInvite.token_hash == token_hash)
         )
     ).scalar_one_or_none()
-    if invite is None:
-        raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Invalid invite token")
-    if invite.revoked_at is not None:
-        raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Invite revoked")
-    if invite.accepted_at is not None:
-        raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Invite already used")
-    if invite.expires_at <= _now():
-        raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Invite expired")
+    now = _now()
+    if (
+        invite is None
+        or invite.revoked_at is not None
+        or invite.accepted_at is not None
+        or invite.expires_at <= now
+    ):
+        # Uniform rejection response: do not disclose existence or exact spent state to prevent enumeration (operations.md §6).
+        raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Invalid or expired invite token")
 
     user_email = (user.email or "").strip().lower()
     if user_email != invite.email:
