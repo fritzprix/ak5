@@ -35,6 +35,7 @@ def _create_table(name, *args, **kwargs):
 
 def _create_index(index_name, table_name, columns, unique=False, **kwargs):
     if table_name in _adopted:
+        op.create_index(index_name, table_name, columns, unique=unique, if_not_exists=True, **kwargs)
         return
     op.create_index(index_name, table_name, columns, unique=unique, **kwargs)
 

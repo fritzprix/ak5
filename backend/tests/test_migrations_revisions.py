@@ -126,3 +126,35 @@ async def test_legacy_adoption_creates_only_missing_baseline_tables(tmp_path: Pa
             assert (await conn.execute(text("SELECT count(*) FROM workspaces"))).scalar_one() == 1
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_adoption_supplements_missing_baseline_indexes(tmp_path: Path):
+    """#120: pre-Alembic tables missing baseline indexes get them supplemented via CREATE INDEX IF NOT EXISTS."""
+    engine = _engine(tmp_path)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(mig.adopt_baseline_sync)
+            await conn.execute(
+                text("INSERT INTO workspaces (workspace_id, name, policy) VALUES ('ws_keep', 'Keep', '{}')")
+            )
+            # Explicitly drop baseline indexes on an adopted table
+            await conn.execute(text("DROP INDEX idx_tickets_assigned"))
+            await conn.execute(text("DROP INDEX ix_tickets_workspace_id"))
+
+        async with engine.connect() as conn:
+            indexes_before = await conn.run_sync(lambda c: {ix["name"] for ix in inspect(c).get_indexes("tickets")})
+            assert "idx_tickets_assigned" not in indexes_before
+            assert "ix_tickets_workspace_id" not in indexes_before
+
+        revision = await mig.ensure_schema(engine, legacy_upgrade=run_legacy_schema_upgrade)
+        assert revision == mig.head_revision()
+
+        async with engine.connect() as conn:
+            indexes_after = await conn.run_sync(lambda c: {ix["name"] for ix in inspect(c).get_indexes("tickets")})
+            assert "idx_tickets_assigned" in indexes_after
+            assert "ix_tickets_workspace_id" in indexes_after
+            name = (await conn.execute(text("SELECT name FROM workspaces WHERE workspace_id = 'ws_keep'"))).scalar_one()
+            assert name == "Keep"
+    finally:
+        await engine.dispose()
