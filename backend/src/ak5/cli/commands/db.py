@@ -162,6 +162,11 @@ def import_cmd(dump: Path, database_url: str | None) -> None:
     help="Clean stale temporary upload part files older than N seconds (default: 3600).",
 )
 @click.option(
+    "--purge-events/--no-purge-events",
+    default=True,
+    help="Purge expired events based on workspace retention policy (default: True).",
+)
+@click.option(
     "--reconcile-usage",
     is_flag=True,
     default=False,
@@ -175,10 +180,11 @@ def import_cmd(dump: Path, database_url: str | None) -> None:
 )
 def maintenance_cmd(
     clean_parts_older_than: float,
+    purge_events: bool = True,
     sweep_blob_gc: bool = False,
     reconcile_usage: bool = False,
 ) -> None:
-    """Run routine storage maintenance (clean stale temporary upload part files)."""
+    """Run routine storage and event-log maintenance (ensures database schema before purging)."""
     _require_server_extra()
     from ak5.server.blob import clean_stale_parts
     from ak5.server.config import settings
@@ -220,3 +226,18 @@ def maintenance_cmd(
             f"Blob GC sweep finished: {stats['deleted']} deleted, {stats['failed']} failed, {stats.get('dead_letters', 0)} dead-lettered (processed {stats['total']})."
         )
 
+    if purge_events:
+        import asyncio
+
+        from ak5.server.database import AsyncSessionLocal, ensure_database_schema
+        from ak5.server.services.subscription_service import subscription_service
+
+        async def _run_purge():
+            await ensure_database_schema()
+            async with AsyncSessionLocal() as session:
+                deleted = await subscription_service.purge_expired_events(session, force=True)
+                await session.commit()
+                return deleted
+
+        purged_count = asyncio.run(_run_purge())
+        click.echo(f"Purged {purged_count} expired event(s).")
