@@ -10,6 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.server.config import settings
+from ak5.server.connection_limit import ConnectionLimitExceeded, connection_limiter
 from ak5.server.database import get_db
 from ak5.server.inbox import resolve_board_alias
 from ak5.server.models.actor import Actor
@@ -95,21 +96,26 @@ async def sse_event_stream(
     tip_seq = await subscription_service.max_event_seq(db)
     resume_seq = last_event_id_header if last_event_id_header is not None else last_event_id
 
+    try:
+        slot = connection_limiter.acquire(current_actor.actor_id, workspace_id)
+    except ConnectionLimitExceeded as exc:
+        return exc.response()
+
     async def event_generator() -> AsyncGenerator[dict]:
-        yield {
-            "event": "CONNECTED",
-            "data": json.dumps(
-                {
-                    "status": "connected",
-                    "message": "AK5 Event Stream Active",
-                    "board_id": board_id,
-                }
-            ),
-        }
-
-        last_seq = int(resume_seq) if resume_seq is not None else tip_seq
-
         try:
+            yield {
+                "event": "CONNECTED",
+                "data": json.dumps(
+                    {
+                        "status": "connected",
+                        "message": "AK5 Event Stream Active",
+                        "board_id": board_id,
+                    }
+                ),
+            }
+
+            last_seq = int(resume_seq) if resume_seq is not None else tip_seq
+
             while True:
                 if await request.is_disconnected():
                     break
@@ -170,5 +176,11 @@ async def sse_event_stream(
                 await event_bus.wait_for_notify(timeout)
         except asyncio.CancelledError:
             return
+        finally:
+            slot.release()
 
-    return EventSourceResponse(event_generator())
+    try:
+        return EventSourceResponse(event_generator())
+    except Exception:
+        slot.release()
+        raise

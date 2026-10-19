@@ -32,8 +32,9 @@ class ErrorCode(StrEnum):
     WORKSPACE_FORBIDDEN = "WORKSPACE_FORBIDDEN"
     USER_PRESENCE_REQUIRED = "USER_PRESENCE_REQUIRED"
 
-    # operations.md §2.4 — retryable (Retry-After)
+    # operations.md §2.4 / §2.5 — retryable (Retry-After)
     RATE_LIMITED = "RATE_LIMITED"
+    CONNECTION_LIMIT = "CONNECTION_LIMIT"
 
     # client.md §8
     DAEMON_UNAVAILABLE = "DAEMON_UNAVAILABLE"
@@ -58,6 +59,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.WORKSPACE_FORBIDDEN: 403,
     ErrorCode.USER_PRESENCE_REQUIRED: 403,
     ErrorCode.RATE_LIMITED: 429,
+    ErrorCode.CONNECTION_LIMIT: 429,
     ErrorCode.DAEMON_UNAVAILABLE: 503,
 }
 
@@ -72,6 +74,7 @@ EXIT_CODE: dict[ErrorCode, int] = {
     ErrorCode.SYSTEM_BOARD: 4,
     ErrorCode.WIP_LIMIT: 3,  # cli.md §3.1 — retryable contention / capacity
     ErrorCode.RATE_LIMITED: 3,  # cli.md §3.1 — retryable, honour Retry-After
+    ErrorCode.CONNECTION_LIMIT: 3,  # cli.md §3.1 — retryable, honour Retry-After
     ErrorCode.NOT_FOUND: 4,
     ErrorCode.TICKET_BLOCKED: 5,
     ErrorCode.VERSION_MISMATCH: 7,

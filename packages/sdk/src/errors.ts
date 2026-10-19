@@ -23,8 +23,9 @@ export const ErrorCode = {
   // cli.md §2 / §3.1
   VERSION_MISMATCH: "VERSION_MISMATCH",
 
-  // operations.md §2.4 — retryable, honour `Retry-After` (AK5Error.retryAfter)
+  // operations.md §2.4 / §2.5 — retryable, honour `Retry-After` (AK5Error.retryAfter)
   RATE_LIMITED: "RATE_LIMITED",
+  CONNECTION_LIMIT: "CONNECTION_LIMIT",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -44,6 +45,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.SUBSCRIPTION_NOT_FOUND]: 404,
   [ErrorCode.VERSION_MISMATCH]: 409,
   [ErrorCode.RATE_LIMITED]: 429,
+  [ErrorCode.CONNECTION_LIMIT]: 429,
 };
 
 export const EXIT_CODE: Record<ErrorCode, number> = {
@@ -59,6 +61,7 @@ export const EXIT_CODE: Record<ErrorCode, number> = {
   [ErrorCode.TICKET_BLOCKED]: 5,
   [ErrorCode.VERSION_MISMATCH]: 7,
   [ErrorCode.RATE_LIMITED]: 3,
+  [ErrorCode.CONNECTION_LIMIT]: 3,
   [ErrorCode.CURSOR_EXPIRED]: 1,
   [ErrorCode.SUBSCRIPTION_NOT_FOUND]: 1,
 };
