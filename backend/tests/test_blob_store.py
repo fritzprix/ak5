@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import io
+import json
+import os
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import httpx
 import pytest
 from ak5.config import settings
 from ak5.server.blob import (
     BlobNotFoundError,
     BlobTooLargeError,
     FsBlobStore,
+    S3BlobStore,
+    VercelBlobStore,
     attachment_key,
     get_blob_store,
 )
@@ -112,10 +118,27 @@ async def test_fs_still_reads_pre_104_absolute_paths_inside_root(tmp_path: Path)
     assert not legacy.exists()
 
 
-def test_unknown_backend_is_rejected(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("AK5_BLOB_BACKEND", "s3")
-    with pytest.raises(RuntimeError, match="#109"):
+def test_backend_selection_and_validation(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AK5_BLOB_BACKEND", "magic_unknown")
+    with pytest.raises(RuntimeError, match="Unsupported AK5_BLOB_BACKEND='magic_unknown'"):
         get_blob_store()
+
+    monkeypatch.setenv("AK5_BLOB_BACKEND", "s3")
+    monkeypatch.delenv("AK5_S3_BUCKET", raising=False)
+    with pytest.raises(RuntimeError, match="requires AK5_S3_BUCKET"):
+        get_blob_store()
+
+    monkeypatch.setenv("AK5_S3_BUCKET", "my-bucket")
+    assert isinstance(get_blob_store(), S3BlobStore)
+
+    monkeypatch.setenv("AK5_BLOB_BACKEND", "vercel-blob")
+    monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="requires BLOB_READ_WRITE_TOKEN"):
+        get_blob_store()
+
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "token_123")
+    assert isinstance(get_blob_store(), VercelBlobStore)
+
     monkeypatch.setenv("AK5_BLOB_BACKEND", "FS")
     assert isinstance(get_blob_store(), FsBlobStore)
 
@@ -235,3 +258,164 @@ async def test_api_works_against_a_non_local_backend(
 
     assert (await client.delete(f"/api/v1/tickets/{tid}/attachments/{att}")).status_code == 200
     assert mem.deleted == [key]
+
+
+def test_clean_stale_parts(tmp_path: Path):
+    from ak5.server.blob import clean_stale_parts
+
+    parts_dir = tmp_path / "ws" / "ws_test" / "t1"
+    parts_dir.mkdir(parents=True)
+
+    # 1. Stale part (older than 1 hour)
+    stale_part = parts_dir / ".att_1.abc123.part"
+    stale_part.write_bytes(b"stale")
+    stale_time = time.time() - 7200
+    os.utime(stale_part, (stale_time, stale_time))
+
+    # 2. Fresh part (just created)
+    fresh_part = parts_dir / ".att_2.def456.part"
+    fresh_part.write_bytes(b"fresh")
+
+    # 3. Regular file
+    regular_file = parts_dir / "att_3"
+    regular_file.write_bytes(b"regular")
+
+    cleaned = clean_stale_parts(tmp_path, older_than_seconds=3600.0)
+    assert cleaned == 1
+    assert not stale_part.exists()
+    assert fresh_part.exists()
+    assert regular_file.exists()
+
+
+def test_db_maintenance_cli_cleans_stale_parts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from ak5.cli.commands.db import db_group
+    from ak5.server.config import settings
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(settings, "ATTACHMENTS_DIR", str(tmp_path))
+    stale_part = tmp_path / ".test.1234.part"
+    stale_part.write_bytes(b"stale")
+    stale_time = time.time() - 7200
+    os.utime(stale_part, (stale_time, stale_time))
+
+    runner = CliRunner()
+    result = runner.invoke(db_group, ["maintenance", "--clean-parts-older-than", "3600"])
+    assert result.exit_code == 0
+    assert "Cleaned 1 stale attachment part file(s)." in result.output
+    assert not stale_part.exists()
+
+
+@pytest.mark.asyncio
+async def test_s3_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        # Setup S3 bucket
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-bucket")
+
+        store = S3BlobStore("test-bucket", region_name="us-east-1")
+        await store.check_ready()
+
+        key = attachment_key("ws_s3", "TK-1", "att_s3")
+        assert not await store.exists(key)
+        assert store.local_path(key) is None
+
+        # Put
+        size = await store.put(key, _chunks(b"s3 ", b"content"), content_type="text/plain", max_bytes=100)
+        assert size == 10
+        assert await store.exists(key)
+
+        # Open
+        data = await _read(store, key)
+        assert data == b"s3 content"
+
+        # Over limit
+        big_key = attachment_key("ws_s3", "TK-1", "att_big")
+        with pytest.raises(BlobTooLargeError):
+            await store.put(big_key, _chunks(b"A" * 20), content_type="text/plain", max_bytes=15)
+        assert not await store.exists(big_key)
+
+        # Missing key
+        with pytest.raises(BlobNotFoundError):
+            await _read(store, "missing_key")
+
+        # Delete
+        await store.delete(key)
+        await store.delete(key)  # Idempotent
+        assert not await store.exists(key)
+
+
+@pytest.mark.asyncio
+async def test_vercel_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
+    blobs: dict[str, tuple[bytes, str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("authorization") == "Bearer v_token_abc"
+        path = request.url.path
+        if request.method == "HEAD":
+            key = path.lstrip("/")
+            if key in blobs:
+                return httpx.Response(200)
+            return httpx.Response(404)
+        if request.method == "GET":
+            key = path.lstrip("/")
+            if key == "":
+                return httpx.Response(200)
+            if key in blobs:
+                data, ct = blobs[key]
+                return httpx.Response(200, content=data, headers={"content-type": ct})
+            return httpx.Response(404)
+        if request.method == "PUT":
+            key = path.lstrip("/")
+            data = request.read()
+            ct = request.headers.get("content-type", "application/octet-stream")
+            blobs[key] = (data, ct)
+            return httpx.Response(200, json={"url": f"https://mock.blob/{key}"})
+        if request.method == "POST" and path == "/delete":
+            payload = json.loads(request.read())
+            for url in payload.get("urls", []):
+                key = url.split("https://blob.vercel-storage.com/")[-1].lstrip("/")
+                blobs.pop(key, None)
+            return httpx.Response(200)
+        return httpx.Response(400)
+
+    transport = httpx.MockTransport(handler)
+
+    orig_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return orig_client(*args, **kwargs)
+
+    monkeypatch.setattr("ak5.server.blob.httpx.AsyncClient", mock_client)
+
+    store = VercelBlobStore("v_token_abc")
+    await store.check_ready()
+
+    key = "ws/ws_v/TK-1/att_v"
+    assert not await store.exists(key)
+    assert store.local_path(key) is None
+
+    # Put
+    size = await store.put(key, _chunks(b"vercel ", b"blob"), content_type="text/plain", max_bytes=100)
+    assert size == 11
+    assert await store.exists(key)
+
+    # Open
+    assert await _read(store, key) == b"vercel blob"
+
+    # Over limit
+    with pytest.raises(BlobTooLargeError):
+        await store.put("ws/v/big", _chunks(b"X" * 50), content_type="text/plain", max_bytes=20)
+    assert not await store.exists("ws/v/big")
+
+    # Missing
+    with pytest.raises(BlobNotFoundError):
+        await _read(store, "non_existent")
+
+    # Delete
+    await store.delete(key)
+    assert not await store.exists(key)
+

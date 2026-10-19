@@ -152,3 +152,23 @@ def import_cmd(dump: Path, database_url: str | None) -> None:
     except SchemaError as exc:
         raise _fail(exc) from exc
     click.echo(json.dumps({"file": str(dump), "rows": counts}, indent=2))
+
+
+@db_group.command("maintenance")
+@_url_option
+@click.option(
+    "--clean-parts-older-than",
+    type=float,
+    default=3600.0,
+    help="Clean stale temporary upload part files older than N seconds (default: 3600).",
+)
+def maintenance_cmd(database_url: str | None, clean_parts_older_than: float) -> None:
+    """Run routine server maintenance (reclaim leases, purge retention, clean stale upload parts)."""
+    _require_server_extra()
+    from ak5.server.blob import clean_stale_parts
+    from ak5.server.config import settings
+
+    cleaned_parts = clean_stale_parts(
+        settings.ATTACHMENTS_DIR, older_than_seconds=clean_parts_older_than
+    )
+    click.echo(f"Cleaned {cleaned_parts} stale attachment part file(s).")

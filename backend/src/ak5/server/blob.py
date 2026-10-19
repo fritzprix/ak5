@@ -9,13 +9,17 @@ decides who may read a key.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
+
+import httpx
 
 from ak5.server.config import settings
 
@@ -169,6 +173,250 @@ class FsBlobStore:
             await asyncio.to_thread(path.unlink, missing_ok=True)
 
 
+def clean_stale_parts(root: Path | str, *, older_than_seconds: float = 3600.0) -> int:
+    """Remove orphaned ``.*.*.part`` upload files older than ``older_than_seconds``."""
+    base = Path(root).resolve()
+    if not base.is_dir():
+        return 0
+    now = time.time()
+    cleaned = 0
+    for path in base.rglob(".*.part"):
+        try:
+            if path.is_file():
+                stat = path.stat()
+                if now - stat.st_mtime >= older_than_seconds:
+                    path.unlink(missing_ok=True)
+                    cleaned += 1
+        except OSError:
+            logger.debug("Failed to inspect/remove stale part: %s", path, exc_info=True)
+    return cleaned
+
+
+class S3BlobStore:
+    """Store attachments in an S3-compatible bucket (AWS, MinIO, Cloudflare R2)."""
+
+    def __init__(
+        self,
+        bucket: str,
+        *,
+        endpoint_url: str | None = None,
+        region_name: str | None = None,
+    ) -> None:
+        self.bucket = bucket.strip()
+        if not self.bucket:
+            raise ValueError("S3BlobStore requires a non-empty bucket name")
+        self.endpoint_url = endpoint_url
+        self.region_name = region_name
+
+    def _get_client(self):
+        try:
+            import boto3
+        except ImportError as exc:
+            raise BlobError(
+                "S3 blob backend requires 'boto3': pip install 'ak5[s3]'"
+            ) from exc
+
+        kwargs: dict[str, Any] = {}
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
+        if self.region_name:
+            kwargs["region_name"] = self.region_name
+        return boto3.client("s3", **kwargs)
+
+    def local_path(self, key: str) -> Path | None:
+        return None
+
+    async def exists(self, key: str) -> bool:
+        def _head() -> bool:
+            from botocore.exceptions import ClientError
+
+            client = self._get_client()
+            try:
+                client.head_object(Bucket=self.bucket, Key=key)
+                return True
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    return False
+                raise BlobError(f"S3 head_object failed: {exc}") from exc
+
+        return await asyncio.to_thread(_head)
+
+    async def check_ready(self) -> None:
+        def _check() -> None:
+            from botocore.exceptions import ClientError
+
+            client = self._get_client()
+            try:
+                client.head_bucket(Bucket=self.bucket)
+            except ClientError as exc:
+                raise BlobError(f"S3 head_bucket failed for {self.bucket}: {exc}") from exc
+
+        await asyncio.to_thread(_check)
+
+    async def put(
+        self,
+        key: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        content_type: str,
+        max_bytes: int,
+    ) -> int:
+        buffer = io.BytesIO()
+        total = 0
+        async for chunk in chunks:
+            total += len(chunk)
+            if total > max_bytes:
+                raise BlobTooLargeError(max_bytes)
+            buffer.write(chunk)
+
+        data = buffer.getvalue()
+
+        def _upload() -> None:
+            client = self._get_client()
+            client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+            )
+
+        await asyncio.to_thread(_upload)
+        return total
+
+    async def open(self, key: str) -> AsyncIterator[bytes]:
+        def _fetch():
+            from botocore.exceptions import ClientError
+
+            client = self._get_client()
+            try:
+                resp = client.get_object(Bucket=self.bucket, Key=key)
+                return resp["Body"]
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    raise BlobNotFoundError(key) from exc
+                raise BlobError(f"S3 get_object failed: {exc}") from exc
+
+        body = await asyncio.to_thread(_fetch)
+        try:
+            while True:
+                chunk = await asyncio.to_thread(body.read, CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            await asyncio.to_thread(body.close)
+
+    async def delete(self, key: str) -> None:
+        def _del() -> None:
+            from botocore.exceptions import ClientError
+
+            client = self._get_client()
+            try:
+                client.delete_object(Bucket=self.bucket, Key=key)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    return
+                raise BlobError(f"S3 delete_object failed: {exc}") from exc
+
+        await asyncio.to_thread(_del)
+
+
+class VercelBlobStore:
+    """Store attachments via Vercel Blob REST API."""
+
+    def __init__(self, token: str, *, api_url: str = "https://blob.vercel-storage.com") -> None:
+        self.token = token.strip()
+        if not self.token:
+            raise ValueError("VercelBlobStore requires a non-empty token")
+        self.api_url = api_url.rstrip("/")
+
+    def local_path(self, key: str) -> Path | None:
+        return None
+
+    def _headers(self, **extra: str) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {self.token}"}
+        headers.update(extra)
+        return headers
+
+    async def exists(self, key: str) -> bool:
+        url = f"{self.api_url}/{key}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.head(url, headers=self._headers())
+            return resp.status_code == 200
+
+    async def check_ready(self) -> None:
+        url = f"{self.api_url}"
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(url, headers=self._headers())
+                if resp.status_code == 401:
+                    raise BlobError("Vercel Blob token is invalid (HTTP 401)")
+            except httpx.RequestError as exc:
+                raise BlobError(f"Vercel Blob probe failed: {exc}") from exc
+
+    async def put(
+        self,
+        key: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        content_type: str,
+        max_bytes: int,
+    ) -> int:
+        buffer = io.BytesIO()
+        total = 0
+        async for chunk in chunks:
+            total += len(chunk)
+            if total > max_bytes:
+                raise BlobTooLargeError(max_bytes)
+            buffer.write(chunk)
+
+        data = buffer.getvalue()
+        url = f"{self.api_url}/{key}"
+        headers = self._headers(
+            **{
+                "Content-Type": content_type,
+                "x-add-random-suffix": "false",
+            }
+        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.put(url, headers=headers, content=data)
+            if resp.status_code not in (200, 201):
+                raise BlobError(f"Vercel Blob PUT failed ({resp.status_code}): {resp.text}")
+        return total
+
+    async def open(self, key: str) -> AsyncIterator[bytes]:
+        url = f"{self.api_url}/{key}"
+        client = httpx.AsyncClient()
+        try:
+            req = client.build_request("GET", url, headers=self._headers())
+            resp = await client.send(req, stream=True)
+            if resp.status_code in (404, 403):
+                await resp.aclose()
+                await client.aclose()
+                raise BlobNotFoundError(key)
+            if resp.status_code != 200:
+                await resp.aclose()
+                await client.aclose()
+                raise BlobError(f"Vercel Blob GET failed ({resp.status_code})")
+
+            async for chunk in resp.aiter_bytes(chunk_size=CHUNK_SIZE):
+                yield chunk
+            await resp.aclose()
+        finally:
+            await client.aclose()
+
+    async def delete(self, key: str) -> None:
+        url = f"{self.api_url}/delete"
+        blob_url = f"{self.api_url}/{key}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, headers=self._headers(), json={"urls": [blob_url]})
+            if resp.status_code not in (200, 204, 404):
+                raise BlobError(f"Vercel Blob delete failed ({resp.status_code}): {resp.text}")
+
+
 def blob_backend_name() -> str:
     return (os.environ.get("AK5_BLOB_BACKEND") or "fs").strip().lower()
 
@@ -179,6 +427,18 @@ def get_blob_store() -> BlobStore:
     name = blob_backend_name()
     if name == "fs":
         return FsBlobStore(settings.ATTACHMENTS_DIR)
+    if name == "s3":
+        bucket = os.environ.get("AK5_S3_BUCKET")
+        if not bucket:
+            raise RuntimeError("AK5_BLOB_BACKEND=s3 requires AK5_S3_BUCKET to be set")
+        endpoint = os.environ.get("AK5_S3_ENDPOINT")
+        region = os.environ.get("AK5_S3_REGION")
+        return S3BlobStore(bucket, endpoint_url=endpoint, region_name=region)
+    if name in ("vercel-blob", "vercel_blob", "vercel"):
+        token = os.environ.get("BLOB_READ_WRITE_TOKEN")
+        if not token:
+            raise RuntimeError("AK5_BLOB_BACKEND=vercel-blob requires BLOB_READ_WRITE_TOKEN to be set")
+        return VercelBlobStore(token)
     raise RuntimeError(
-        f"Unsupported AK5_BLOB_BACKEND={name!r} (only 'fs' is available; s3 / vercel-blob: #109)"
+        f"Unsupported AK5_BLOB_BACKEND={name!r} (supported: 'fs', 's3', 'vercel-blob')"
     )
