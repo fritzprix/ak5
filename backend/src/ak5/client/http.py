@@ -285,6 +285,7 @@ class AK5Client:
             details=details if isinstance(details, dict) else {},
             http_status=resp.status_code,
             retry_after=_parse_retry_after(resp.headers.get("retry-after")),
+            request_id=resp.headers.get("x-request-id"),
         )
 
     # ---- convenience workflow helpers ----------------------------------------

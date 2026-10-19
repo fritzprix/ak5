@@ -138,6 +138,7 @@ export class AK5Client {
       res.status,
       body,
       res.statusText,
+      res.headers.get("x-request-id") ?? undefined,
       parseRetryAfter(res.headers.get("retry-after"))
     );
   }

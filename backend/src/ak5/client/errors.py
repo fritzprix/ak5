@@ -28,6 +28,7 @@ class ClientError(Exception):
         details: dict[str, Any] | None = None,
         http_status: int | None = None,
         retry_after: float | None = None,
+        request_id: str | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -36,19 +37,24 @@ class ClientError(Exception):
         self.details = details or {}
         self.http_status = http_status
         self.retry_after = retry_after  # seconds, from `Retry-After` (RATE_LIMITED)
+        self.request_id = request_id
 
     def envelope(self) -> dict[str, Any]:
         """Build ``{"error": {...}}`` for JSON stdout."""
         if isinstance(self.code, ErrorCode):
-            return error_body(self.code, self.message, details=self.details)
-        code_str = str(self.code) if self.code else "CLIENT_ERROR"
-        return {
-            "error": {
-                "code": code_str,
-                "message": self.message,
-                "details": self.details,
+            body = error_body(self.code, self.message, details=self.details)
+        else:
+            code_str = str(self.code) if self.code else "CLIENT_ERROR"
+            body = {
+                "error": {
+                    "code": code_str,
+                    "message": self.message,
+                    "details": self.details,
+                }
             }
-        }
+        if self.request_id:
+            body["error"]["request_id"] = self.request_id  # additive: for support / log lookup
+        return body
 
 
 def exit_code_for_error(code: ErrorCode | str | None, *, http_status: int | None = None) -> int:

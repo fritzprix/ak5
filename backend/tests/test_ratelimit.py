@@ -198,6 +198,7 @@ async def test_login_is_limited_per_client_ip(test_db: AsyncSession, monkeypatch
         assert blocked.status_code == 429
         assert blocked.json()["error"]["details"]["scope"] == "ip"
         assert int(blocked.headers["retry-after"]) >= 1
+        assert blocked.headers["x-request-id"].startswith("req_")  # the outermost middleware still tags a 429
         assert (await _login(b)).status_code != 429  # a different address has its own budget
 
 

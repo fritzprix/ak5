@@ -101,6 +101,8 @@ export class AK5Error extends Error {
   readonly body: unknown;
   /** Seconds to wait before retrying (`Retry-After`), when the server asked for it. */
   readonly retryAfter?: number;
+  /** Server `X-Request-ID` of the failed call — quote it when asking for support. */
+  readonly requestId?: string;
 
   constructor(
     code: ErrorCode | string,
@@ -110,6 +112,7 @@ export class AK5Error extends Error {
       status?: number;
       body?: unknown;
       retryAfter?: number;
+      requestId?: string;
     }
   ) {
     super(message);
@@ -122,12 +125,14 @@ export class AK5Error extends Error {
     this.exitCode = isErrorCode(code) ? EXIT_CODE[code] : 1;
     this.body = options?.body;
     this.retryAfter = options?.retryAfter;
+    this.requestId = options?.requestId;
   }
 
   static fromResponse(
     status: number,
     body: unknown,
     statusText?: string,
+    requestId?: string,
     retryAfter?: number
   ): AK5Error {
     const parsed = parseErrorEnvelope(body);
@@ -136,6 +141,7 @@ export class AK5Error extends Error {
         details: parsed.details,
         status,
         body,
+        requestId,
         retryAfter,
       });
     }
@@ -143,7 +149,7 @@ export class AK5Error extends Error {
       typeof body === "string" && body.length > 0
         ? body
         : statusText || `HTTP ${status}`;
-    return new AK5Error("HTTP_ERROR", fallback, { status, body, retryAfter });
+    return new AK5Error("HTTP_ERROR", fallback, { status, body, requestId, retryAfter });
   }
 }
 

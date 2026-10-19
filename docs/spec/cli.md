@@ -38,7 +38,7 @@ ak5.server      FastAPI app, DB, 상태 머신       (contracts만 import)
 ## 3. 공통 출력 계약
 
 - 모든 명령은 `--json`을 지원한다. `--json`일 때 stdout에는 JSON만 출력한다.
-- 에러 출력: `{ "error": { "code": "INVALID_TRANSITION", "message": "...", "details": {} } }`
+- 에러 출력: `{ "error": { "code": "INVALID_TRANSITION", "message": "...", "details": {}, "request_id": "req_…" } }` — `request_id`는 서버가 응답 헤더 `X-Request-ID`로 준 값(있을 때만). 사람용 출력은 `Error: …` 아래에 `request id: …` 한 줄을 더한다. 지원 요청이나 서버 로그 조회에 이 값을 쓴다.
 - 환경 변수 `AK5_OUTPUT=json`으로 기본값을 바꿀 수 있다.
 
 ### 3.1 종료 코드

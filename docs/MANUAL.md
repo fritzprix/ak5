@@ -416,6 +416,8 @@ agent가 **서버와 같은 OS 사용자**로 돌면 DB 파일과 서명 키를 
 | `AK5_PROFILE` | 서버 | `hosted`이면 요청 한도 기본값을 켠다(§7.6). 기본 `local`은 한도 없음. `hosted` + 외부 bind + `AK5_TRUSTED_PROXIES` 없음이면 시작을 거부한다 |
 | `AK5_RATE_LIMITS` | 서버 | 규칙별 분당 한도 JSON (`{"write_principal": 60, "login_ip": 0}`, `0` = 끔). `local`에서도 켤 수 있다 |
 | `AK5_TRUSTED_PROXIES` | 서버 | 앞단 리버스 프록시의 IP/CIDR. **여기 적힌 프록시가 보낸 `X-Forwarded-For`만 믿고** IP별 한도·잠금에 쓴다 (기본: 헤더 무시, 소켓 주소 사용) |
+| `AK5_LOG_FORMAT`, `AK5_LOG_LEVEL` | 서버 | `json`이면 한 줄에 JSON 하나(`ts`,`level`,`msg`,`request_id`,…). 기본 `text`는 로깅 설정을 바꾸지 않는다 |
+| `AK5_INSTANCE_ID` | 서버 | 접근 로그의 `instance_id` (기본: 호스트명-PID) |
 | `AK5_PROFILE` | CLI | 사용할 profile |
 | `AK5_TOKEN` | CLI | daemon 없이 쓸 agent 토큰 |
 | `AK5_API_URL` | CLI | 서버 API 주소 (profile이 없을 때) |
@@ -493,6 +495,12 @@ v2 서버는 시작할 때 v1 DB를 자동으로 변환한다.
 | 보드 컬럼 To Do / In Progress / Review / Done | stage `backlog` / `in_progress` / `agent_review` / `human_review` / `done` (+ inbox, postmortem_pending) |
 
 예전 이슈 #4(Column stage ↔ Ticket status 정합)는 v2 stage 모델(`status`는 저장하지 않는 파생값)로 대체되었다.
+
+### 요청 ID · 로그 · 상태 점검
+
+- 모든 응답에 `X-Request-ID`가 붙는다. 호출자가 보낸 값이 영숫자·`_`·`-` 8~64자면 그대로 쓰고, 아니면 서버가 새로 만든다. 이 ID는 접근 로그, 감사(audit) 기록, CLI/SDK 오류 출력(`request id: …`, SDK는 `AK5Error.requestId`)에 나타난다.
+- 접근 로그(`ak5.access`)에는 메서드, **라우트 템플릿**(`/api/v1/tickets/{ticket_id}`), 상태, 소요 시간, principal/workspace id, instance id만 남는다. 쿼리스트링·토큰·쿠키·본문은 기록하지 않으며, 토큰처럼 생긴 문자열은 로그 메시지와 예외 출력에서도 마스킹된다.
+- `GET /healthz` — 프로세스 생존(의존성 확인 없음, 기존 `/health`도 유지). `GET /readyz` — DB 연결, 스키마가 최신 revision인지, 첨부 저장소 사용 가능 여부. 실패하면 `503`과 실패한 검사 이름(`database`/`schema`/`blob`)만 돌려주고 원인은 서버 로그에만 남긴다. 둘 다 인증 없이 접근할 수 있고 접근 로그에서 제외된다.
 
 ### 데이터베이스 스키마 (Alembic)
 

@@ -164,6 +164,9 @@ async def get_auth_context(
             headers={"WWW-Authenticate": "Bearer"},
         )
     ctx = await resolve_auth_context(credentials.credentials, db)
+    # Who made the request, for the access log (ids only — never the token).
+    request.state.principal_id = ctx.principal.principal_id if ctx.principal else ctx.actor.actor_id
+    request.state.workspace_id = ctx.workspace_id
     # Per-principal / per-workspace rate limits (operations.md §2, no-op unless enabled).
     try:
         await enforce_authenticated(
