@@ -32,6 +32,6 @@ class WebauthnChallenge(Base):
 
     challenge_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    purpose: Mapped[str] = mapped_column(String(16), nullable=False)  # register|assert
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)  # register|register+pres|assert
     challenge: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

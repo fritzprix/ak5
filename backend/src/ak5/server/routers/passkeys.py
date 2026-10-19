@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ak5.contracts.errors import ErrorCode
 from ak5.contracts.stages import Role
 from ak5.server.auth import passkeys as pk
 from ak5.server.auth.principal import Principal
@@ -22,7 +23,7 @@ from ak5.server.auth.sessions import (
     require_csrf_header,
     resolve_web_session,
 )
-from ak5.server.auth.tokens import issue_access_token
+from ak5.server.auth.tokens import issue_access_token, verify_access_token
 from ak5.server.database import get_db
 from ak5.server.models.workspace import User
 from ak5.server.services.workspaces import get_membership
@@ -61,6 +62,39 @@ async def _session_user(
     return user, None
 
 
+async def _presence_gate(
+    request: Request, db: AsyncSession, user: User
+) -> JSONResponse | None:
+    """#99: once a user has a passkey, changing the set needs a fresh passkey assertion.
+
+    The proof is the presence JWT from ``/auth/passkeys/assert/verify`` sent as
+    ``Authorization: Bearer`` next to the session cookie. The first passkey is the
+    bootstrap and needs only the session.
+    """
+    if not await pk.list_passkeys(db, user.user_id):
+        return None
+    header = request.headers.get("authorization") or ""
+    if header[:7].lower() == "bearer ":
+        try:
+            principal = await verify_access_token(header[7:].strip(), db)
+        except HTTPException:
+            principal = None
+        if (
+            principal is not None
+            and principal.principal_type == "user"
+            and principal.principal_id == user.user_id
+            and pk.presence_is_fresh(principal.presence_at)
+        ):
+            return None
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": "Changing passkeys requires a recent passkey confirmation",
+            "code": ErrorCode.USER_PRESENCE_REQUIRED.value,
+        },
+    )
+
+
 @router.get("/auth/passkeys", response_model=None)
 async def list_my_passkeys(
     request: Request, db: Annotated[AsyncSession, Depends(get_db)]
@@ -79,6 +113,9 @@ async def passkey_register_options(
     user, error = await _session_user(request, db, mutating=True)
     if error is not None or user is None:
         return error or _err(401, "Not authenticated")
+    denied = await _presence_gate(request, db, user)
+    if denied is not None:
+        return denied
     try:
         payload = await pk.registration_options(db, request, user)
     except pk.PasskeyError as exc:
@@ -122,6 +159,9 @@ async def passkey_delete(
     user, error = await _session_user(request, db, mutating=True)
     if error is not None or user is None:
         return error or _err(401, "Not authenticated")
+    denied = await _presence_gate(request, db, user)
+    if denied is not None:
+        return denied
     if not await pk.delete_passkey(db, user.user_id, passkey_id):
         return _err(404, "Passkey not found")
     await db.commit()

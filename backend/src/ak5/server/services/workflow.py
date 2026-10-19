@@ -328,7 +328,7 @@ async def _require_user_presence_for_approval(db: AsyncSession, actor: Actor, ti
     Only a web user JWT minted by a passkey assertion carries ``pres``; CLI / device
     tokens never do, so human approve is effectively web-only when the policy is on.
     """
-    from ak5.server.auth.passkeys import PRESENCE_WINDOW
+    from ak5.server.auth.passkeys import presence_is_fresh
     from ak5.server.services.workspaces import parse_policy
 
     workspace = await db.get(Workspace, ticket.workspace_id)
@@ -336,7 +336,7 @@ async def _require_user_presence_for_approval(db: AsyncSession, actor: Actor, ti
         return
     principal = principal_of(actor)
     presence_at = principal.presence_at if principal is not None else None
-    if presence_at is None or datetime.now(UTC) - presence_at > PRESENCE_WINDOW:
+    if not presence_is_fresh(presence_at):
         raise WorkflowError(
             ErrorCode.USER_PRESENCE_REQUIRED,
             "Approving requires a recent passkey (WebAuthn) confirmation in the web UI",

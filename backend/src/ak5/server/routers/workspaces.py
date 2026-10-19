@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.server.auth.passkeys import presence_is_fresh, workspace_has_passkey_holder
 from ak5.server.auth.principal import Principal
 from ak5.server.database import get_db
 from ak5.server.models.workspace import User, Workspace
@@ -70,6 +71,33 @@ def _require_user(ctx: AuthContext) -> Principal:
             "User principal required (agents cannot manage workspaces)",
         )
     return ctx.principal
+
+
+async def _require_presence_to_relax_approval_policy(
+    db: AsyncSession,
+    principal: Principal,
+    workspace: Workspace,
+    policy_patch: dict | None,
+) -> None:
+    """Turning ``require_user_presence_for_approval`` off needs a fresh passkey assertion (#102).
+
+    Otherwise a user token without presence could disable the policy and then approve. The
+    policy is workspace-wide, so the only exception is a workspace where *nobody* holds a
+    passkey: then nobody could approve anyway and this is the recovery path. A member without
+    their own passkey gets no exception while another member relies on one.
+    """
+    if not policy_patch or policy_patch.get("require_user_presence_for_approval") is not False:
+        return
+    if not parse_policy(workspace.policy).get("require_user_presence_for_approval"):
+        return
+    if presence_is_fresh(principal.presence_at):
+        return
+    if not await workspace_has_passkey_holder(db, workspace.workspace_id):
+        return
+    raise WorkspaceServiceError(
+        ErrorCode.USER_PRESENCE_REQUIRED,
+        "Turning off passkey approval requires a recent passkey confirmation",
+    )
 
 
 async def _load_user(db: AsyncSession, user_id: str) -> User:
@@ -190,6 +218,7 @@ async def patch_workspace(
         if ws is None:
             raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
         policy_patch = body.policy.model_dump(exclude_none=True) if body.policy else None
+        await _require_presence_to_relax_approval_policy(db, principal, ws, policy_patch)
         ws = await update_workspace(
             db,
             workspace=ws,

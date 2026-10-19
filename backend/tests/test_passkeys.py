@@ -20,10 +20,10 @@ from ak5.server.auth.tokens import issue_access_token, verify_access_token
 from ak5.server.authz import attach_principal
 from ak5.server.models.actor import Actor
 from ak5.server.models.passkey import WebauthnChallenge
-from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, Workspace
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, Membership, User, Workspace
 from ak5.server.seed import LOCAL_USER_ID, ensure_local_tenancy
 from ak5.server.services.workflow import WorkflowError, _require_user_presence_for_approval
-from ak5.server.services.workspaces import merge_policy
+from ak5.server.services.workspaces import ensure_user_actor, merge_policy
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from httpx import AsyncClient
@@ -160,7 +160,11 @@ async def test_register_list_and_delete_passkey(client: AsyncClient, web):
 
     missing_csrf = await client.delete(f"/auth/passkeys/{created['passkey_id']}")
     assert missing_csrf.status_code == 403
-    deleted = await client.delete(f"/auth/passkeys/{created['passkey_id']}", headers=web)
+    presence = (await _assert(client, web, auth))["json"]["access_token"]
+    deleted = await client.delete(
+        f"/auth/passkeys/{created['passkey_id']}",
+        headers={**web, "Authorization": f"Bearer {presence}"},
+    )
     assert deleted.status_code == 200
     assert (await client.get("/auth/passkeys")).json()["passkeys"] == []
     assert (
@@ -382,3 +386,195 @@ async def test_move_human_review_to_done_requires_presence(
     )
     assert ok.status_code == 200, ok.text
     assert ok.json()["column_id"] == "col_done"
+
+
+async def _session_token(client: AsyncClient, web: dict[str, str]) -> str:
+    """User JWT from the web session — same user, but no `pres` claim."""
+    resp = await client.post("/auth/session/token", headers=web, json={})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["access_token"]
+
+
+def _bearer(web: dict[str, str], token: str) -> dict[str, str]:
+    return {**web, "Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.asyncio
+async def test_adding_second_passkey_requires_presence(client: AsyncClient, web):
+    """#99: the first passkey is the bootstrap; later ones need a fresh assertion."""
+    first = VirtualAuthenticator()
+    await _register(client, web, first)
+
+    second = VirtualAuthenticator()
+    for headers in (web, _bearer(web, await _session_token(client, web))):
+        denied = await client.post("/auth/passkeys/register/options", headers=headers)
+        assert denied.status_code == 403, denied.text
+        assert denied.json()["code"] == ErrorCode.USER_PRESENCE_REQUIRED.value
+
+    presence = (await _assert(client, web, first))["json"]["access_token"]
+    opts = await client.post("/auth/passkeys/register/options", headers=_bearer(web, presence))
+    assert opts.status_code == 200, opts.text
+    body = opts.json()
+    verify = await client.post(
+        "/auth/passkeys/register/verify",
+        headers=web,  # presence is needed to get the challenge, not to redeem it
+        json={
+            "challenge_id": body["challenge_id"],
+            "credential": second.register(body["options"]["challenge"]),
+            "label": "Second",
+        },
+    )
+    assert verify.status_code == 201, verify.text
+    assert len((await client.get("/auth/passkeys")).json()["passkeys"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_challenge_cannot_add_a_second_passkey(client: AsyncClient, web):
+    """A challenge issued before any passkey existed must not be redeemable afterwards (#99)."""
+    stale = (await client.post("/auth/passkeys/register/options", headers=web)).json()
+    await _register(client, web, VirtualAuthenticator())
+
+    attacker = VirtualAuthenticator()
+    resp = await client.post(
+        "/auth/passkeys/register/verify",
+        headers=web,
+        json={
+            "challenge_id": stale["challenge_id"],
+            "credential": attacker.register(stale["options"]["challenge"]),
+        },
+    )
+    assert resp.status_code == 400
+    assert len((await client.get("/auth/passkeys")).json()["passkeys"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_deleting_passkey_requires_presence_of_same_user(client: AsyncClient, web):
+    auth = VirtualAuthenticator()
+    created = await _register(client, web, auth)
+    url = f"/auth/passkeys/{created['passkey_id']}"
+
+    plain = _bearer(web, await _session_token(client, web))
+    denied = await client.delete(url, headers=plain)
+    assert denied.status_code == 403
+    assert denied.json()["code"] == ErrorCode.USER_PRESENCE_REQUIRED.value
+    assert len((await client.get("/auth/passkeys")).json()["passkeys"]) == 1
+
+
+async def _patch_policy(client: AsyncClient, headers: dict[str, str], enabled: bool):
+    return await client.patch(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}",
+        headers=headers,
+        json={"policy": {"require_user_presence_for_approval": enabled}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_turning_policy_off_requires_presence_when_user_has_passkey(
+    client: AsyncClient, web, test_db: AsyncSession
+):
+    """#102: a user token without `pres` must not be able to disable the policy."""
+    await ensure_local_tenancy(test_db)
+    await test_db.commit()
+    auth = VirtualAuthenticator()
+    await _register(client, web, auth)
+    plain = {"Authorization": f"Bearer {await _session_token(client, web)}"}
+
+    assert (await _patch_policy(client, plain, True)).status_code == 200  # turning on is fine
+    denied = await _patch_policy(client, plain, False)
+    assert denied.status_code == 403, denied.text
+    assert ErrorCode.USER_PRESENCE_REQUIRED.value in denied.text
+
+    presence = (await _assert(client, web, auth))["json"]["access_token"]
+    ok = await _patch_policy(client, {"Authorization": f"Bearer {presence}"}, False)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["policy"]["require_user_presence_for_approval"] is False
+
+
+@pytest.mark.asyncio
+async def test_turning_policy_off_without_any_passkey_is_the_recovery_path(
+    client: AsyncClient, web, test_db: AsyncSession
+):
+    await _set_policy(test_db, True)
+    plain = {"Authorization": f"Bearer {await _session_token(client, web)}"}
+    resp = await _patch_policy(client, plain, False)
+    assert resp.status_code == 200, resp.text
+
+
+async def _add_member(db: AsyncSession, user_id: str, role: str) -> dict[str, str]:
+    """A second workspace member (no passkey) and a plain Bearer header for them."""
+    user = User(user_id=user_id, display_name=user_id, email=f"{user_id}@example.test")
+    db.add(user)
+    await db.flush()
+    await ensure_user_actor(db, user)
+    db.add(
+        Membership(
+            membership_id=f"mem_{LOCAL_WORKSPACE_ID}_{user_id}",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            user_id=user_id,
+            role=role,
+        )
+    )
+    await db.commit()
+    token = issue_access_token(
+        Principal(
+            principal_id=user_id,
+            principal_type="user",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            workflow_role=Role.HUMAN,
+            membership_role=role,
+        )
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.asyncio
+async def test_admin_without_own_passkey_cannot_turn_policy_off_while_another_member_has_one(
+    client: AsyncClient, web, test_db: AsyncSession
+):
+    """#102 review: the recovery exception is workspace-wide, not per requester."""
+    await ensure_local_tenancy(test_db)
+    await test_db.commit()
+    await _register(client, web, VirtualAuthenticator())  # the owner holds a passkey
+    other_admin = await _add_member(test_db, "usr_admin_b", "admin")
+
+    owner_plain = {"Authorization": f"Bearer {await _session_token(client, web)}"}
+    assert (await _patch_policy(client, owner_plain, True)).status_code == 200
+
+    denied = await _patch_policy(client, other_admin, False)
+    assert denied.status_code == 403, denied.text
+    assert ErrorCode.USER_PRESENCE_REQUIRED.value in denied.text
+    ws = await test_db.get(Workspace, LOCAL_WORKSPACE_ID)
+    await test_db.refresh(ws)
+    assert '"require_user_presence_for_approval": true' in ws.policy
+
+
+@pytest.mark.asyncio
+async def test_passkey_changes_reject_another_users_presence_token(
+    client: AsyncClient, web, test_db: AsyncSession
+):
+    """The presence proof must belong to the session user (#99)."""
+    await ensure_local_tenancy(test_db)
+    await test_db.commit()
+    auth = VirtualAuthenticator()
+    created = await _register(client, web, auth)
+    await _add_member(test_db, "usr_member_c", "member")
+    foreign_presence = issue_access_token(
+        Principal(
+            principal_id="usr_member_c",
+            principal_type="user",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            workflow_role=Role.HUMAN,
+            membership_role="member",
+        ),
+        presence_at=datetime.now(UTC),
+    )
+    headers = _bearer(web, foreign_presence)
+    assert (await client.post("/auth/passkeys/register/options", headers=headers)).status_code == 403
+    assert (
+        await client.delete(f"/auth/passkeys/{created['passkey_id']}", headers=headers)
+    ).status_code == 403
+    garbage = _bearer(web, "not-a-jwt")
+    assert (
+        await client.delete(f"/auth/passkeys/{created['passkey_id']}", headers=garbage)
+    ).status_code == 403
+    assert len((await client.get("/auth/passkeys")).json()["passkeys"]) == 1
