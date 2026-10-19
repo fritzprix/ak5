@@ -28,6 +28,7 @@ from ak5.server.authz import (
     RoleForbiddenError,
     actor_has_capabilities,
     board_in_scope,
+    principal_of,
     require_board_scope,
     require_roles,
     same_subject,
@@ -45,6 +46,7 @@ from ak5.server.models.ticket import Ticket
 from ak5.server.models.ticket_postmortem import TicketPostmortem
 from ak5.server.models.ticket_review import TicketReview
 from ak5.server.models.ticket_revision import TicketRevision
+from ak5.server.models.workspace import Workspace
 from ak5.server.seed import SYSTEM_ACTOR_ID
 from ak5.server.services.event_log import record_event
 from ak5.server.services.lexorank import rank_between
@@ -318,6 +320,27 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
+
+
+async def _require_user_presence_for_approval(db: AsyncSession, actor: Actor, ticket: Ticket) -> None:
+    """T15 under ``require_user_presence_for_approval``: need a fresh WebAuthn assertion (#28).
+
+    Only a web user JWT minted by a passkey assertion carries ``pres``; CLI / device
+    tokens never do, so human approve is effectively web-only when the policy is on.
+    """
+    from ak5.server.auth.passkeys import PRESENCE_WINDOW
+    from ak5.server.services.workspaces import parse_policy
+
+    workspace = await db.get(Workspace, ticket.workspace_id)
+    if workspace is None or not parse_policy(workspace.policy).get("require_user_presence_for_approval"):
+        return
+    principal = principal_of(actor)
+    presence_at = principal.presence_at if principal is not None else None
+    if presence_at is None or datetime.now(UTC) - presence_at > PRESENCE_WINDOW:
+        raise WorkflowError(
+            ErrorCode.USER_PRESENCE_REQUIRED,
+            "Approving requires a recent passkey (WebAuthn) confirmation in the web UI",
+        )
 
 
 async def _load_ticket(db: AsyncSession, ticket_id: str, *, for_update: bool = False) -> Ticket:
@@ -1712,6 +1735,7 @@ async def verdict(
 
         if body.decision == "approve":
             # T15 — only path to done
+            await _require_user_presence_for_approval(db, actor, ticket)
             if is_claim_valid(ticket):
                 _clear_claim(ticket)
             review = TicketReview(

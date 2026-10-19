@@ -24,6 +24,7 @@ from ak5.server.routers.boards import router as boards_router
 from ak5.server.routers.events import router as events_router
 from ak5.server.routers.oauth import router as oauth_router
 from ak5.server.routers.oidc_auth import router as oidc_auth_router
+from ak5.server.routers.passkeys import router as passkeys_router
 from ak5.server.routers.subscriptions import router as subscriptions_router
 from ak5.server.routers.templates import router as templates_router
 from ak5.server.routers.tickets import router as tickets_router
@@ -208,6 +209,7 @@ def create_app() -> FastAPI:
     application.include_router(workspaces_router, prefix=settings.API_V1_STR)
     application.include_router(web_auth_router)
     application.include_router(oidc_auth_router)
+    application.include_router(passkeys_router)
     application.include_router(oauth_router)
 
     # Optional MCP bridge: requires ak5[mcp] + AK5_ENABLE_MCP=1 (client.md §7)
