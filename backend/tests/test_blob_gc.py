@@ -140,3 +140,32 @@ def test_db_maintenance_cli_sweep_blob_gc(test_db: AsyncSession, monkeypatch: py
     res = runner.invoke(maintenance_cmd, ["--sweep-blob-gc"])
     assert res.exit_code == 0
     assert "Blob GC sweep finished:" in res.output
+
+
+@pytest.mark.asyncio
+async def test_blob_gc_max_attempts_dead_letters(test_db: AsyncSession, tmp_path):
+    """Test #139: entries reaching max_attempts are stopped from continuous retry."""
+    store = FsBlobStore(tmp_path)
+
+    entry = await record_failed_blob_deletion(test_db, "ws/ws1/fail_key", error="Permanent error", workspace_id="ws1")
+    entry.attempts = 4
+    await test_db.commit()
+
+    async def fail_delete(key: str) -> None:
+        raise BlobError("Still failing")
+
+    store.delete = fail_delete  # type: ignore[assignment]
+
+    # Attempt 5 (reaching max_attempts=5)
+    stats1 = await sweep_blob_gc(test_db, store, max_attempts=5)
+    assert stats1["failed"] == 1
+    assert stats1["total"] == 1
+
+    row = await test_db.get(BlobGc, entry.id)
+    assert row is not None
+    assert row.attempts == 5
+
+    # Subsequent sweep should skip this entry because attempts >= max_attempts
+    stats2 = await sweep_blob_gc(test_db, store, max_attempts=5)
+    assert stats2["total"] == 0
+

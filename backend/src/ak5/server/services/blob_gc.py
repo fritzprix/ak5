@@ -58,10 +58,23 @@ async def sweep_blob_gc(
             await db.delete(item)
             deleted += 1
         except Exception as exc:
-            logger.warning("Blob GC sweep failed for key %s (attempt %d): %s", item.key, item.attempts + 1, exc)
             item.attempts += 1
             item.last_attempt_at = func.now()
             item.last_error = str(exc)
+            if item.attempts >= max_attempts:
+                logger.error(
+                    "Blob GC exceeded max attempts (%d) for key %s: %s (dead-lettered)",
+                    max_attempts,
+                    item.key,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "Blob GC sweep failed for key %s (attempt %d): %s",
+                    item.key,
+                    item.attempts,
+                    exc,
+                )
             failed += 1
 
     await db.commit()
