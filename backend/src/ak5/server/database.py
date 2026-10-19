@@ -547,34 +547,117 @@ def migrate_sqlite_drop_legacy_device_codes(sync_conn: Connection) -> None:
     sync_conn.execute(text("DROP TABLE IF EXISTS device_codes"))
 
 
+# Frozen at 0001_baseline (#105): the pre-Alembic `tickets` rebuild must not follow the live model.
+_TICKETS_BASELINE_DDL = """\
+CREATE TABLE tickets (
+	ticket_id VARCHAR(64) NOT NULL,
+	workspace_id VARCHAR(128) NOT NULL,
+	board_id VARCHAR(128) NOT NULL,
+	column_id VARCHAR(128) NOT NULL,
+	parent_ticket_id VARCHAR(64),
+	title VARCHAR(256) NOT NULL,
+	description TEXT,
+	priority VARCHAR(16) NOT NULL,
+	rank VARCHAR(128) NOT NULL,
+	labels TEXT NOT NULL,
+	assigned_to VARCHAR(128),
+	created_by VARCHAR(128) NOT NULL,
+	blocked_by TEXT,
+	execution_context TEXT,
+	due_date DATETIME,
+	is_archived BOOLEAN NOT NULL,
+	archived_at DATETIME,
+	original_request TEXT,
+	attempt INTEGER NOT NULL,
+	max_attempts INTEGER NOT NULL,
+	claim_token VARCHAR(128),
+	claimed_by VARCHAR(128),
+	lease_expires_at DATETIME,
+	lease_expirations INTEGER NOT NULL,
+	submitted_by VARCHAR(128),
+	blocked_kind VARCHAR(32),
+	blocked_since DATETIME,
+	blocked_actor VARCHAR(128),
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (ticket_id),
+	CONSTRAINT check_ticket_priority CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
+	FOREIGN KEY(board_id) REFERENCES boards (board_id) ON DELETE CASCADE,
+	FOREIGN KEY(column_id) REFERENCES columns (column_id),
+	FOREIGN KEY(parent_ticket_id) REFERENCES tickets (ticket_id) ON DELETE SET NULL,
+	FOREIGN KEY(assigned_to) REFERENCES actors (actor_id) ON DELETE SET NULL,
+	FOREIGN KEY(created_by) REFERENCES actors (actor_id)
+)
+"""
+
+_TICKETS_BASELINE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_tickets_archived ON tickets (is_archived)",
+    "CREATE INDEX IF NOT EXISTS idx_tickets_assigned ON tickets (assigned_to)",
+    "CREATE INDEX IF NOT EXISTS idx_tickets_board ON tickets (board_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tickets_column_rank ON tickets (column_id, rank)",
+    "CREATE INDEX IF NOT EXISTS idx_tickets_parent ON tickets (parent_ticket_id)",
+    "CREATE INDEX IF NOT EXISTS ix_tickets_workspace_id ON tickets (workspace_id)",
+)
+
+_TICKETS_BASELINE_COLUMNS = (
+    "ticket_id",
+    "workspace_id",
+    "board_id",
+    "column_id",
+    "parent_ticket_id",
+    "title",
+    "description",
+    "priority",
+    "rank",
+    "labels",
+    "assigned_to",
+    "created_by",
+    "blocked_by",
+    "execution_context",
+    "due_date",
+    "is_archived",
+    "archived_at",
+    "original_request",
+    "attempt",
+    "max_attempts",
+    "claim_token",
+    "claimed_by",
+    "lease_expires_at",
+    "lease_expirations",
+    "submitted_by",
+    "blocked_kind",
+    "blocked_since",
+    "blocked_actor",
+    "created_at",
+    "updated_at",
+)
+
+
 def migrate_sqlite_drop_ticket_status(sync_conn: Connection) -> None:
     """Drop the stored ``tickets.status`` column and its CHECK (#35, workflow.md §2).
 
     ``status`` is derived from stage / claim / blocked. SQLite cannot DROP a
-    column referenced by a table CHECK, so rebuild ``tickets`` from the current
-    model DDL and copy the shared columns. Run after the ADD COLUMN passes so
-    every model column already exists in the old table.
+    column referenced by a table CHECK, so rebuild ``tickets`` from the **frozen
+    baseline DDL** (not the live model: later Alembic revisions own every change
+    after ``0001_baseline``) and copy the shared columns. Run after the ADD COLUMN
+    passes so every baseline column already exists in the old table.
 
     Caller must disable foreign_keys outside any transaction (``_run_sqlite_table_rebuild``).
     """
-    from sqlalchemy.schema import CreateIndex, CreateTable
-
-    from ak5.server.models.ticket import Ticket
-
     if "status" not in _table_column_names(sync_conn, "tickets"):
         return
     old_cols = _table_column_names(sync_conn, "tickets")
-    table = Ticket.__table__
     tmp = "tickets__mig_status"
-    ddl = str(CreateTable(table).compile(dialect=sync_conn.dialect))
-    sync_conn.execute(text(ddl.replace("CREATE TABLE tickets ", f"CREATE TABLE {tmp} ", 1)))
-    cols = ", ".join(c.name for c in table.columns if c.name in old_cols)
+    sync_conn.execute(
+        text(_TICKETS_BASELINE_DDL.replace("CREATE TABLE tickets ", f"CREATE TABLE {tmp} ", 1))
+    )
+    cols = ", ".join(c for c in _TICKETS_BASELINE_COLUMNS if c in old_cols)
     sync_conn.execute(text(f"INSERT INTO {tmp} ({cols}) SELECT {cols} FROM tickets"))
     sync_conn.execute(text("DROP TABLE tickets"))
     # The copied self-FK text says "tickets", so it points at the renamed table.
     sync_conn.execute(text(f"ALTER TABLE {tmp} RENAME TO tickets"))
-    for index in table.indexes:
-        sync_conn.execute(CreateIndex(index, if_not_exists=True))
+    for statement in _TICKETS_BASELINE_INDEXES:
+        sync_conn.execute(text(statement))
 
 
 async def _run_sqlite_table_rebuild(
@@ -630,15 +713,17 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
 
 
 async def run_legacy_schema_upgrade(async_engine: AsyncEngine = engine) -> None:
-    """Pre-Alembic path (frozen, #105): ``create_all`` + the SQLite fixes above.
+    """Pre-Alembic path (frozen, #105): adopt the baseline, then the SQLite fixes above.
 
-    Only used to bring an old SQLite file to the ``0001_baseline`` shape before it is
-    stamped. Do not add new schema changes here — write an Alembic revision instead.
+    Brings an old SQLite file to the ``0001_baseline`` shape only — missing tables come from
+    the baseline revision (never the live models), the legacy fixes reshape old tables. The
+    caller stamps ``0001_baseline`` and upgrades. Do not add schema changes here: write an
+    Alembic revision instead.
     """
-    from ak5.server.models.base import Base
+    from ak5.server.migrations import adopt_baseline_sync
 
     async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(adopt_baseline_sync)
     await run_sqlite_schema_migrations(async_engine)
 
 

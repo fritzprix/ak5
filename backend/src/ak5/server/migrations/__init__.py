@@ -24,6 +24,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
@@ -78,6 +79,45 @@ def stamp_sync(connection: Connection, target: str = "head") -> None:
     command.stamp(alembic_config(connection), target)
 
 
+def adopt_baseline_sync(connection: Connection) -> None:
+    """Create the baseline tables/indexes that are *missing*, leave existing ones alone.
+
+    Used for pre-Alembic databases (instead of ``create_all`` with the live models, which
+    would bake in changes made after the baseline). ``0001_baseline.upgrade()`` is
+    idempotent for exactly this purpose; it does not write ``alembic_version``.
+    """
+    revision = ScriptDirectory.from_config(alembic_config()).get_revision(BASELINE_REVISION)
+    assert revision is not None and revision.module is not None
+    with Operations.context(MigrationContext.configure(connection)):
+        revision.module.upgrade()
+
+
+def _reap_stale_lock(lock_path: Path) -> bool:
+    """Remove a lock left by a crashed migrator. True if one was removed.
+
+    The file is *moved aside first* and re-checked: two waiters that both judged the same
+    lock stale cannot then delete a fresh lock the other one just created — whoever moves
+    a lock that turns out to be fresh puts it back.
+    """
+    try:
+        if time.time() - lock_path.stat().st_mtime <= _LOCK_STALE_SECONDS:
+            return False
+        aside = lock_path.with_name(f"{lock_path.name}.reap.{os.getpid()}")
+        os.replace(lock_path, aside)
+    except OSError:
+        return False
+    try:
+        if time.time() - aside.stat().st_mtime > _LOCK_STALE_SECONDS:
+            aside.unlink()
+            return True
+        with contextlib.suppress(OSError):
+            os.link(aside, lock_path)  # it was fresh after all: restore it
+        aside.unlink()
+    except OSError:
+        pass
+    return False
+
+
 @asynccontextmanager
 async def migration_lock(engine: AsyncEngine) -> AsyncIterator[None]:
     """One migrator at a time: Postgres advisory lock / SQLite lock file."""
@@ -105,10 +145,8 @@ async def migration_lock(engine: AsyncEngine) -> AsyncIterator[None]:
             os.close(fd)
             break
         except FileExistsError:
-            with contextlib.suppress(OSError):
-                if time.time() - lock_path.stat().st_mtime > _LOCK_STALE_SECONDS:
-                    lock_path.unlink()  # crashed migrator
-                    continue
+            if _reap_stale_lock(lock_path):
+                continue
             if time.monotonic() > deadline:
                 raise SchemaError(f"Timed out waiting for migration lock {lock_path}") from None
             await asyncio.sleep(0.2)
@@ -139,10 +177,13 @@ async def ensure_schema(
                     "Database has tables but no alembic_version: it was not created by ak5."
                     " Restore a backup or import a dump with `ak5 db import`."
                 )
-            logger.info("Pre-Alembic database detected: applying the legacy upgrade, then stamping")
+            logger.info("Pre-Alembic database detected: adopting the baseline, then upgrading")
+            # Shape the old tables up to the *baseline* only, claim that revision, and let
+            # normal Alembic revisions take it from there (a later 0002 is applied, not skipped).
             await legacy_upgrade(engine)
             async with engine.begin() as conn:
-                await conn.run_sync(stamp_sync)
+                await conn.run_sync(stamp_sync, BASELINE_REVISION)
+                await conn.run_sync(upgrade_sync)
         else:
             async with engine.begin() as conn:
                 await conn.run_sync(upgrade_sync)

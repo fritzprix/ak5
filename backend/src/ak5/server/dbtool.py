@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Column, DateTime, LargeBinary, func, insert, select, text
+from sqlalchemy import Column, DateTime, LargeBinary, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import ak5.server.models  # noqa: F401  (registers every table on Base.metadata)
@@ -34,6 +34,15 @@ _SKIP_TABLES = frozenset({"alembic_version"})
 
 def _tables():
     return [t for t in Base.metadata.sorted_tables if t.name not in _SKIP_TABLES]
+
+
+def _self_ref_columns(table) -> list[str]:
+    """Nullable columns whose foreign key points back at the same table."""
+    return [
+        fk.parent.name
+        for fk in table.foreign_keys
+        if fk.column.table is table and fk.parent.nullable
+    ]
 
 
 def _encode(value: Any, column: Column) -> Any:
@@ -124,6 +133,10 @@ async def import_jsonl(engine: AsyncEngine, path: Path | str) -> dict[str, int]:
 
     by_name = {t.name: t for t in _tables()}
     loaded: dict[str, int] = {name: 0 for name in by_name}
+    # Self-referential FKs (tickets.parent_ticket_id): rows are dumped in primary-key
+    # order, so a child can precede its parent. Insert them as NULL, link afterwards.
+    self_refs = {t.name: _self_ref_columns(t) for t in by_name.values()}
+    deferred: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
     async with engine.begin() as conn:
         batch: list[dict[str, Any]] = []
         current = None
@@ -147,18 +160,31 @@ async def import_jsonl(engine: AsyncEngine, path: Path | str) -> dict[str, int]:
                 if table is not current or len(batch) >= _BATCH:
                     await flush()
                     current = table
-                batch.append({col.name: _decode(record["row"].get(col.name), col) for col in table.columns})
+                values = {col.name: _decode(record["row"].get(col.name), col) for col in table.columns}
+                links = {c: values[c] for c in self_refs[table.name] if values.get(c) is not None}
+                if links:
+                    pk = {c.name: values[c.name] for c in table.primary_key.columns}
+                    deferred.append((table, pk, links))
+                    values.update({c: None for c in links})
+                batch.append(values)
             await flush()
+
+        for table, pk, links in deferred:
+            await conn.execute(
+                update(table).where(*[table.c[k] == v for k, v in pk.items()]).values(**links)
+            )
 
         if conn.dialect.name == "postgresql":
             for table in _tables():
                 col = table.autoincrement_column
                 if col is None:
                     continue
+                # is_called=false on an empty table, so the first row gets 1 (not 2).
                 await conn.execute(
                     text(
                         f"SELECT setval(pg_get_serial_sequence('{table.name}', '{col.name}'),"
-                        f" COALESCE((SELECT MAX({col.name}) FROM {table.name}), 1))"
+                        f" COALESCE((SELECT MAX({col.name}) FROM {table.name}), 1),"
+                        f" (SELECT MAX({col.name}) FROM {table.name}) IS NOT NULL)"
                     )
                 )
     return loaded
