@@ -61,6 +61,7 @@ server = [
     "sse-starlette>=2.1.0",
     "python-multipart>=0.0.9",
     "webauthn>=2.5.0",
+    "alembic>=1.13.0",
 ]
 postgres = [
     "asyncpg>=0.29.0",

@@ -629,6 +629,31 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_drop_ticket_status)
 
 
+async def run_legacy_schema_upgrade(async_engine: AsyncEngine = engine) -> None:
+    """Pre-Alembic path (frozen, #105): ``create_all`` + the SQLite fixes above.
+
+    Only used to bring an old SQLite file to the ``0001_baseline`` shape before it is
+    stamped. Do not add new schema changes here — write an Alembic revision instead.
+    """
+    from ak5.server.models.base import Base
+
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await run_sqlite_schema_migrations(async_engine)
+
+
+async def ensure_database_schema(async_engine: AsyncEngine = engine) -> str:
+    """Startup schema step. ``AK5_AUTO_MIGRATE=0`` only verifies, ``ak5 db upgrade`` migrates."""
+    from ak5.server.migrations import assert_schema_current, auto_migrate_enabled, ensure_schema
+
+    if not auto_migrate_enabled():
+        await assert_schema_current(async_engine)
+        from ak5.server.migrations import head_revision
+
+        return head_revision()
+    return await ensure_schema(async_engine, legacy_upgrade=run_legacy_schema_upgrade)
+
+
 async def get_db() -> AsyncGenerator[AsyncSession]:
     """Dependency that provides an async SQLAlchemy session."""
     async with AsyncSessionLocal() as session:
