@@ -146,34 +146,38 @@ async def test_live_postgres_attachment_and_ratelimit_upsert():
     if not pg_url:
         pytest.skip("AK5_TEST_POSTGRES_URL is not set; skipping live PostgreSQL test")
 
-    from ak5.server.models.base import Base
+    import uuid
+
+    from ak5.server import migrations as mig
     from ak5.server.quota import reconcile_attachment_bytes, record_attachment_bytes
     from ak5.server.ratelimit import hit
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-    engine = create_async_engine(pg_url, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = create_async_engine(pg_url, future=True)
+    await mig.ensure_schema(engine)
+
+    ws_id = f"ws_pg_{uuid.uuid4().hex[:8]}"
+    rate_key = f"test_pg_{uuid.uuid4().hex[:8]}"
 
     session_maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     async with session_maker() as session:
         # 1. Test attachment bytes upsert with GREATEST clamp on PostgreSQL
-        val1 = await record_attachment_bytes(session, "ws_pg_live", 1000)
+        val1 = await record_attachment_bytes(session, ws_id, 1000)
         assert val1 == 1000
-        val2 = await record_attachment_bytes(session, "ws_pg_live", 500)
+        val2 = await record_attachment_bytes(session, ws_id, 500)
         assert val2 == 1500
         # Clamped at 0 (cannot drop below 0 via GREATEST(0, value + delta))
-        val3 = await record_attachment_bytes(session, "ws_pg_live", -2000)
+        val3 = await record_attachment_bytes(session, ws_id, -2000)
         assert val3 == 0
 
         # 2. Test reconcile_attachment_bytes on PostgreSQL
-        res = await reconcile_attachment_bytes(session, workspace_id="ws_pg_live")
-        assert res.get("ws_pg_live") == 0
+        res = await reconcile_attachment_bytes(session, workspace_id=ws_id)
+        assert res.get(ws_id) == 0
 
-        # 3. Test rate limit upsert on PostgreSQL
-        hit1 = await hit(session, "test_pg_key")
+        # 3. Test rate limit upsert on PostgreSQL (with unique key per run)
+        hit1 = await hit(session, rate_key)
         assert hit1.count == 1
-        hit2 = await hit(session, "test_pg_key")
+        hit2 = await hit(session, rate_key)
         assert hit2.count == 2
 
     await engine.dispose()
