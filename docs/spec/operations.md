@@ -53,6 +53,7 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | 로그인(OIDC start/callback, local login) | IP당 20 | |
 | device grant 시작/승인 | IP당 20, `user_code` 실패는 10분에 20(현행 유지) | §6 |
 | 초대 생성/수락 | principal당 30 / IP당 20 | §6 |
+| agent credential 발급 | principal당 20 | §6 |
 | `/events/stream`, long-poll | 제외 | 연결 한도(§2.5)로 제한 |
 
 값은 `AK5_RATE_LIMITS`(JSON)로 덮어쓸 수 있다. `0`은 해당 규칙 비활성.
@@ -170,9 +171,9 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | 위협 | 대책 |
 |---|---|
 | device grant `user_code` 무차별 대입 | 현행 실패 한도(10분 20회)를 **공유 저장소**로 이전(deployment.md §6). IP 단위 + `device_code` 단위 병행. 코드 엔트로피(≈40bit)와 TTL은 유지 |
-| 로그인 시도 폭주 | IP당 §2.3 한도. local owner 비밀번호 로그인은 loopback 전용(현행)에 더해 연속 실패 시 지수 지연 |
-| 초대 남용(스팸·열거) | workspace당 pending 초대 상한(기본 100), 같은 이메일 재초대 쿨다운(10분), 초대 토큰 만료·1회용, 수락 시 응답은 토큰 유효성 외 정보를 주지 않음 |
-| agent credential 남발 | `max_agents` quota + 발급 rate limit. 폐기 즉시 효력(현행) |
+| 로그인 시도 폭주 | IP당 §2.3 한도(20/분). local owner 비밀번호 로그인은 loopback 전용(현행)에 더해 5회 초과 연속 실패 시 지수 지연(2s, 4s, 8s… 최대 600s) |
+| 초대 남용(스팸·열거) | workspace당 pending 초대 상한(기본 100), 같은 이메일 재초대 쿨다운(10분), 초대 토큰 만료(7일)·1회용, 수락 시 응답은 무효/만료/사용 완료/취소 여부를 구분하지 않고 동일한 오류 반환 |
+| agent credential 남발 | `max_agents` quota + 발급 rate limit (principal당 20/분). 폐기 즉시 효력(현행) |
 | passkey 등록 악용 | #99(기존 passkey step-up)로 추적. 본 spec은 등록·삭제를 audit/메트릭 대상에 포함 |
 | OIDC pending 밀어내기 | 상한 방식 금지, TTL + IP별 상한(deployment.md §6) |
 | 대용량 업로드 | 파일당 크기(현행) + workspace 총량 quota + 업로드 rate limit |
