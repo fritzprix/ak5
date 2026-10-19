@@ -175,8 +175,7 @@ class SubscriptionService:
                 {"k": f"purged_through_seq:{workspace_id}"},
             )
             val = res.scalar_one_or_none()
-            if val is not None:
-                return int(val)
+            return int(val) if val is not None else 0
         result = await session.execute(
             text("SELECT value FROM event_log_meta WHERE key = :k"),
             {"k": _PURGED_THROUGH_KEY},
@@ -220,6 +219,8 @@ class SubscriptionService:
         * Workspace event_retention_days policy: 0 = unlimited.
         * Unacknowledged events for active subscriptions are protected (seq <= min_ack_cursor only).
         * Throttled per-process unless force=True.
+        * Events with NULL workspace_id or workspaces missing from the workspaces table
+          use default retention.
         """
         global _last_purge_mono
         interval = max(0.0, float(settings.EVENT_PURGE_MIN_INTERVAL_SECONDS))
@@ -227,6 +228,7 @@ class SubscriptionService:
         if not force and interval > 0 and (now_mono - _last_purge_mono) < interval:
             return 0
 
+        from ak5.server.models.subscription import Subscription
         from ak5.server.models.workspace import Workspace
         from ak5.server.quota import HOSTED_QUOTA_DEFAULTS, hosted_profile
 
@@ -248,22 +250,40 @@ class SubscriptionService:
                     p = json.loads(ws.policy) if isinstance(ws.policy, str) else ws.policy
                     if isinstance(p, dict) and "event_retention_days" in p:
                         days = int(p["event_retention_days"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to parse policy for workspace '%s': %s", ws_id, exc)
 
             if days <= 0:
                 continue
 
             cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
 
-            stmt = select(func.max(Event.seq)).where(
-                Event.workspace_id == ws_id,
-                Event.created_at < cutoff,
+            # Safety Rule (operations.md §3):
+            # If active subscriptions exist for this workspace, only delete events
+            # where seq <= min(ack_cursor). Un-acked events (seq > min(ack_cursor))
+            # are preserved even if older than the retention window.
+            sub_filter = (
+                [Subscription.workspace_id == ws_id]
+                if ws_id is not None
+                else [Subscription.workspace_id.is_(None)]
             )
-            del_stmt = delete(Event).where(
-                Event.workspace_id == ws_id,
-                Event.created_at < cutoff,
+            sub_cursors = (
+                await session.execute(select(Subscription.ack_cursor).where(*sub_filter))
+            ).scalars().all()
+
+            ws_filter = (
+                Event.workspace_id == ws_id
+                if ws_id is not None
+                else Event.workspace_id.is_(None)
             )
+            where_clauses = [ws_filter, Event.created_at < cutoff]
+
+            if sub_cursors:
+                min_ack = min(sub_cursors)
+                where_clauses.append(Event.seq <= min_ack)
+
+            stmt = select(func.max(Event.seq)).where(*where_clauses)
+            del_stmt = delete(Event).where(*where_clauses)
             max_purged = (await session.execute(stmt)).scalar_one_or_none()
             if max_purged is not None:
                 del_res = await session.execute(del_stmt)
