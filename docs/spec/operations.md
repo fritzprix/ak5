@@ -71,10 +71,15 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | subscription당 consumer | 1 (현행, `409 CONSUMER_CONFLICT`) | 유지 |
 | principal당 동시 long-poll/SSE | 5 | `429 CONNECTION_LIMIT` |
 | workspace당 동시 연결 | 50 | `429 CONNECTION_LIMIT` |
-| 인스턴스당 동시 연결 | `AK5_MAX_CONNECTIONS`(기본 500) | `503` + `Retry-After` |
+| 인스턴스(프로세스)당 동시 연결 | `AK5_MAX_CONNECTIONS`(기본 500) | `503` + `Retry-After` |
 
 - profile당 연결 1개 원칙(client.md, daemon 1:N fan-out)은 유지된다. 한도는 **비정상 클라이언트 방어**용이며 정상 daemon은 닿지 않아야 한다.
-- 연결 수는 인스턴스 로컬 카운터로 세되(연결은 인스턴스에 묶여 있음), principal/workspace 한도는 다중 인스턴스에서 근사치로 충분하다. 정확한 전역 한도가 필요하면 §9-3.
+- **프로세스 단위(Per-process) 인메모리 관리 및 다중 레플리카 모델 (#130)**:
+  - `ConnectionLimiter`는 OS 파일 디스크립터 및 소켓 버퍼 점유를 보호하기 위해 각 인스턴스(컨테이너 프로세스)의 인메모리 카운터로 동시 연결을 관리한다.
+  - §4.3의 **컨테이너당 단일 프로세스 원칙(Scale by Replicas)** 에 따라 단일 컨테이너 내 프로세스 분기(`uvicorn --workers N`)는 금지되며, 각 컨테이너 인스턴스가 독립적인 `AK5_MAX_CONNECTIONS` 한도를 갖는다.
+  - 수평 확장 시 R개의 컨테이너 레플리카가 배포되면 클러스터 전체 최대 연결 용량은 R × AK5_MAX_CONNECTIONS가 되며, principal(5) 및 workspace(50) 한도 역시 인스턴스별 독립 검사(최대 R × 근사치)로 동작한다.
+  - 연결 진입·종료마다 DB 쓰기 락/트랜잭션 핫스팟이 발생하는 것을 방지하기 위해 인메모리 카운터를 유지하며, 정상 daemon은 단일 연결을 유지하고 연결 점유 시간은 `LONG_POLL_MAX_WAIT`(25초)로 제한되므로 인스턴스별 한도만으로도 서비스 거부(DoS) 공격 방어 목적을 충분히 달성한다. 추후 엄격한 전역 클러스터 한도가 요구되는 엔터프라이즈 환경의 경우 Redis/TTL 기반 분산 카운터(§9-3)를 선택적 플러그인으로 고려할 수 있다.
+  - 서버리스 배포(Vercel 등)에서는 동시 호출마다 독립 프로세스로 실행되어 인프로세스 연결 카운터가 사실상 트리거되지 않으므로, 플랫폼 동시성 한도 및 §2.3의 API 레이트 리밋에 의존한다.
 - 연결은 `LONG_POLL_MAX_WAIT`(25초) 이내에 정상 종료되므로 서버리스에서도 동시 연결은 짧게 점유된다.
 
 ## 3. Quota (workspace 단위)
