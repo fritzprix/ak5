@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.stages import Stage
+from ak5.server.metrics import quota_rejections_total
 from ak5.server.models.board import Board
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket
@@ -45,12 +46,7 @@ ATTACHMENT_BYTES_KEY = "attachment_bytes"
 
 
 def _inc_quota_rejection(quota: str) -> None:
-    try:
-        from ak5.server.metrics import quota_rejections_total
-
-        quota_rejections_total.inc(quota=quota)
-    except Exception:
-        pass
+    quota_rejections_total.inc(quota=quota)
 
 
 def _upsert_for(dialect: str):

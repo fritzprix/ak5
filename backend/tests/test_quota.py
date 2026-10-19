@@ -310,3 +310,23 @@ async def test_ticket_quota_idempotency_replay(client: AsyncClient, test_db: Asy
     assert r3.status_code == 201
     assert r3.json()["ticket_id"] == ticket_id
 
+
+async def test_quota_rejection_increments_metric(client: AsyncClient, test_db: AsyncSession):
+    from ak5.server.metrics import registry
+
+    headers = await _setup_user_workspace(
+        test_db, "ws_metric_quota", "usr_metric_owner", policy={"max_boards": 1}
+    )
+
+    # 1st board -> Success
+    r1 = await client.post("/api/v1/boards", headers=headers, json={"name": "Board 1", "template": "default"})
+    assert r1.status_code == 200
+
+    # 2nd board -> 403 QUOTA_EXCEEDED
+    r2 = await client.post("/api/v1/boards", headers=headers, json={"name": "Board 2", "template": "default"})
+    assert r2.status_code == 403
+
+    metrics_output = registry.collect_all()
+    assert 'ak5_quota_rejections_total{quota="max_boards"}' in metrics_output
+
+

@@ -221,6 +221,9 @@ active_connections = registry.register(
 db_pool_in_use = registry.register(
     Gauge("ak5_db_pool_in_use", "Database pool connections in use")
 )
+quota_rejections_total = registry.register(
+    Counter("ak5_quota_rejections_total", "Total quota rejections", ["quota"])
+)
 
 
 def metrics_enabled() -> bool:
