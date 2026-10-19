@@ -300,30 +300,34 @@ async def test_event_log_lag_seconds_metric(test_db: AsyncSession, monkeypatch: 
         assert resp.status_code == 200
         assert "ak5_event_log_lag_seconds 0.0" in resp.text
 
-        # Case 5 (#149): Abandoned subscription (lease expired or unleased > 300s grace)
-        # does not pin the lag gauge even if un-acked events exist
+        # Case 5 (#149): Dead consumer (lease expired minutes ago) continues to report growing lag,
+        # and is excluded from the gauge only once it exceeds the abandonment window (24h).
         past_time_2 = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=50)
         ev2 = Event(event_id="ev-2", type="TICKET_UPDATED", created_at=past_time_2)
         test_db.add(ev2)
+        # Sub1 lease expired 10 seconds ago: consumer is dead, but within the 24h abandonment window
         sub1.consumer_lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=10)
         await test_db.commit()
 
-        # Since sub1's lease is expired, it is inactive -> lag is 0.0
-        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
-        assert lag == 0.0
+        # Dead consumer still alarms with growing lag (> 49.0s)
+        lag_dead = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag_dead >= 49.0
 
-        # Now add an active subscription that has ack_cursor = ev1.seq (needs to catch up to ev2)
-        sub_active = Subscription(
-            subscription_id="sub-active-live",
-            ack_cursor=ev1.seq,
-            consumer_lease_expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=60),
-        )
-        test_db.add(sub_active)
+        # Once the subscription passes the abandonment window (e.g. 25 hours ago, or abandoned_hours=0.01),
+        # it is dropped from the lag gauge so ancient dead subscriptions do not permanently pin the alarm
+        sub1.consumer_lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=25)
         await test_db.commit()
 
-        # Active sub has acked ev1, but not ev2 (created 50s ago) -> lag >= 49.0
-        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
-        assert lag >= 49.0
+        lag_abandoned = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag_abandoned == 0.0
+
+        # Dynamic abandoned_hours override test
+        sub1.consumer_lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=2)
+        await test_db.commit()
+        # With default 24h window: included -> lag >= 49.0
+        assert await subscription_service.compute_event_log_lag_seconds(test_db) >= 49.0
+        # With 1h window: expired 2h ago is past window -> excluded -> lag 0.0
+        assert await subscription_service.compute_event_log_lag_seconds(test_db, abandoned_hours=1.0) == 0.0
 
 
 async def test_route_ticket_missing_claim_token_does_not_increment_conflicts(test_db: AsyncSession):

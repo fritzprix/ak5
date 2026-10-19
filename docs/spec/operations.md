@@ -101,8 +101,8 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
   - 보존 기간 경과 이벤트는 `ak5 db maintenance` 실행 시 또는 주기적 lazy purge를 통해 삭제된다.
   - **미-ack 구독 보호 (Safety Rule) 및 활성 구독 판정 (#149)**:
     - 해당 워크스페이스에 **활성 subscription(active subscription)**이 존재하는 경우, 활성 subscription들이 ack 완료한 최소 커서(`seq <= min(ack_cursor)`) 이전의 이벤트만 삭제된다. 아직 ack되지 않은 이벤트(`seq > min(ack_cursor)`)는 보존 기간이 경과했더라도 활성 구독자가 안전하게 처리할 때까지 보존된다.
-    - **활성 구독 조건**: 유효한 consumer lease를 보유하고 있거나(`consumer_lease_expires_at > now`), 임대 이력 없이 생성된 지 유예 시간(`ACTIVE_SUBSCRIPTION_GRACE_SECONDS`, 기본 300초/5분) 이내인 subscription.
-    - **방치된 구독(Abandoned Subscription) 처리**: 임대가 만료되었거나 생성 후 5분 초과 미임대 상태인 비활성 subscription은 retention purge 차단 대상에서 제외되며, `ak5_event_log_lag_seconds` 메트릭 집계에서도 제외되어 이벤트 로그의 무제한 팽창을 방지한다. 방치된 구독이 뒤늦게 폴링을 재개할 경우 이미 purge된 커서에 대해 `410 CURSOR_EXPIRED` 오류가 반환되며, 클라이언트는 resync를 통해 안전하게 최신 상태로 복구한다.
+    - **보존 정책의 활성 구독 조건**: 유효한 consumer lease를 보유하고 있거나(`consumer_lease_expires_at > now`), 임대 이력 없이 생성된 지 유예 시간(`ACTIVE_SUBSCRIPTION_GRACE_SECONDS`, 기본 300초/5분) 이내인 subscription. 임대가 만료되었거나 생성 후 5분 초과 미임대 상태인 비활성 subscription은 retention purge 차단 대상에서 즉시 제외되어 이벤트 로그의 영구 보존 팽창을 방지한다. 방치된 구독이 뒤늦게 폴링을 재개할 경우 이미 purge된 커서에 대해 `410 CURSOR_EXPIRED` 오류가 반환되며, 클라이언트는 resync를 통해 안전하게 최신 상태로 복구한다.
+    - **Lag 메트릭의 방치 판정 윈도우 (게이지 분리, §4.3)**: `ak5_event_log_lag_seconds`는 장애/중단 컨슈머 감지 알람이 목적이므로, 임대가 만료된 컨슈머라도 즉시(60초 만에) 집계에서 제거되지 않고 방치 윈도우(`AK5_ABANDONED_SUBSCRIPTION_HOURS`, 기본 24시간) 동안은 계속 lag 게이지에 반영되어 경보를 유도한다. 임대 만료(또는 미임대 생성) 후 24시간을 초과한 영구 방치 구독만 게이지 집계에서 최종 제외된다.
 
 ## 4. 관측성
 

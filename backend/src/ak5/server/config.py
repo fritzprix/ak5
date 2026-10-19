@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     EVENT_PURGE_MIN_INTERVAL_SECONDS: float = 60.0
     CONSUMER_LEASE_SECONDS: int = 60
     ACTIVE_SUBSCRIPTION_GRACE_SECONDS: float = 300.0
+    ABANDONED_SUBSCRIPTION_HOURS: float = 24.0
     # Postgres commit-order ≠ seq-order guard (issue #11 orchestrator note).
     # 0 = no-op (SQLite). >0 holds back events newer than this many seconds.
     EVENT_VISIBILITY_WINDOW_SECONDS: float = 0.0

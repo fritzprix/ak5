@@ -104,9 +104,9 @@ class SubscriptionServiceError(Exception):
 
 
 def active_subscription_clause(now_utc: datetime, *, grace_seconds: float | None = None):
-    """SQLAlchemy condition matching active subscriptions (#149, operations.md §3, §4.3).
+    """SQLAlchemy condition matching active subscriptions for retention purge (#149, operations.md §3).
 
-    A subscription is active if:
+    A subscription is active for retention safety rule if:
     1. It holds an active (unexpired) consumer lease, OR
     2. It was created recently without a lease within the active grace period.
     """
@@ -117,6 +117,24 @@ def active_subscription_clause(now_utc: datetime, *, grace_seconds: float | None
         and_(
             Subscription.consumer_lease_expires_at.is_(None),
             Subscription.created_at >= grace_cutoff,
+        ),
+    )
+
+
+def lag_gauge_subscription_clause(now_utc: datetime, *, abandoned_hours: float | None = None):
+    """SQLAlchemy condition matching candidate subscriptions for the lag gauge (#149, operations.md §4.3).
+
+    The lag gauge serves as a dead/stuck consumer alarm, so a consumer whose lease expired
+    minutes or hours ago continues to be tracked with growing lag until it exceeds the
+    abandonment window (default 24h).
+    """
+    hours = settings.ABANDONED_SUBSCRIPTION_HOURS if abandoned_hours is None else abandoned_hours
+    abandoned_cutoff = now_utc - timedelta(hours=max(0.0, float(hours)))
+    return or_(
+        Subscription.consumer_lease_expires_at >= abandoned_cutoff,
+        and_(
+            Subscription.consumer_lease_expires_at.is_(None),
+            Subscription.created_at >= abandoned_cutoff,
         ),
     )
 
@@ -143,17 +161,20 @@ class SubscriptionService:
         result = await session.execute(select(func.max(Event.seq)))
         return int(result.scalar_one_or_none() or 0)
 
-    async def compute_event_log_lag_seconds(self, session: AsyncSession) -> float:
+    async def compute_event_log_lag_seconds(
+        self, session: AsyncSession, *, abandoned_hours: float | None = None
+    ) -> float:
         """Lag in seconds for the oldest unacknowledged subscription (operations.md §4.3, #137, #149).
 
         Returns 0.0 if there are no subscriptions or all subscriptions are caught up.
         Indexed lookup: O(1) on events.seq PK without scanning the event log table.
         """
         now_utc = datetime.now(UTC).replace(tzinfo=None)
-        # Only consider active subscriptions (freshly created with None lease within grace,
-        # or with unexpired lease) to avoid abandoned daemons pinning the lag gauge permanently (#149).
-        active_clause = active_subscription_clause(now_utc)
-        stmt = select(func.min(Subscription.ack_cursor)).where(active_clause)
+        # For the lag gauge, consider active or recently dead consumers within the abandonment
+        # window (default 24h, operations.md §4.3) so dead consumers trigger lag alarms,
+        # while excluding ancient abandoned subscriptions permanently (#149).
+        clause = lag_gauge_subscription_clause(now_utc, abandoned_hours=abandoned_hours)
+        stmt = select(func.min(Subscription.ack_cursor)).where(clause)
         min_ack_result = await session.execute(stmt)
         min_ack = min_ack_result.scalar_one_or_none()
         if min_ack is None:
