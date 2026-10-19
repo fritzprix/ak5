@@ -86,7 +86,10 @@ async def set_workspace_rls_context(db: AsyncSession, workspace_id: str) -> None
         bind = None
 
     if bind is not None and bind.dialect.name == "postgresql":
-        await db.execute(text("SET LOCAL ak5.workspace_id = :ws"), {"ws": workspace_id})
+        await db.execute(
+            text("SELECT set_config('ak5.workspace_id', :ws, true)"),
+            {"ws": workspace_id},
+        )
 
 
 async def set_bypass_rls_context(db: AsyncSession, bypass: bool = True) -> None:
@@ -97,6 +100,8 @@ async def set_bypass_rls_context(db: AsyncSession, bypass: bool = True) -> None:
         bind = None
 
     if bind is not None and bind.dialect.name == "postgresql":
-        val = "on" if bypass else "off"
-        await db.execute(text(f"SET LOCAL ak5.bypass_rls = '{val}'"))
+        await db.execute(
+            text("SELECT set_config('ak5.bypass_rls', :val, true)"),
+            {"val": "on" if bypass else "off"},
+        )
 
