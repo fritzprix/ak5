@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
+from starlette.background import BackgroundTask
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.server.config import settings
@@ -180,7 +181,7 @@ async def sse_event_stream(
             slot.release()
 
     try:
-        return EventSourceResponse(event_generator())
+        return EventSourceResponse(event_generator(), background=BackgroundTask(slot.release))
     except Exception:
         slot.release()
         raise

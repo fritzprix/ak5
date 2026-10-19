@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -168,3 +169,42 @@ async def test_sse_stream_connection_limit_endpoint(client: AsyncClient, monkeyp
 
     # Slot released allows connection
     assert connection_limiter.active_connections == 0
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_acquire_and_release_lifecycle(client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+    """#115 review: opening a stream increments active connections, and disconnecting releases it."""
+    monkeypatch.setenv("AK5_PROFILE", "hosted")
+    monkeypatch.setenv("AK5_CONNECTION_LIMITS", json.dumps({"principal": 2}))
+
+    connected_observed = False
+
+    async def _check_and_cancel(*_a, **_kw):
+        nonlocal connected_observed
+        if connection_limiter.active_connections == 1:
+            connected_observed = True
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("ak5.server.routers.events.event_bus.wait_for_notify", _check_and_cancel)
+
+    assert connection_limiter.active_connections == 0
+    resp = await client.get("/api/v1/events/stream")
+    assert resp.status_code == 200
+    assert "CONNECTED" in resp.text
+    assert connected_observed is True
+    assert connection_limiter.active_connections == 0
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_early_disconnect_background_release():
+    """#115 review: background task releases the slot even if generator never runs."""
+    slot = connection_limiter.acquire("user_pm", "default")
+    assert connection_limiter.active_connections == 1
+
+    from starlette.background import BackgroundTask
+
+    task = BackgroundTask(slot.release)
+    await task()
+    assert connection_limiter.active_connections == 0
+
+
