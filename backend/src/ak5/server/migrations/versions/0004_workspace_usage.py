@@ -30,6 +30,16 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("workspace_id", "key"),
     )
+    # Backfill attachment_bytes from existing ticket_attachments (#134)
+    op.execute(
+        """
+        INSERT INTO workspace_usage (workspace_id, key, value, updated_at)
+        SELECT workspace_id, 'attachment_bytes', COALESCE(SUM(file_size), 0), CURRENT_TIMESTAMP
+        FROM ticket_attachments
+        GROUP BY workspace_id
+        HAVING SUM(file_size) > 0
+        """
+    )
 
 
 def downgrade() -> None:

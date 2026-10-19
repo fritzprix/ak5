@@ -315,3 +315,61 @@ async def get_workspace_usage_summary(db: AsyncSession, workspace: Workspace) ->
             "current": quotas.get("event_retention_days", 0),
         },
     }
+
+
+async def reconcile_attachment_bytes(
+    db: AsyncSession,
+    workspace_id: str | None = None,
+) -> dict[str, int]:
+    """Reconcile workspace_usage attachment_bytes counters against ticket_attachments (#134).
+
+    Corrects drift from un-backfilled historical data or failed partial operations.
+    Returns a dict mapping workspace_id to the reconciled attachment bytes.
+    """
+    from ak5.server.models.ticket import TicketAttachment
+
+    query = select(
+        TicketAttachment.workspace_id,
+        func.coalesce(func.sum(TicketAttachment.file_size), 0).label("actual_bytes"),
+    ).group_by(TicketAttachment.workspace_id)
+
+    if workspace_id is not None:
+        query = query.where(TicketAttachment.workspace_id == workspace_id)
+
+    rows = (await db.execute(query)).all()
+    actual_map: dict[str, int] = {str(row[0]): int(row[1]) for row in rows}
+
+    if workspace_id is not None and workspace_id not in actual_map:
+        actual_map[workspace_id] = 0
+
+    if workspace_id is None:
+        usage_rows = (
+            await db.execute(
+                select(WorkspaceUsage.workspace_id).where(WorkspaceUsage.key == ATTACHMENT_BYTES_KEY)
+            )
+        ).scalars().all()
+        for wid in usage_rows:
+            if wid not in actual_map:
+                actual_map[str(wid)] = 0
+
+    dialect_name = db.get_bind().dialect.name
+    insert = _upsert_for(dialect_name)
+
+    for wid, actual_bytes in actual_map.items():
+        stmt = (
+            insert(WorkspaceUsage)
+            .values(
+                workspace_id=wid,
+                key=ATTACHMENT_BYTES_KEY,
+                value=max(0, actual_bytes),
+            )
+            .on_conflict_do_update(
+                index_elements=[WorkspaceUsage.workspace_id, WorkspaceUsage.key],
+                set_={"value": max(0, actual_bytes)},
+            )
+        )
+        await db.execute(stmt)
+
+    db.expire_all()
+    return actual_map
+

@@ -148,3 +148,40 @@ async def test_sqlite_migration_lock_waits_then_times_out_and_clears_stale_locks
         assert not lock.exists()
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_migration_0004_backfills_existing_attachments(tmp_path: Path):
+    """Test #134: 0004_workspace_usage upgrade backfills existing ticket_attachments into workspace_usage."""
+    engine = _engine(tmp_path)
+    try:
+        # Upgrade to 0003_rate_counters
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: mig.command.upgrade(mig.alembic_config(c), "0003_rate_counters"))
+
+        # Insert ticket_attachments prior to 0004
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO ticket_attachments (attachment_id, workspace_id, ticket_id, actor_id, filename, file_size, content_type, storage_path) "
+                    "VALUES ('att_1', 'ws_bf', 'TK_1', 'act_1', 'file1.txt', 1500, 'text/plain', 'p1'), "
+                    "       ('att_2', 'ws_bf', 'TK_1', 'act_1', 'file2.txt', 3500, 'text/plain', 'p2')"
+                )
+            )
+
+        # Now upgrade to head (which includes 0004_workspace_usage)
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: mig.command.upgrade(mig.alembic_config(c), "0004_workspace_usage"))
+
+        # Verify workspace_usage table was populated with 5000 bytes for ws_bf
+        async with engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    text("SELECT value FROM workspace_usage WHERE workspace_id = 'ws_bf' AND key = 'attachment_bytes'")
+                )
+            ).one_or_none()
+            assert row is not None
+            assert row[0] == 5000
+    finally:
+        await engine.dispose()
+
