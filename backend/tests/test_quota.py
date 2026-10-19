@@ -491,6 +491,7 @@ def test_db_maintenance_cli_reconcile_usage(test_db: AsyncSession, monkeypatch: 
 async def test_event_retention_days_policy_purge(test_db: AsyncSession):
     """Test #138: workspace event_retention_days policy purges expired events while 0=unlimited."""
     from datetime import UTC, datetime, timedelta
+
     from ak5.server.models.event import Event
     from ak5.server.services.subscription_service import subscription_service
 
@@ -538,8 +539,8 @@ async def test_event_retention_days_policy_purge(test_db: AsyncSession):
 async def test_event_retention_unexpired_preserved_and_expired_purged(test_db: AsyncSession):
     """Test #138: unexpired events are preserved and expired events are purged per workspace policy."""
     from datetime import UTC, datetime, timedelta
+
     from ak5.server.models.event import Event
-    from ak5.server.models.subscription import Subscription
     from ak5.server.services.subscription_service import SubscriptionServiceError, subscription_service
 
     ws = Workspace(workspace_id="ws_sub_guard", name="Sub Guard", policy=json.dumps({"event_retention_days": 2}))
@@ -586,11 +587,10 @@ async def test_event_retention_unexpired_preserved_and_expired_purged(test_db: A
 
 def test_db_maintenance_cli_purges_events(test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
     """Test #138: ak5 db maintenance runs routine storage and event-log maintenance."""
-    from click.testing import CliRunner
-    from ak5.cli.commands.db import maintenance_cmd
-    from conftest import TestAsyncSessionLocal
-
     import ak5.cli.commands.db as db_mod
+    from ak5.cli.commands.db import maintenance_cmd
+    from click.testing import CliRunner
+    from conftest import TestAsyncSessionLocal
     monkeypatch.setattr(db_mod, "AsyncSessionLocal", TestAsyncSessionLocal, raising=False)
 
     runner = CliRunner()
