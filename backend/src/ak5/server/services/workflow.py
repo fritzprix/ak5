@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -36,6 +37,12 @@ from ak5.server.authz import (
 )
 from ak5.server.config import settings
 from ak5.server.inbox import inbox_board_id_for, is_inbox_board_id
+from ak5.server.metrics import (
+    claim_conflicts_total,
+    escalations_total,
+    lease_expirations_total,
+    workflow_transitions_total,
+)
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
@@ -56,6 +63,8 @@ from ak5.server.services.templates import (
     template_column_dicts,
 )
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -74,13 +83,6 @@ class WorkflowError(Exception):
         self.code = code
         self.message = message
         self.details = details or {}
-        if code == ErrorCode.CLAIM_CONFLICT:
-            try:
-                from ak5.server.metrics import claim_conflicts_total
-
-                claim_conflicts_total.inc()
-            except Exception:
-                pass
         super().__init__(message)
 
 
@@ -595,11 +597,9 @@ async def _emit_transitioned(
         "from_board_id": from_board_id,
     }
     try:
-        from ak5.server.metrics import workflow_transitions_total
-
         workflow_transitions_total.inc(op=op, from_stage=from_stage or "none", to_stage=to_stage)
     except Exception:
-        pass
+        logger.debug("Failed to record workflow transition metric", exc_info=True)
     await record_event(
         db,
         EventType.TICKET_TRANSITIONED,
@@ -765,11 +765,9 @@ async def _apply_escalation(db: AsyncSession, ticket: Ticket, actor: Actor) -> b
     ticket.blocked_since = now
     ticket.blocked_actor = "system"
     try:
-        from ak5.server.metrics import escalations_total
-
         escalations_total.inc(kind=BlockedKind.ESCALATION.value)
     except Exception:
-        pass
+        logger.debug("Failed to record escalation metric", exc_info=True)
     await record_event(
         db,
         EventType.TICKET_BLOCKED,
@@ -820,11 +818,9 @@ async def reclaim_expired_leases(
         if stage == Stage.IN_PROGRESS:
             ticket.lease_expirations = (ticket.lease_expirations or 0) + 1
             try:
-                from ak5.server.metrics import lease_expirations_total
-
                 lease_expirations_total.inc()
             except Exception:
-                pass
+                logger.debug("Failed to record lease expiration metric", exc_info=True)
             await _move_ticket(db, ticket, board_id=ticket.board_id, stage=Stage.BACKLOG)
             to_stage = Stage.BACKLOG
             op = "lease_expire_t8"
@@ -1201,6 +1197,10 @@ async def claim_ticket(
     _require_unblocked(ticket)
     # Valid claim (incl. in_progress) → conflict for losers, not INVALID_TRANSITION.
     if is_claim_valid(ticket):
+        try:
+            claim_conflicts_total.inc()
+        except Exception:
+            logger.debug("Failed to record claim conflict metric", exc_info=True)
         raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "Ticket is already claimed")
     stage = ticket_stage(ticket)
 
@@ -1267,6 +1267,10 @@ async def claim_ticket(
         .values(**values)
     )
     if result.rowcount != 1:
+        try:
+            claim_conflicts_total.inc()
+        except Exception:
+            logger.debug("Failed to record claim conflict metric", exc_info=True)
         raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "Ticket is already claimed")
 
     # Re-load with relationships after atomic update (avoid stale / lazy IO).
@@ -1559,6 +1563,10 @@ async def route_ticket(
             _require_unblocked(ticket)
     else:
         if not claim_token:
+            try:
+                claim_conflicts_total.inc()
+            except Exception:
+                logger.debug("Failed to record claim conflict metric", exc_info=True)
             raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "claim_token is required for agent route")
         _require_own_claim(ticket, actor, claim_token)
         _require_unblocked(ticket)

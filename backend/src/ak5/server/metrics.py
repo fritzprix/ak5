@@ -9,11 +9,16 @@
 from __future__ import annotations
 
 import collections
+import hmac
+import ipaddress
+import logging
 import os
 import threading
 from typing import Any
 
 from fastapi import Request
+
+logger = logging.getLogger(__name__)
 
 FORBIDDEN_LABELS = frozenset({
     "workspace_id",
@@ -210,14 +215,8 @@ escalations_total = registry.register(
 rate_limited_total = registry.register(
     Counter("ak5_rate_limited_total", "Total rate limited requests", ["rule"])
 )
-quota_rejections_total = registry.register(
-    Counter("ak5_quota_rejections_total", "Total quota rejections", ["quota"])
-)
 active_connections = registry.register(
     Gauge("ak5_active_connections", "Active long-poll or SSE connections", ["kind"])
-)
-event_log_lag_seconds = registry.register(
-    Gauge("ak5_event_log_lag_seconds", "Event log lag in seconds")
 )
 db_pool_in_use = registry.register(
     Gauge("ak5_db_pool_in_use", "Database pool connections in use")
@@ -233,9 +232,27 @@ def check_metrics_auth(request: Request) -> bool:
     if token:
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):
-            return auth[7:].strip() == token
-        q = request.query_params.get("token", "")
-        return q == token
-    # No token specified: allow loopback only
-    client_host = request.client.host if request.client else ""
-    return client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+            bearer_token = auth[7:].strip()
+            return hmac.compare_digest(bearer_token.encode("utf-8"), token.encode("utf-8"))
+        return False
+
+    # No token configured: loopback fallback is only permitted in the 'local' profile
+    # and only when no trusted reverse proxy is configured (fail-closed, #117, operations.md §4.3).
+    profile = (os.environ.get("AK5_PROFILE") or "local").strip().lower()
+    if profile != "local":
+        return False
+
+    from ak5.server.web_auth import trusted_proxy_networks
+
+    if bool(trusted_proxy_networks()):
+        return False
+
+    if not request.client or not request.client.host:
+        return False
+
+    client_host = request.client.host
+    try:
+        ip = ipaddress.ip_address(client_host)
+        return ip.is_loopback
+    except ValueError:
+        return False

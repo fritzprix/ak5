@@ -234,7 +234,7 @@ class RequestContextMiddleware:
                 http_requests_total.inc(route=path, method=method, status=str(status_code))
                 http_request_duration_seconds.observe(duration, route=path, method=method, status=str(status_code))
             except Exception:
-                pass
+                access_logger.debug("Failed to record HTTP metrics", exc_info=True)
 
             if path not in _QUIET_PATHS:
                 access_logger.info(

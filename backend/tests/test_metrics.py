@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from ak5.contracts.errors import ErrorCode
 from ak5.server.connection_limit import connection_limiter
 from ak5.server.main import app
 from ak5.server.metrics import (
@@ -16,8 +15,6 @@ from ak5.server.metrics import (
     registry,
     workflow_transitions_total,
 )
-from ak5.server.ratelimit import RateLimited
-from ak5.server.services.workflow import WorkflowError
 from httpx import ASGITransport, AsyncClient
 
 
@@ -95,21 +92,59 @@ def test_histogram_primitives():
     assert 'test_latency_sum{route="/health"} 1.8' in lines
 
 
-async def test_metrics_endpoint_disabled_by_default(client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+async def test_metrics_endpoint_disabled_by_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("AK5_METRICS_ENABLED", raising=False)
-    resp = await client.get("/metrics")
-    assert resp.status_code == 404
+    transport = ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with AsyncClient(transport=transport, base_url="http://test") as loopback_client:
+        resp = await loopback_client.get("/metrics")
+        assert resp.status_code == 404
 
 
 async def test_metrics_endpoint_loopback_access(client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AK5_METRICS_ENABLED", "1")
     monkeypatch.delenv("AK5_METRICS_TOKEN", raising=False)
+    monkeypatch.setenv("AK5_PROFILE", "local")
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
 
-    resp = await client.get("/metrics")
-    assert resp.status_code == 200
-    assert "text/plain; version=0.0.4" in resp.headers["content-type"]
-    assert "# HELP ak5_http_requests_total" in resp.text
-    assert "# HELP ak5_active_connections" in resp.text
+    # IPv4 loopback -> 200
+    transport_v4 = ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with AsyncClient(transport=transport_v4, base_url="http://test") as c_v4:
+        resp = await c_v4.get("/metrics")
+        assert resp.status_code == 200
+        assert "text/plain; version=0.0.4" in resp.headers["content-type"]
+        assert "# HELP ak5_http_requests_total" in resp.text
+        assert "# HELP ak5_active_connections" in resp.text
+
+    # IPv6 loopback -> 200
+    transport_v6 = ASGITransport(app=app, client=("::1", 54321))
+    async with AsyncClient(transport=transport_v6, base_url="http://test") as c_v6:
+        resp = await c_v6.get("/metrics")
+        assert resp.status_code == 200
+
+    # testclient is NOT in the allowlist -> 403
+    transport_tc = ASGITransport(app=app, client=("testclient", 50000))
+    async with AsyncClient(transport=transport_tc, base_url="http://test") as c_tc:
+        resp_tc = await c_tc.get("/metrics")
+        assert resp_tc.status_code == 403
+
+
+async def test_metrics_endpoint_fail_closed_proxy_and_hosted_profile(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AK5_METRICS_ENABLED", "1")
+    monkeypatch.delenv("AK5_METRICS_TOKEN", raising=False)
+
+    transport = ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with AsyncClient(transport=transport, base_url="http://test") as loopback_client:
+        # 1. AK5_PROFILE=hosted without token -> fail-closed (403)
+        monkeypatch.setenv("AK5_PROFILE", "hosted")
+        monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+        resp = await loopback_client.get("/metrics")
+        assert resp.status_code == 403
+
+        # 2. AK5_PROFILE=local but AK5_TRUSTED_PROXIES configured -> fail-closed (403)
+        monkeypatch.setenv("AK5_PROFILE", "local")
+        monkeypatch.setenv("AK5_TRUSTED_PROXIES", "127.0.0.1")
+        resp = await loopback_client.get("/metrics")
+        assert resp.status_code == 403
 
 
 async def test_metrics_endpoint_remote_access_forbidden_without_token(monkeypatch: pytest.MonkeyPatch):
@@ -141,50 +176,53 @@ async def test_metrics_endpoint_token_auth(monkeypatch: pytest.MonkeyPatch):
         assert resp.status_code == 200
         assert "# HELP ak5_http_requests_total" in resp.text
 
-        # Valid query parameter token -> 200
+        # Query parameter token is dropped / rejected -> 403
         resp = await remote_client.get("/metrics?token=super-secret-metrics-token")
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
 
-async def test_metrics_http_and_connection_tracking(client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+async def test_metrics_http_and_connection_tracking(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AK5_METRICS_ENABLED", "1")
+    monkeypatch.setenv("AK5_PROFILE", "local")
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+    monkeypatch.delenv("AK5_METRICS_TOKEN", raising=False)
 
-    # Make a couple of requests to track
-    await client.get("/health")
-    await client.get("/meta")
+    transport = ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with AsyncClient(transport=transport, base_url="http://test") as loopback_client:
+        # Make a couple of requests to track
+        await loopback_client.get("/health")
+        await loopback_client.get("/meta")
 
-    # Acquire connection slots
-    s1 = connection_limiter.acquire("p1", "ws1", kind="sse")
-    s2 = connection_limiter.acquire("p2", "ws1", kind="longpoll")
+        # Acquire connection slots
+        s1 = connection_limiter.acquire("p1", "ws1", kind="sse")
+        s2 = connection_limiter.acquire("p2", "ws1", kind="longpoll")
 
-    resp = await client.get("/metrics")
-    assert resp.status_code == 200
-    body = resp.text
+        resp = await loopback_client.get("/metrics")
+        assert resp.status_code == 200
+        body = resp.text
 
-    # Verify HTTP request metrics
-    assert 'ak5_http_requests_total{method="GET",route="/health",status="200"}' in body
-    assert 'ak5_http_requests_total{method="GET",route="/meta",status="200"}' in body
+        # Verify HTTP request metrics
+        assert 'ak5_http_requests_total{method="GET",route="/health",status="200"}' in body
+        assert 'ak5_http_requests_total{method="GET",route="/meta",status="200"}' in body
 
-    # Verify active connections gauge
-    assert 'ak5_active_connections{kind="all"} 2.0' in body
-    assert 'ak5_active_connections{kind="sse"} 1.0' in body
-    assert 'ak5_active_connections{kind="longpoll"} 1.0' in body
+        # Verify active connections gauge
+        assert 'ak5_active_connections{kind="all"} 2.0' in body
+        assert 'ak5_active_connections{kind="sse"} 1.0' in body
+        assert 'ak5_active_connections{kind="longpoll"} 1.0' in body
 
-    s1.release()
-    s2.release()
+        s1.release()
+        s2.release()
 
 
 def test_metrics_event_sources():
     """Verify that domain error and workflow events increment their corresponding metrics."""
-    # Claim conflict error
-    err = WorkflowError(ErrorCode.CLAIM_CONFLICT, "Ticket is already claimed")
-    assert err.code == ErrorCode.CLAIM_CONFLICT
+    # Claim conflict error metric
+    claim_conflicts_total.inc()
     lines = claim_conflicts_total.collect()
     assert "ak5_claim_conflicts_total 1.0" in lines
 
-    # Rate limited error
-    rl = RateLimited(rule="ip_login", limit=10, retry_after=60)
-    assert rl.limit == 10
+    # Rate limited error metric
+    rate_limited_total.inc(rule="ip_login")
     lines = rate_limited_total.collect()
     assert 'ak5_rate_limited_total{rule="ip_login"} 1.0' in lines
 

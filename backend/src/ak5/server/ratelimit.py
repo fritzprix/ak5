@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.server.metrics import rate_limited_total
 from ak5.server.models.rate_counter import RateCounter
 from ak5.server.web_auth import client_ip_from_headers
 
@@ -78,12 +79,6 @@ class RateLimited(Exception):
         self.limit = limit
         self.retry_after = retry_after
         self.scope = rule.rsplit("_", 1)[-1]  # principal | workspace | ip
-        try:
-            from ak5.server.metrics import rate_limited_total
-
-            rate_limited_total.inc(rule=rule)
-        except Exception:
-            pass
         super().__init__(f"rate limit exceeded: {rule}")
 
     def body(self) -> dict[str, Any]:
@@ -187,6 +182,10 @@ async def enforce(db: AsyncSession, rule: str, subject: str, *, now: float | Non
         return
     result = await hit(db, f"{rule}:{subject}", now=now)
     if result.count > limit:
+        try:
+            rate_limited_total.inc(rule=rule)
+        except Exception:
+            logger.debug("Failed to record rate limit metric", exc_info=True)
         raise RateLimited(rule, limit=limit, retry_after=result.retry_after)
 
 

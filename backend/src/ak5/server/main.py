@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
@@ -17,7 +17,15 @@ from ak5.server.auth.oidc_config import oidc_providers_configured
 from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
 from ak5.server.auth.users import local_owner_configured
 from ak5.server.config import settings
+from ak5.server.connection_limit import connection_limiter
 from ak5.server.database import AsyncSessionLocal, engine, ensure_database_schema, get_db
+from ak5.server.metrics import (
+    active_connections,
+    check_metrics_auth,
+    db_pool_in_use,
+    metrics_enabled,
+    registry,
+)
 from ak5.server.observability import (
     RequestContextMiddleware,
     configure_logging,
@@ -274,13 +282,8 @@ def create_app() -> FastAPI:
         }
 
     @application.get("/metrics", tags=["system"])
-    async def metrics_endpoint(request: Request):
+    async def metrics_endpoint(request: Request) -> Response:
         """Prometheus metrics endpoint (operations.md §4.3). Off by default."""
-        from fastapi import Response
-
-        from ak5.server.connection_limit import connection_limiter
-        from ak5.server.metrics import active_connections, check_metrics_auth, metrics_enabled, registry
-
         if not metrics_enabled():
             return JSONResponse(status_code=404, content={"error": "Not Found"})
         if not check_metrics_auth(request):
@@ -290,13 +293,11 @@ def create_app() -> FastAPI:
         active_connections.set(connection_limiter.count_for_kind("sse"), kind="sse")
         active_connections.set(connection_limiter.count_for_kind("longpoll"), kind="longpoll")
         try:
-            from ak5.server.database import engine
             pool = getattr(engine.sync_engine, "pool", None)
             if pool is not None and hasattr(pool, "checkedout"):
-                from ak5.server.metrics import db_pool_in_use
                 db_pool_in_use.set(pool.checkedout())
         except Exception:
-            pass
+            logger.debug("Failed to record db_pool_in_use metric", exc_info=True)
         content = registry.collect_all()
         return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
 
