@@ -366,7 +366,9 @@ class VercelBlobStore:
                 store_id = match.group(1).lower()
                 self.base_url = f"https://{store_id}.public.blob.vercel-storage.com"
             else:
-                self.base_url = self.api_url
+                raise ValueError(
+                    "Invalid Vercel Blob token format; expected 'vercel_blob_rw_<storeId>_<secret>' or explicit base_url"
+                )
 
         self._url_cache: dict[str, str] = {}
 

@@ -21,6 +21,7 @@ testpaths = ["backend/tests"]
 pythonpath = ["backend/src", "backend/tests", "backend/tests/regression"]
 markers = [
     "live_server: starts a real uvicorn subprocess (isolated HOME/DATA_DIR)",
+    "live_vercel_blob: opt-in live test against real Vercel Blob store (requires BLOB_READ_WRITE_TOKEN)",
 ]
 
 [tool.ruff]
