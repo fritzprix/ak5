@@ -69,6 +69,12 @@ postgres = [
 mcp = [
     "mcp>=2.2.0",
 ]
+s3 = [
+    "boto3>=1.34.0",
+]
+vercel = [
+    "httpx>=0.27.0",
+]
 
 [project.scripts]
 ak5 = "ak5.cli.main:cli"
