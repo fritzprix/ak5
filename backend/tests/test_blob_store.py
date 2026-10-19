@@ -137,7 +137,7 @@ def test_backend_selection_and_validation(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(RuntimeError, match="requires BLOB_READ_WRITE_TOKEN"):
         get_blob_store()
 
-    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "token_123")
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_teststore_123")
     assert isinstance(get_blob_store(), VercelBlobStore)
 
     monkeypatch.setenv("AK5_BLOB_BACKEND", "FS")
@@ -463,5 +463,121 @@ async def test_vercel_blob_store_check_ready_failure(monkeypatch: pytest.MonkeyP
     store = VercelBlobStore("vercel_blob_rw_test_secret")
     with pytest.raises(BlobError, match="Vercel Blob probe failed"):
         await store.check_ready()
+
+
+def test_vercel_blob_store_token_validation():
+    # Valid token extracts lowercase store id
+    store = VercelBlobStore("vercel_blob_rw_MyStore123_secret")
+    assert store.base_url == "https://mystore123.public.blob.vercel-storage.com"
+
+    # Explicit base_url overrides derivation
+    custom = VercelBlobStore("custom_token", base_url="https://custom.edge.blob.store")
+    assert custom.base_url == "https://custom.edge.blob.store"
+
+    # Invalid token format without base_url fails fast
+    with pytest.raises(ValueError, match="Invalid Vercel Blob token format"):
+        VercelBlobStore("invalid_token")
+
+
+@pytest.mark.asyncio
+async def test_vercel_blob_store_restarted_process_derived_url(monkeypatch: pytest.MonkeyPatch):
+    """Test #141: across process restarts when _url_cache is empty, reads and deletes succeed using derived URL."""
+    blobs: dict[str, tuple[bytes, str]] = {}
+    store_id = "testproc"
+    token = f"vercel_blob_rw_{store_id}_secretxyz"
+    public_edge_host = f"{store_id}.public.blob.vercel-storage.com"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        path = request.url.path
+        if host == public_edge_host:
+            key = path.lstrip("/")
+            if request.method == "HEAD":
+                return httpx.Response(200 if key in blobs else 404)
+            if request.method == "GET":
+                if key in blobs:
+                    data, ct = blobs[key]
+                    return httpx.Response(200, content=data, headers={"content-type": ct})
+                return httpx.Response(404)
+            return httpx.Response(405)
+
+        if request.headers.get("authorization") == f"Bearer {token}":
+            if request.method == "PUT":
+                key = path.lstrip("/")
+                blobs[key] = (request.read(), request.headers.get("content-type", "application/octet-stream"))
+                return httpx.Response(200, json={"url": f"https://{public_edge_host}/{key}"})
+            if request.method == "POST" and path == "/delete":
+                payload = json.loads(request.read())
+                for url in payload.get("urls", []):
+                    key = url.split(f"https://{public_edge_host}/")[-1].lstrip("/")
+                    blobs.pop(key, None)
+                return httpx.Response(200)
+        return httpx.Response(400)
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return orig_client(*args, **kwargs)
+
+    monkeypatch.setattr("ak5.server.blob.httpx.AsyncClient", mock_client)
+
+    # Process 1: upload blob (populates memory cache)
+    store_p1 = VercelBlobStore(token)
+    key = "ws/ws_p1/TK-1/att_persisted"
+    await store_p1.put(key, _chunks(b"persisted data"), content_type="text/plain", max_bytes=100)
+    assert key in store_p1._url_cache
+
+    # Process 2: fresh instance with empty _url_cache (simulating restart)
+    store_p2 = VercelBlobStore(token)
+    assert len(store_p2._url_cache) == 0
+    assert await store_p2.exists(key)
+    assert await _read(store_p2, key) == b"persisted data"
+    await store_p2.delete(key)
+    assert not await store_p2.exists(key)
+
+
+@pytest.mark.live_vercel_blob
+@pytest.mark.skipif(
+    not os.environ.get("BLOB_READ_WRITE_TOKEN"),
+    reason="Live Vercel Blob test requires BLOB_READ_WRITE_TOKEN",
+)
+@pytest.mark.asyncio
+async def test_live_vercel_blob_smoke():
+    """Test #141: opt-in live smoke test against real Vercel Blob store."""
+    token = os.environ["BLOB_READ_WRITE_TOKEN"]
+    store = VercelBlobStore(token)
+
+    # 1. Probe readiness
+    await store.check_ready()
+
+    # 2. Key layout with timestamp to ensure isolation
+    test_id = f"smoke_{int(time.time())}"
+    key = f"ws/smoke_ws/TK-smoke/{test_id}"
+    content = b"live vercel blob smoke test payload"
+
+    try:
+        # 3. Put
+        size = await store.put(key, _chunks(content), content_type="text/plain", max_bytes=1024)
+        assert size == len(content)
+
+        # 4. Exists
+        assert await store.exists(key)
+
+        # 5. Open / Read
+        data = await _read(store, key)
+        assert data == content
+
+        # 6. Verify restarted-process reading without memory cache
+        clean_store = VercelBlobStore(token)
+        assert len(clean_store._url_cache) == 0
+        assert await clean_store.exists(key)
+        assert await _read(clean_store, key) == content
+    finally:
+        # 7. Delete cleanup
+        await store.delete(key)
+        assert not await store.exists(key)
+
 
 
