@@ -135,7 +135,7 @@ passkey 확인은 §6.1에 정의한다(구현: #28).
 - **강제**: `require_user_presence_for_approval=true`이면 T15(`verdict approve` 및 `move human_review→done`)는 `pres`가 60초 이내인 토큰만 허용한다. 그 외(CLI human approve 포함)는 `USER_PRESENCE_REQUIRED`(403). principal이 없으면 fail-closed.
 - **challenge**: DB에 저장(5분 TTL, 1회용, 검증 실패 시에도 폐기) — 다중 인스턴스에서 동작(#20).
 - **RP**: `AK5_WEBAUTHN_RP_ID` / `AK5_WEBAUTHN_ORIGIN` > `AK5_PUBLIC_URL` > 요청의 Host. 서버 extra(`ak5[server]`)가 `webauthn`을 포함한다. **운영 환경에서는 Host/`X-Forwarded-Proto` 헤더 신뢰를 피하도록 `AK5_PUBLIC_URL` 또는 `AK5_WEBAUTHN_*`를 반드시 설정한다.**
-- 웹 UI의 passkey 등록·확인 화면은 후속 PR.
+- **웹 UI**: Settings → Passkeys(등록·삭제·테스트, 승인 정책 토글). 승인 시 서버가 `USER_PRESENCE_REQUIRED`를 돌려주면 UI가 passkey 확인 후 presence 토큰으로 한 번 재시도한다(`move`·`verdict`).
 
 **남는 위험**: 사람이 자기 user 토큰을 agent에게 넘기는 내부자 위임은 구조로 막을 수 없다. user 토큰의 짧은 수명, `require_user_presence_for_approval`, audit의 승인자 기록으로 대응한다.
 
