@@ -380,4 +380,113 @@ async def test_attachment_upload_overflow_rolls_back_usage_counter(client: Async
     assert row.value == 300
 
 
+async def test_reconcile_attachment_bytes_backfill_and_drift(test_db: AsyncSession):
+    """Test #134: reconcile_attachment_bytes corrects un-backfilled usage and drift."""
+    from ak5.server.models.actor import Actor
+    from ak5.server.models.board import Board
+    from ak5.server.models.column import Column
+    from ak5.server.models.ticket import Ticket, TicketAttachment
+    from ak5.server.quota import reconcile_attachment_bytes
+
+    # 1. Setup workspace, board, column, ticket, attachments
+    ws1 = Workspace(workspace_id="ws_rec_1", name="Rec 1")
+    ws2 = Workspace(workspace_id="ws_rec_2", name="Rec 2")
+    act = Actor(actor_id="act_rec", actor_type="human", name="Rec User", role="dev")
+    test_db.add_all([ws1, ws2, act])
+    await test_db.flush()
+
+    b1 = Board(board_id="b_rec_1", workspace_id="ws_rec_1", name="Board 1", created_by="act_rec")
+    b2 = Board(board_id="b_rec_2", workspace_id="ws_rec_2", name="Board 2", created_by="act_rec")
+    test_db.add_all([b1, b2])
+    await test_db.flush()
+
+    col1 = Column(column_id="c_rec_1", board_id="b_rec_1", workspace_id="ws_rec_1", name="Col 1", stage="backlog", position=1)
+    col2 = Column(column_id="c_rec_2", board_id="b_rec_2", workspace_id="ws_rec_2", name="Col 2", stage="backlog", position=1)
+    test_db.add_all([col1, col2])
+    await test_db.flush()
+
+    t1 = Ticket(ticket_id="TK_REC_1", workspace_id="ws_rec_1", board_id="b_rec_1", column_id="c_rec_1", title="T1", rank="0|hzzzzz:", created_by="act_rec")
+    t2 = Ticket(ticket_id="TK_REC_2", workspace_id="ws_rec_2", board_id="b_rec_2", column_id="c_rec_2", title="T2", rank="0|hzzzzz:", created_by="act_rec")
+    test_db.add_all([t1, t2])
+    await test_db.flush()
+
+    # ws1 has two attachments: 400 + 600 = 1000 bytes
+    att1 = TicketAttachment(
+        attachment_id="att_r1", workspace_id="ws_rec_1", ticket_id="TK_REC_1", actor_id="act_rec",
+        filename="f1.bin", file_size=400, storage_path="p1"
+    )
+    att2 = TicketAttachment(
+        attachment_id="att_r2", workspace_id="ws_rec_1", ticket_id="TK_REC_1", actor_id="act_rec",
+        filename="f2.bin", file_size=600, storage_path="p2"
+    )
+    # ws2 has one attachment: 250 bytes
+    att3 = TicketAttachment(
+        attachment_id="att_r3", workspace_id="ws_rec_2", ticket_id="TK_REC_2", actor_id="act_rec",
+        filename="f3.bin", file_size=250, storage_path="p3"
+    )
+    test_db.add_all([att1, att2, att3])
+
+    # ws1 has NO usage row (pre-migration state)
+    # ws2 has a DRIFTED usage row (e.g. 9999 bytes)
+    # ws3 has a stale usage row (e.g. 500 bytes) but NO attachments
+    ws3_usage = WorkspaceUsage(workspace_id="ws_rec_3", key="attachment_bytes", value=500)
+    test_db.add(ws3_usage)
+    ws2_usage = WorkspaceUsage(workspace_id="ws_rec_2", key="attachment_bytes", value=9999)
+    test_db.add(ws2_usage)
+    await test_db.commit()
+
+    # Verify initial state
+    assert await test_db.get(WorkspaceUsage, ("ws_rec_1", "attachment_bytes")) is None
+    assert (await test_db.get(WorkspaceUsage, ("ws_rec_2", "attachment_bytes"))).value == 9999
+    assert (await test_db.get(WorkspaceUsage, ("ws_rec_3", "attachment_bytes"))).value == 500
+
+    # Reconcile all workspaces
+    reconciled = await reconcile_attachment_bytes(test_db)
+    assert reconciled["ws_rec_1"] == 1000
+    assert reconciled["ws_rec_2"] == 250
+    assert reconciled["ws_rec_3"] == 0
+    await test_db.commit()
+
+    # Verify rows in DB
+    u1 = await test_db.get(WorkspaceUsage, ("ws_rec_1", "attachment_bytes"))
+    assert u1 is not None and u1.value == 1000
+    u2 = await test_db.get(WorkspaceUsage, ("ws_rec_2", "attachment_bytes"))
+    assert u2 is not None and u2.value == 250
+    u3 = await test_db.get(WorkspaceUsage, ("ws_rec_3", "attachment_bytes"))
+    assert u3 is not None and u3.value == 0
+
+    # Reconcile single workspace
+    # Add new attachment to ws1: +300 -> 1300
+    att4 = TicketAttachment(
+        attachment_id="att_r4", workspace_id="ws_rec_1", ticket_id="TK_REC_1", actor_id="act_rec",
+        filename="f4.bin", file_size=300, storage_path="p4"
+    )
+    test_db.add(att4)
+    await test_db.commit()
+
+    reconciled_single = await reconcile_attachment_bytes(test_db, workspace_id="ws_rec_1")
+    assert reconciled_single == {"ws_rec_1": 1300}
+    await test_db.commit()
+
+    u1_after = await test_db.get(WorkspaceUsage, ("ws_rec_1", "attachment_bytes"))
+    assert u1_after.value == 1300
+
+
+def test_db_maintenance_cli_reconcile_usage(test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
+    """Test #134: ak5 db maintenance --reconcile-usage runs usage reconciliation."""
+    import ak5.cli.commands.db as db_mod
+    from ak5.cli.commands.db import maintenance_cmd
+    from click.testing import CliRunner
+    from conftest import TestAsyncSessionLocal
+
+    monkeypatch.setattr(db_mod, "AsyncSessionLocal", TestAsyncSessionLocal, raising=False)
+
+    runner = CliRunner()
+    res = runner.invoke(maintenance_cmd, ["--reconcile-usage"])
+    assert res.exit_code == 0
+    assert "Cleaned 0 stale attachment part file(s)." in res.output
+    assert "Reconciled attachment bytes usage for" in res.output
+
+
+
 

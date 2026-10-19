@@ -161,7 +161,13 @@ def import_cmd(dump: Path, database_url: str | None) -> None:
     default=3600.0,
     help="Clean stale temporary upload part files older than N seconds (default: 3600).",
 )
-def maintenance_cmd(clean_parts_older_than: float) -> None:
+@click.option(
+    "--reconcile-usage",
+    is_flag=True,
+    default=False,
+    help="Reconcile workspace_usage attachment_bytes counters against ticket_attachments.",
+)
+def maintenance_cmd(clean_parts_older_than: float, reconcile_usage: bool) -> None:
     """Run routine storage maintenance (clean stale temporary upload part files)."""
     _require_server_extra()
     from ak5.server.blob import clean_stale_parts
@@ -171,3 +177,18 @@ def maintenance_cmd(clean_parts_older_than: float) -> None:
         settings.ATTACHMENTS_DIR, older_than_seconds=clean_parts_older_than
     )
     click.echo(f"Cleaned {cleaned_parts} stale attachment part file(s).")
+
+    if reconcile_usage:
+        import asyncio
+
+        from ak5.server.database import AsyncSessionLocal, ensure_database_schema
+        from ak5.server.quota import reconcile_attachment_bytes
+
+        async def _reconcile() -> dict[str, int]:
+            await ensure_database_schema()
+            async with AsyncSessionLocal() as session, session.begin():
+                return await reconcile_attachment_bytes(session)
+
+        reconciled = asyncio.run(_reconcile())
+        click.echo(f"Reconciled attachment bytes usage for {len(reconciled)} workspace(s).")
+
