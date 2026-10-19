@@ -1,6 +1,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ak5.paths import get_default_attachments_dir, get_default_database_url
@@ -63,8 +63,14 @@ class Settings(BaseSettings):
     # Min seconds between lazy retention purges in one process (SQLite write lock).
     EVENT_PURGE_MIN_INTERVAL_SECONDS: float = 60.0
     CONSUMER_LEASE_SECONDS: int = 60
-    ACTIVE_SUBSCRIPTION_GRACE_SECONDS: float = 300.0
-    ABANDONED_SUBSCRIPTION_HOURS: float = 24.0
+    ACTIVE_SUBSCRIPTION_GRACE_SECONDS: float = Field(
+        default=300.0,
+        validation_alias=AliasChoices("AK5_ACTIVE_SUBSCRIPTION_GRACE_SECONDS", "ACTIVE_SUBSCRIPTION_GRACE_SECONDS"),
+    )
+    ABANDONED_SUBSCRIPTION_HOURS: float = Field(
+        default=24.0,
+        validation_alias=AliasChoices("AK5_ABANDONED_SUBSCRIPTION_HOURS", "ABANDONED_SUBSCRIPTION_HOURS"),
+    )
     # Postgres commit-order ≠ seq-order guard (issue #11 orchestrator note).
     # 0 = no-op (SQLite). >0 holds back events newer than this many seconds.
     EVENT_VISIBILITY_WINDOW_SECONDS: float = 0.0
