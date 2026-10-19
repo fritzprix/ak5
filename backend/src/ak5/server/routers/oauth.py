@@ -251,14 +251,14 @@ async def device_request_info(
 
     client_key = _client_key(request)
     try:
-        check_user_code_rate_limit(client_key)
+        await check_user_code_rate_limit(db, client_key)
     except DeviceGrantError as exc:
         return _oauth_error(exc.error, interval=exc.retry_after)
 
     row = await lookup_device_by_user_code(db, code)
     await db.commit()
     if row is None:
-        record_user_code_failure(client_key)
+        await record_user_code_failure(db, client_key)
         # Uniform response — do not leak existence beyond generic not_found.
         return JSONResponse(status_code=404, content={"error": "not_found"})
     return JSONResponse(

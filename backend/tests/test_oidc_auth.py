@@ -10,16 +10,17 @@ import jwt
 import pytest
 from ak5.server.auth.oidc import verify_id_token
 from ak5.server.auth.oidc_config import OidcProvider
+from ak5.server.auth.pending_state import (
+    count_oidc_pending,
+    inject_expired_oidc_pending_for_tests,
+    mint_local_device_code_for_tests,
+    store_oidc_pending,
+)
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
     CSRF_HEADER,
-    OIDC_PENDING_MAX,
     OIDC_STATE_COOKIE,
     SESSION_COOKIE,
-    clear_oidc_pending_for_tests,
-    inject_expired_oidc_pending_for_tests,
-    oidc_pending_count_for_tests,
-    store_oidc_pending,
 )
 from ak5.server.seed import LOCAL_USER_ID
 from httpx import ASGITransport, AsyncClient
@@ -63,13 +64,6 @@ def _id_token(*, nonce: str, aud: str = MOCK_CLIENT_ID, iss: str = MOCK_ISSUER) 
         MOCK_SECRET,
         algorithm="HS256",
     )
-
-
-@pytest.fixture(autouse=True)
-def _clear_oidc_state():
-    clear_oidc_pending_for_tests()
-    yield
-    clear_oidc_pending_for_tests()
 
 
 @pytest.mark.asyncio
@@ -137,7 +131,7 @@ async def test_oidc_login_redirect_includes_pkce(
 
 @pytest.mark.asyncio
 async def test_oidc_callback_success_and_nonce_rejection(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("AK5_OIDC_PROVIDERS", _mock_providers_env())
     monkeypatch.setenv("AK5_PUBLIC_URL", "http://test")
@@ -145,7 +139,9 @@ async def test_oidc_callback_success_and_nonce_rejection(
     # Seed pending state as if /auth/login ran.
     state = "test-state"
     nonce = "test-nonce"
-    store_oidc_pending(
+    await store_oidc_pending(
+        test_db,
+        client_key="test",
         state=state,
         provider_id="mock",
         nonce=nonce,
@@ -182,7 +178,9 @@ async def test_oidc_callback_success_and_nonce_rejection(
     assert SESSION_COOKIE in ok.cookies
 
     # Bad nonce
-    store_oidc_pending(
+    await store_oidc_pending(
+        test_db,
+        client_key="test",
         state="state2",
         provider_id="mock",
         nonce="expected-nonce",
@@ -207,12 +205,14 @@ async def test_oidc_callback_success_and_nonce_rejection(
 
 @pytest.mark.asyncio
 async def test_oidc_callback_rejects_missing_state_cookie(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
     """Login CSRF: callback URL without the browser-bound state cookie must fail."""
     monkeypatch.setenv("AK5_OIDC_PROVIDERS", _mock_providers_env())
     state = "stolen-state"
-    store_oidc_pending(
+    await store_oidc_pending(
+        test_db,
+        client_key="test",
         state=state,
         provider_id="mock",
         nonce="n",
@@ -226,16 +226,16 @@ async def test_oidc_callback_rejects_missing_state_cookie(
     assert resp.status_code == 400
     assert "state cookie" in resp.json()["detail"].lower()
     # Pending must remain so the legitimate browser can still complete.
-    assert oidc_pending_count_for_tests() == 1
+    assert await count_oidc_pending(test_db) == 1
 
 
 @pytest.mark.asyncio
 async def test_oidc_callback_rejects_expired_state(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("AK5_OIDC_PROVIDERS", _mock_providers_env())
     state = "expired-state"
-    inject_expired_oidc_pending_for_tests(state=state)
+    await inject_expired_oidc_pending_for_tests(test_db, state=state)
     resp = await client.get(
         "/auth/callback",
         params={"code": "abc", "state": state},
@@ -246,19 +246,6 @@ async def test_oidc_callback_rejects_expired_state(
     assert "expired" in resp.json()["detail"].lower() or "invalid" in resp.json()[
         "detail"
     ].lower()
-
-
-def test_oidc_pending_enforces_size_cap():
-    clear_oidc_pending_for_tests()
-    for i in range(OIDC_PENDING_MAX + 40):
-        store_oidc_pending(
-            state=f"state-{i}",
-            provider_id="mock",
-            nonce="n",
-            code_verifier="v",
-        )
-    assert oidc_pending_count_for_tests() <= OIDC_PENDING_MAX
-    clear_oidc_pending_for_tests()
 
 
 def test_verify_id_token_rejects_wrong_audience():
@@ -287,10 +274,12 @@ def test_verify_id_token_happy_path():
 
 @pytest.mark.asyncio
 async def test_oidc_callback_rejects_missing_pkce_verifier(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("AK5_OIDC_PROVIDERS", _mock_providers_env())
-    store_oidc_pending(
+    await store_oidc_pending(
+        test_db,
+        client_key="test",
         state="no-pkce",
         provider_id="mock",
         nonce="n",
@@ -320,11 +309,13 @@ def _github_providers_env() -> str:
 
 @pytest.mark.asyncio
 async def test_github_userinfo_callback_creates_session(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("AK5_OIDC_PROVIDERS", _github_providers_env())
     monkeypatch.setenv("AK5_PUBLIC_URL", "http://test")
-    store_oidc_pending(
+    await store_oidc_pending(
+        test_db,
+        client_key="test",
         state="gh-state",
         provider_id="github",
         nonce="unused",
@@ -394,17 +385,14 @@ async def test_upstream_device_start_and_poll(
     from ak5.server.auth.oidc import OidcClaims
     from ak5.server.auth.oidc_device import (
         UpstreamDevicePending,
-        clear_upstream_device_pending_for_tests,
-        mint_local_device_code_for_tests,
     )
 
-    clear_upstream_device_pending_for_tests()
     monkeypatch.setenv("AK5_OIDC_PROVIDERS", _github_providers_env())
 
-    async def fake_start(provider):
+    async def fake_start(db, provider, *, client_key):
         from ak5.server.auth.oidc_device import UpstreamDeviceStart
 
-        code = mint_local_device_code_for_tests(provider.id, interval=0)
+        code = await mint_local_device_code_for_tests(db, provider.id, interval=0, client_key=client_key)
         return UpstreamDeviceStart(
             device_code=code,
             user_code="ABCD-EFGH",
@@ -426,7 +414,7 @@ async def test_upstream_device_start_and_poll(
 
     calls = {"n": 0}
 
-    async def pending_then_ok(provider, *, device_code: str):
+    async def pending_then_ok(db, provider, *, device_code: str):
         calls["n"] += 1
         if calls["n"] == 1:
             raise UpstreamDevicePending("authorization_pending", retry_after=1)
@@ -456,4 +444,3 @@ async def test_upstream_device_start_and_poll(
     assert done.status_code == 200
     assert done.json()["success"] is True
     assert SESSION_COOKIE in done.cookies
-    clear_upstream_device_pending_for_tests()

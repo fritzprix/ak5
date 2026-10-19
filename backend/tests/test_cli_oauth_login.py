@@ -18,20 +18,12 @@ from ak5.daemon.oauth_flow import (
 from ak5.daemon.paths import credentials_dir
 from ak5.daemon.profiles import Profile, upsert_profile
 from ak5.daemon.server import stop_daemon
-from ak5.server.auth.device_grant import clear_user_code_rate_limits_for_tests
 from ak5.server.auth.sessions import CSRF_HEADER, SESSION_COOKIE
 from ak5.server.main import app as gateway_app
 from ak5.server.seed import ensure_local_tenancy
 from click.testing import CliRunner
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-
-
-@pytest.fixture(autouse=True)
-def _clear_rate_limits():
-    clear_user_code_rate_limits_for_tests()
-    yield
-    clear_user_code_rate_limits_for_tests()
 
 
 @pytest.fixture

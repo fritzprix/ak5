@@ -8,17 +8,16 @@ from pathlib import Path
 import pytest
 from ak5.server import migrations as mig
 from ak5.server.database import run_legacy_schema_upgrade
-from ak5.server.models.base import Base
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 FAKE_0002 = '''
-"""fake 0002: one new column on an existing table, one new table"""
+"""fake 0003: one new column on an existing table, one new table"""
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0002_fake"
-down_revision = "0001_baseline"
+revision = "0003_fake"
+down_revision = "0002_auth_state"
 branch_labels = None
 depends_on = None
 
@@ -35,7 +34,7 @@ def downgrade() -> None:
 
 
 @pytest.fixture
-def with_fake_0002(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+def with_fake_0003(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Point the migration machinery at a copy of the package that has a 0002 revision."""
     script_dir = tmp_path / "migrations_copy"
     shutil.copytree(
@@ -43,7 +42,7 @@ def with_fake_0002(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         script_dir,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    (script_dir / "versions" / "0002_fake.py").write_text(FAKE_0002, encoding="utf-8")
+    (script_dir / "versions" / "0003_fake.py").write_text(FAKE_0002, encoding="utf-8")
 
     real = mig.alembic_config
 
@@ -53,7 +52,7 @@ def with_fake_0002(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         return cfg
 
     monkeypatch.setattr(mig, "alembic_config", patched)
-    return "0002_fake"
+    return "0003_fake"
 
 
 def _engine(tmp_path: Path) -> AsyncEngine:
@@ -72,20 +71,20 @@ async def _tables(engine: AsyncEngine) -> set[str]:
 
 @pytest.mark.asyncio
 async def test_pre_alembic_database_gets_later_revisions_applied(
-    tmp_path: Path, with_fake_0002: str
+    tmp_path: Path, with_fake_0003: str
 ):
     engine = _engine(tmp_path)
     try:
         async with engine.begin() as conn:  # a database from before Alembic
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(mig.adopt_baseline_sync)  # baseline shape, no alembic_version
             await conn.execute(
                 text("INSERT INTO workspaces (workspace_id, name, policy) VALUES ('ws_keep', 'Keep', '{}')")
             )
-        assert mig.head_revision() == with_fake_0002
+        assert mig.head_revision() == with_fake_0003
 
         revision = await mig.ensure_schema(engine, legacy_upgrade=run_legacy_schema_upgrade)
 
-        assert revision == with_fake_0002
+        assert revision == with_fake_0003
         assert "note" in await _columns(engine, "workspaces")  # column change was applied
         assert "extra_things" in await _tables(engine)  # new table was created exactly once
         async with engine.connect() as conn:
@@ -96,10 +95,10 @@ async def test_pre_alembic_database_gets_later_revisions_applied(
 
 
 @pytest.mark.asyncio
-async def test_fresh_database_runs_baseline_then_later_revisions(tmp_path: Path, with_fake_0002: str):
+async def test_fresh_database_runs_baseline_then_later_revisions(tmp_path: Path, with_fake_0003: str):
     engine = _engine(tmp_path)
     try:
-        assert await mig.ensure_schema(engine) == with_fake_0002
+        assert await mig.ensure_schema(engine) == with_fake_0003
         assert "note" in await _columns(engine, "workspaces")
         assert "extra_things" in await _tables(engine)
     finally:
@@ -112,7 +111,7 @@ async def test_legacy_adoption_creates_only_missing_baseline_tables(tmp_path: Pa
     engine = _engine(tmp_path)
     try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(mig.adopt_baseline_sync)  # baseline shape, no alembic_version
             await conn.execute(text("DROP TABLE passkey_credentials"))
             await conn.execute(text("DROP TABLE webauthn_challenges"))
             await conn.execute(

@@ -6,18 +6,17 @@ import hashlib
 import json
 import secrets
 import string
-import threading
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.stages import Role
 from ak5.server.models.actor import Actor
+from ak5.server.models.auth_state import DeviceGrantFailure
 from ak5.server.models.oauth_device import OAuthDeviceCode
 from ak5.server.models.workspace import (
     LOCAL_WORKSPACE_ID,
@@ -33,8 +32,6 @@ CLI_CLIENT_ID = "ak5-cli"
 _USER_CODE_ALPHABET = string.ascii_uppercase + "23456789"
 _RATE_WINDOW_SECONDS = 600.0
 _RATE_MAX_FAILURES = 20
-_rate_failures: dict[str, list[float]] = {}
-_rate_lock = threading.Lock()
 
 _AGENT_ROLES = frozenset({Role.TRIAGE.value, Role.WORKER.value, Role.GATEKEEPER.value})
 _ADMIN_MEMBERSHIP_ROLES = frozenset({"owner", "admin"})
@@ -77,27 +74,34 @@ def _now_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def check_user_code_rate_limit(client_key: str) -> None:
-    """Raise ``slow_down`` when ``client_key`` (IP) exceeds failed lookup/approve budget."""
-    now = time.time()
-    with _rate_lock:
-        stamps = [t for t in _rate_failures.get(client_key, []) if now - t < _RATE_WINDOW_SECONDS]
-        _rate_failures[client_key] = stamps
-        if len(stamps) >= _RATE_MAX_FAILURES:
-            raise DeviceGrantError("slow_down", retry_after=int(_RATE_WINDOW_SECONDS))
+async def check_user_code_rate_limit(db: AsyncSession, client_key: str) -> None:
+    """Raise ``slow_down`` when ``client_key`` (IP) exceeded the failed lookup/approve budget.
+
+    Failures are rows in ``device_grant_failures`` (#107), so the budget is shared by every
+    instance instead of multiplying with the instance count.
+    """
+    cutoff = _now_naive() - timedelta(seconds=_RATE_WINDOW_SECONDS)
+    failures = (
+        await db.execute(
+            select(func.count())
+            .select_from(DeviceGrantFailure)
+            .where(DeviceGrantFailure.client_key == client_key, DeviceGrantFailure.created_at > cutoff)
+        )
+    ).scalar_one()
+    if failures >= _RATE_MAX_FAILURES:
+        raise DeviceGrantError("slow_down", retry_after=int(_RATE_WINDOW_SECONDS))
 
 
-def record_user_code_failure(client_key: str) -> None:
-    now = time.time()
-    with _rate_lock:
-        stamps = [t for t in _rate_failures.get(client_key, []) if now - t < _RATE_WINDOW_SECONDS]
-        stamps.append(now)
-        _rate_failures[client_key] = stamps
-
-
-def clear_user_code_rate_limits_for_tests() -> None:
-    with _rate_lock:
-        _rate_failures.clear()
+async def record_user_code_failure(db: AsyncSession, client_key: str) -> None:
+    """Count one failure. Commits on its own: the caller usually raises right after."""
+    now = _now_naive()
+    db.add(DeviceGrantFailure(client_key=client_key, created_at=now))
+    await db.execute(
+        delete(DeviceGrantFailure).where(
+            DeviceGrantFailure.created_at <= now - timedelta(seconds=_RATE_WINDOW_SECONDS)
+        )
+    )
+    await db.commit()
 
 
 async def _allocate_user_code(db: AsyncSession) -> str:
@@ -213,13 +217,13 @@ async def approve_or_deny_device(
     board_scope: list[str] | None = None,
     client_key: str = "unknown",
 ) -> OAuthDeviceCode:
-    check_user_code_rate_limit(client_key)
+    await check_user_code_rate_limit(db, client_key)
     row = await lookup_device_by_user_code(db, user_code)
     if row is None:
-        record_user_code_failure(client_key)
+        await record_user_code_failure(db, client_key)
         raise DeviceGrantError("invalid_request")
     if row.status != "pending":
-        record_user_code_failure(client_key)
+        await record_user_code_failure(db, client_key)
         raise DeviceGrantError("invalid_grant")
     if row.expires_at <= _now_naive():
         row.status = "expired"

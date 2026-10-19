@@ -137,10 +137,10 @@ class BlobStore(Protocol):
 
 **결정 (2026-10-19)** — 위 표의 세 항목은 모두 **DB로 이전**한다.
 
-- `oidc_pending(state PK, provider_id, nonce, code_verifier, expires_at)` — expires_at은 naive UTC, TTL 10분, 1회용(콜백에서 조회 즉시 삭제). 만료분은 INSERT 시 기회적으로 삭제하고 선택적으로 cron(`ak5 db maintenance`)이 정리한다. `auth/sessions._oidc_pending`의 상한 256 방식은 폐기하고 **TTL + IP(및 가능하면 principal)별 상한**으로 대체한다.
+- `oidc_pending(state PK, provider_id, nonce, code_verifier, client_key, expires_at)` — expires_at은 naive UTC, TTL 10분, 1회용(콜백에서 조회 즉시 삭제). 만료분은 INSERT 시 기회적으로 삭제하고 선택적으로 cron(`ak5 db maintenance`)이 정리한다. `auth/sessions._oidc_pending`의 상한 256 방식은 폐기하고 **TTL + IP(및 가능하면 principal)별 상한**으로 대체한다.
 - upstream device flow pending(`oidc_device._pending`)은 위 테이블에 `kind` 구분으로 통합하거나 `device_pending` 테이블로 분리한다 — 구현 시 둘 중 단순한 쪽을 택한다(동작 차이 없음).
-- `device_grant_failures(client_key, created_at, PK(client_key, created_at))` — 윈도우(현행 10분)보다 오래된 행은 조회 시 `created_at > now - window`로 걸러내고 기회적으로 삭제한다. 한도(현행 20회)는 유지하며 다중 인스턴스에서 합산된다. 상세 한도·키 정책은 operations.md(#37)와 맞춘다.
-- 위 두 테이블은 **Alembic baseline revision에 포함**한다.
+- `device_grant_failures(id PK, client_key, created_at)` + 인덱스 `(client_key, created_at)` (같은 시각의 실패가 둘일 수 있어 복합 PK 대신 대리키) — 윈도우(현행 10분)보다 오래된 행은 조회 시 `created_at > now - window`로 걸러내고 기회적으로 삭제한다. 한도(현행 20회)는 유지하며 다중 인스턴스에서 합산된다. 상세 한도·키 정책은 operations.md(#37)와 맞춘다.
+- 위 테이블은 baseline 이후에 추가되므로 **Alembic revision `0002_auth_state`** 로 들어갔다(#107, baseline은 동결). upstream device pending은 `device_pending`(키: IdP device_code의 해시)으로 **분리**했다. pending 상한은 전역 256이 아니라 **client key(IP)당 20**이며, 넘으면 그 호출자만 429(`Retry-After`)를 받는다. 구현: #107.
 원칙: **상한으로 밀어내는 방식은 금지**한다(공격자가 정상 사용자의 pending을 쫓아낼 수 있음). 만료(TTL)와 principal/IP별 상한으로만 제한한다.
 
 ## 7. 설정 요약

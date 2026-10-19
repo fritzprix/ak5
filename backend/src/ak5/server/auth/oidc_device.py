@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-import secrets
-import threading
-import time
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.server.auth.oidc import OidcClaims, fetch_oauth_userinfo
 from ak5.server.auth.oidc_config import OidcProvider
+from ak5.server.auth.pending_state import (
+    claim_device_poll,
+    delete_device_pending,
+    load_device_pending,
+    set_device_interval,
+    store_device_pending,
+)
 
-# device_code → pending upstream poll state (in-process; TTL from IdP + size capped).
-_PENDING_MAX = 256
-_pending: dict[str, dict[str, Any]] = {}
-_lock = threading.Lock()
+# Pending upstream poll state lives in the database (``device_pending``, #107): shared by
+# every instance, expired by TTL, capped per client key instead of evicting others.
 
 
 @dataclass(frozen=True)
@@ -27,31 +29,6 @@ class UpstreamDeviceStart:
     verification_uri_complete: str | None
     expires_in: int
     interval: int
-
-
-def _purge_pending_locked(now: float) -> None:
-    expired = [
-        code for code, meta in _pending.items() if float(meta["expires_at"]) <= now
-    ]
-    for code in expired:
-        del _pending[code]
-
-
-def _evict_oldest_pending_locked() -> None:
-    if not _pending:
-        return
-    oldest = min(_pending.items(), key=lambda item: float(item[1]["expires_at"]))[0]
-    del _pending[oldest]
-
-
-def clear_upstream_device_pending_for_tests() -> None:
-    with _lock:
-        _pending.clear()
-
-
-def upstream_device_pending_count_for_tests() -> int:
-    with _lock:
-        return len(_pending)
 
 
 def _github_device_endpoints() -> dict[str, str]:
@@ -81,8 +58,10 @@ def upstream_device_endpoints(provider: OidcProvider) -> dict[str, str] | None:
     return None
 
 
-async def start_upstream_device_flow(provider: OidcProvider) -> UpstreamDeviceStart:
-    """POST to the IdP device authorization endpoint."""
+async def start_upstream_device_flow(
+    db: AsyncSession, provider: OidcProvider, *, client_key: str
+) -> UpstreamDeviceStart:
+    """POST to the IdP device authorization endpoint and remember the code for polling."""
     endpoints = upstream_device_endpoints(provider)
     if endpoints is None:
         raise ValueError(f"Provider '{provider.id}' does not support upstream device flow")
@@ -117,17 +96,15 @@ async def start_upstream_device_flow(provider: OidcProvider) -> UpstreamDeviceSt
     complete = payload.get("verification_uri_complete")
     complete_s = str(complete) if complete else None
 
-    now = time.time()
-    with _lock:
-        _purge_pending_locked(now)
-        while len(_pending) >= _PENDING_MAX:
-            _evict_oldest_pending_locked()
-        _pending[device_code] = {
-            "provider_id": provider.id,
-            "interval": interval,
-            "expires_at": now + expires_in,
-            "last_poll": 0.0,
-        }
+    # PendingLimitError (this client already holds the maximum) propagates to the router.
+    await store_device_pending(
+        db,
+        device_code=device_code,
+        provider_id=provider.id,
+        interval=interval,
+        expires_in=expires_in,
+        client_key=client_key,
+    )
 
     return UpstreamDeviceStart(
         device_code=device_code,
@@ -149,6 +126,7 @@ class UpstreamDevicePending(Exception):
 
 
 async def poll_upstream_device_flow(
+    db: AsyncSession,
     provider: OidcProvider,
     *,
     device_code: str,
@@ -158,25 +136,14 @@ async def poll_upstream_device_flow(
     if endpoints is None:
         raise ValueError(f"Provider '{provider.id}' does not support upstream device flow")
 
-    now = time.time()
-    with _lock:
-        _purge_pending_locked(now)
-        meta = _pending.get(device_code)
-    if meta is None:
+    pending = await load_device_pending(db, device_code)
+    if pending is None:
         raise ValueError("Unknown or expired device_code")
-    if now > float(meta["expires_at"]):
-        with _lock:
-            _pending.pop(device_code, None)
-        raise ValueError("expired_token")
 
-    interval = int(meta.get("interval") or 5)
-    now = time.time()
-    last = float(meta.get("last_poll") or 0.0)
-    if last and now - last < interval:
+    interval = int(pending.interval or 5)
+    # Atomic across instances: only one poller wins each interval slot.
+    if not await claim_device_poll(db, device_code, interval=interval):
         raise UpstreamDevicePending("slow_down", retry_after=interval)
-    with _lock:
-        if device_code in _pending:
-            _pending[device_code]["last_poll"] = now
 
     data = {
         "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
@@ -199,14 +166,11 @@ async def poll_upstream_device_flow(
     error = payload.get("error")
     if error in ("authorization_pending", "slow_down"):
         if error == "slow_down":
-            with _lock:
-                if device_code in _pending:
-                    _pending[device_code]["interval"] = interval + 5
+            await set_device_interval(db, device_code, interval + 5)
             raise UpstreamDevicePending("slow_down", retry_after=interval + 5)
         raise UpstreamDevicePending("authorization_pending", retry_after=interval)
     if error in ("expired_token", "access_denied"):
-        with _lock:
-            _pending.pop(device_code, None)
+        await delete_device_pending(db, device_code)
         raise ValueError(str(error))
     if resp.status_code >= 400 and error:
         raise ValueError(str(error))
@@ -222,23 +186,5 @@ async def poll_upstream_device_flow(
         endpoints=endpoints,
         access_token=access_token,
     )
-    with _lock:
-        _pending.pop(device_code, None)
+    await delete_device_pending(db, device_code)
     return claims
-
-
-def mint_local_device_code_for_tests(provider_id: str, *, interval: int = 1) -> str:
-    """Test helper: register a synthetic pending device_code."""
-    code = secrets.token_urlsafe(16)
-    now = time.time()
-    with _lock:
-        _purge_pending_locked(now)
-        while len(_pending) >= _PENDING_MAX:
-            _evict_oldest_pending_locked()
-        _pending[code] = {
-            "provider_id": provider_id,
-            "interval": interval,
-            "expires_at": now + 600,
-            "last_poll": 0.0,
-        }
-    return code

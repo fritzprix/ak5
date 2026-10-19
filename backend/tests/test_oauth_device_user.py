@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 import pytest
-from ak5.server.auth.device_grant import clear_user_code_rate_limits_for_tests
 from ak5.server.auth.sessions import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE
 from ak5.server.auth.tokens import verify_access_token
 from ak5.server.seed import LOCAL_USER_ID
@@ -14,13 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 USER_CODE_RE = re.compile(r"^[A-Z2-9]{4}-[A-Z2-9]{4}$")
-
-
-@pytest.fixture(autouse=True)
-def _clear_rate_limits():
-    clear_user_code_rate_limits_for_tests()
-    yield
-    clear_user_code_rate_limits_for_tests()
 
 
 async def _login(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> str:
