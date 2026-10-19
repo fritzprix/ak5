@@ -398,13 +398,14 @@ def test_safe_emit_helpers(caplog: pytest.LogCaptureFixture):
     safe_dec(None, 1.0)
     safe_observe(None, 1.0)
 
-    # 3. Exceptions suppressed and logged at DEBUG
+    # 3. Exceptions suppressed: ValueError at WARNING, general exceptions at DEBUG
     with caplog.at_level(logging.DEBUG):
-        # Negative increment raises ValueError in Counter.inc, which should be caught by safe_inc
+        # Negative increment raises ValueError in Counter.inc -> logged at WARNING
         safe_inc(c, -5.0, kind="req")
-        assert any("Failed to increment metric" in record.message for record in caplog.records)
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Invalid metric emission for test_safe_c" in r.message for r in warning_records)
 
-        # Faulty gauge/histogram calls
+        # Faulty gauge/histogram calls raise RuntimeError -> logged at DEBUG
         class BrokenMetric:
             name = "broken"
 
@@ -419,11 +420,11 @@ def test_safe_emit_helpers(caplog: pytest.LogCaptureFixture):
 
         broken = BrokenMetric()
         safe_set(broken, 1.0)  # type: ignore[arg-type]
-        assert any("Failed to set gauge" in record.message for record in caplog.records)
+        assert any("Failed to set gauge" in record.message for record in caplog.records if record.levelno == logging.DEBUG)
 
         safe_dec(broken, 1.0)  # type: ignore[arg-type]
-        assert any("Failed to decrement gauge" in record.message for record in caplog.records)
+        assert any("Failed to decrement gauge" in record.message for record in caplog.records if record.levelno == logging.DEBUG)
 
         safe_observe(broken, 1.0)  # type: ignore[arg-type]
-        assert any("Failed to observe histogram" in record.message for record in caplog.records)
+        assert any("Failed to observe histogram" in record.message for record in caplog.records if record.levelno == logging.DEBUG)
 

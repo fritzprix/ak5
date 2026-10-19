@@ -112,6 +112,9 @@ class BlobStore(Protocol):
 
 `create_app()`은 **import 시 부작용이 없어야 한다**(DB 연결·디렉터리 생성·시드 금지). 초기화는 lifespan(상시 서버) 또는 첫 요청의 lazy 초기화(서버리스)로만 한다.
 
+> [!NOTE]
+> `/metrics` 활성화 시 단일 포트 뒤의 다중 워커 프로세스(`uvicorn --workers N`, `WEB_CONCURRENCY`, gunicorn)는 프로세스 간 레지스트리 비공유로 인해 지원되지 않는다(operations.md §4.3). 컨테이너당 단일 프로세스로 실행하고 레플리카 단위로 수평 확장해야 한다.
+
 ## 5. 서버리스 제약과 lazy 처리
 
 백그라운드 루프(`create_task`)는 서버리스에서 신뢰할 수 없다. 주기 작업은 **요청 경로에서 lazy하게** 또는 **외부 스케줄러(cron)** 로 실행한다.

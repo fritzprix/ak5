@@ -235,6 +235,8 @@ def safe_inc(counter: Counter | None, amount: float = 1.0, **labels: Any) -> Non
         return
     try:
         counter.inc(amount=amount, **labels)
+    except ValueError as exc:
+        logger.warning("Invalid metric emission for %s: %s", getattr(counter, "name", counter), exc)
     except Exception as exc:
         logger.debug("Failed to increment metric %s: %s", getattr(counter, "name", counter), exc, exc_info=True)
 
@@ -245,6 +247,8 @@ def safe_set(gauge: Gauge | None, value: float, **labels: Any) -> None:
         return
     try:
         gauge.set(value=value, **labels)
+    except ValueError as exc:
+        logger.warning("Invalid metric emission for %s: %s", getattr(gauge, "name", gauge), exc)
     except Exception as exc:
         logger.debug("Failed to set gauge %s: %s", getattr(gauge, "name", gauge), exc, exc_info=True)
 
@@ -255,6 +259,8 @@ def safe_dec(gauge: Gauge | None, amount: float = 1.0, **labels: Any) -> None:
         return
     try:
         gauge.dec(amount=amount, **labels)
+    except ValueError as exc:
+        logger.warning("Invalid metric emission for %s: %s", getattr(gauge, "name", gauge), exc)
     except Exception as exc:
         logger.debug("Failed to decrement gauge %s: %s", getattr(gauge, "name", gauge), exc, exc_info=True)
 
@@ -265,6 +271,8 @@ def safe_observe(histogram: Histogram | None, amount: float, **labels: Any) -> N
         return
     try:
         histogram.observe(amount=amount, **labels)
+    except ValueError as exc:
+        logger.warning("Invalid metric emission for %s: %s", getattr(histogram, "name", histogram), exc)
     except Exception as exc:
         logger.debug("Failed to observe histogram %s: %s", getattr(histogram, "name", histogram), exc, exc_info=True)
 

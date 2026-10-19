@@ -291,7 +291,12 @@ def create_app() -> FastAPI:
 
     @application.get("/metrics", tags=["system"])
     async def metrics_endpoint(request: Request) -> Response:
-        """Prometheus metrics endpoint (operations.md §4.3). Off by default."""
+        """Prometheus metrics endpoint (operations.md §4.3). Off by default.
+
+        Calculates dynamic in-process gauges on scrape. Event log lag computation
+        queries the database and explicitly catches exceptions to reset the gauge
+        to prevent stale lag reporting on db failure.
+        """
         if not metrics_enabled():
             return JSONResponse(status_code=404, content={"error": "Not Found"})
         if not check_metrics_auth(request):

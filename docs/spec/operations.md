@@ -129,10 +129,11 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 - **라벨에 workspace_id/ticket_id/principal을 쓰지 않는다**(카디널리티 폭발·프라이버시). workspace별 사용량은 §3 usage API로 본다.
 - `/metrics`는 기본 비활성(`AK5_METRICS_ENABLED=1`로 켬). 켜면 **관리 토큰(`AK5_METRICS_TOKEN`) 또는 내부 bind에서만** 접근 가능하고, 공개 인터페이스에서는 인증 없이 열리지 않는다.
 - 서버리스에서는 pull 모델이 맞지 않으므로 로그 기반 메트릭(JSON 로그 → 플랫폼 집계)을 1차로 하고 `/metrics`는 상시 서버용이다.
-- **멀티 워커/인스턴스 집계 및 안전 방출 (Safe-emit, #132)**:
-  - **인스턴스별 수집 모델**: 각 컨테이너/워커 인스턴스는 자체 프로세스 레지스트리를 유지하며, Prometheus가 인스턴스별 `/metrics`를 개별 스크랩한다. 인스턴스 식별 라벨(`instance`)은 스크랩 시 Prometheus 서버가 부여하며 서버 내부 라벨 카디널리티 규칙을 유지한다.
-  - **클러스터 수준 합산**: 대시보드 및 경보는 PromQL 집계(`sum(rate(ak5_http_requests_total[5m])) by (route, status)`)를 통해 전체 워커 기준으로 합산한다.
-  - **Safe-emit 패턴**: 모든 도메인 로직(전이, 락/클레임, 리스 회수 등)과 미들웨어는 `safe_inc`, `safe_set`, `safe_dec`, `safe_observe`를 통해 안전하게 방출한다. 메트릭 기록 실패는 `DEBUG` 로그로 남으며 비즈니스 트랜잭션에 영향을 주지 않는다.
+- **단일 프로세스/컨테이너 수집 모델과 멀티 인스턴스 집계 (#132)**:
+  - **컨테이너당 단일 프로세스 원칙 (Scale by Replicas)**: `/metrics`는 인프로세스 메모리 레지스트리를 사용하므로, 단일 포트 뒤에 여러 워커 프로세스를 띄우는 구조(`uvicorn --workers N`, `WEB_CONCURRENCY`, gunicorn)는 스크랩 요청이 임의의 워커로 분산되어 카운터 진동/리셋 착시가 발생하므로 지원하지 않는다(멀티프로세스 공유 디렉터리 스킴이 별도로 도입되지 않는 한 금지). hosted/메트릭 활성화 배포에서는 **컨테이너/포트당 1개 서버 프로세스**를 실행하고, 수평 확장은 **컨테이너 레플리카(인스턴스) 단위**로 수행한다.
+  - **인스턴스별 스크랩**: Prometheus는 각 컨테이너 인스턴스의 `/metrics`를 개별 스크랩하며, 인스턴스 식별 라벨(`instance`)은 스크랩 시 Prometheus 서버가 부여하여 내부 라벨 카디널리티 규칙(workspace_id 등 금지)을 유지한다.
+  - **클러스터 수준 합산**: 대시보드 및 경보는 PromQL 집계(예: `sum(rate(ak5_http_requests_total[5m])) by (route, status)`)를 통해 전체 레플리카 기준으로 합산한다.
+  - **Safe-emit 패턴**: 모든 도메인 로직(전이, 락/클레임, 리스 회수 등)과 미들웨어는 `safe_inc`, `safe_set`, `safe_dec`, `safe_observe`를 통해 안전하게 방출한다. 라벨/인자 오류(`ValueError`)는 경고(`WARNING`) 로그로 남기고 일반 방출 예외는 `DEBUG` 로그로 기록하여 비즈니스 트랜잭션에 영향을 주지 않는다.
 
 ### 4.4 로깅 금지 항목
 
