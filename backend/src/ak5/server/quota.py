@@ -1,4 +1,10 @@
-"""Workspace resource quota enforcement and usage tracking (operations.md §3, #116)."""
+"""Workspace resource quota enforcement and usage tracking (operations.md §3, #116).
+
+Count-based quota checks (boards, open tickets, members, agents) operate via
+check-then-create (best-effort concurrency enforcement under workspace isolation
+without acquiring pessimistic locks). Attachment bytes tracking is enforced
+atomically via database-level upserts.
+"""
 
 from __future__ import annotations
 
@@ -224,9 +230,15 @@ async def check_agent_quota(db: AsyncSession, workspace: Workspace) -> None:
         raise QuotaExceeded("max_agents", limit, count)
 
 
-async def record_attachment_bytes(db: AsyncSession, workspace_id: str, delta_bytes: int) -> int:
-    insert = _upsert_for(db.get_bind().dialect.name)
-    stmt = (
+def build_record_attachment_bytes_stmt(dialect_name: str, workspace_id: str, delta_bytes: int):
+    """Build atomic dialect-specific upsert statement for attachment bytes."""
+    insert = _upsert_for(dialect_name)
+    if dialect_name == "postgresql":
+        clamped_value = func.greatest(0, WorkspaceUsage.value + delta_bytes)
+    else:
+        clamped_value = func.max(0, WorkspaceUsage.value + delta_bytes)
+
+    return (
         insert(WorkspaceUsage)
         .values(
             workspace_id=workspace_id,
@@ -235,10 +247,14 @@ async def record_attachment_bytes(db: AsyncSession, workspace_id: str, delta_byt
         )
         .on_conflict_do_update(
             index_elements=[WorkspaceUsage.workspace_id, WorkspaceUsage.key],
-            set_={"value": func.max(0, WorkspaceUsage.value + delta_bytes)},
+            set_={"value": clamped_value},
         )
         .returning(WorkspaceUsage.value)
     )
+
+
+async def record_attachment_bytes(db: AsyncSession, workspace_id: str, delta_bytes: int) -> int:
+    stmt = build_record_attachment_bytes_stmt(db.get_bind().dialect.name, workspace_id, delta_bytes)
     result = await db.execute(stmt)
     new_val = result.scalar_one()
     return int(new_val)

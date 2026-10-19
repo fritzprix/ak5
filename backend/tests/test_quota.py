@@ -330,3 +330,54 @@ async def test_quota_rejection_increments_metric(client: AsyncClient, test_db: A
     assert 'ak5_quota_rejections_total{quota="max_boards"}' in metrics_output
 
 
+def test_record_attachment_bytes_compiles_on_postgres_and_sqlite():
+    from ak5.server.quota import build_record_attachment_bytes_stmt
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    # PostgreSQL compilation
+    stmt_pg = build_record_attachment_bytes_stmt("postgresql", "ws_pg", 500)
+    compiled_pg = str(stmt_pg.compile(dialect=postgresql.dialect()))
+    assert "greatest" in compiled_pg.lower()
+    assert "on conflict" in compiled_pg.lower()
+
+    # SQLite compilation
+    stmt_sqlite = build_record_attachment_bytes_stmt("sqlite", "ws_sqlite", 500)
+    compiled_sqlite = str(stmt_sqlite.compile(dialect=sqlite.dialect()))
+    assert "max" in compiled_sqlite.lower()
+    assert "on conflict" in compiled_sqlite.lower()
+
+
+async def test_attachment_upload_overflow_rolls_back_usage_counter(client: AsyncClient, test_db: AsyncSession):
+    headers = await _setup_user_workspace(
+        test_db, "ws_roll_quota", "usr_roll_owner", policy={"max_attachment_bytes_total": 500}
+    )
+    t_resp = await client.post("/api/v1/tickets", headers=headers, json={"title": "Rollback Test Ticket"})
+    assert t_resp.status_code == 201
+    ticket_id = t_resp.json()["ticket_id"]
+
+    # Initial upload of 300 bytes -> OK
+    up1 = await client.post(
+        f"/api/v1/tickets/{ticket_id}/attachments",
+        headers=headers,
+        files={"file": ("test1.bin", io.BytesIO(b"a" * 300), "application/octet-stream")},
+    )
+    assert up1.status_code == 201
+
+    row = await test_db.get(WorkspaceUsage, ("ws_roll_quota", "attachment_bytes"))
+    assert row is not None
+    assert row.value == 300
+
+    # Second upload of 300 bytes exceeds quota (300 + 300 = 600 > 500) -> 403 QUOTA_EXCEEDED
+    up2 = await client.post(
+        f"/api/v1/tickets/{ticket_id}/attachments",
+        headers=headers,
+        files={"file": ("test2.bin", io.BytesIO(b"b" * 300), "application/octet-stream")},
+    )
+    assert up2.status_code == 403
+
+    # Ensure counter was not committed/persisted and remains 300
+    await test_db.refresh(row)
+    assert row.value == 300
+
+
+
