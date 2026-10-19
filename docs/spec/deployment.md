@@ -81,8 +81,11 @@ class BlobStore(Protocol):
 
 - **키 규칙**: `ws/<workspace_id>/<ticket_id>/<attachment_id>`. 키에 사용자 입력(파일명)을 넣지 않는다(경로 조작 방지). 원본 파일명은 DB에만 둔다.
 - **권한은 항상 서버가 검사**한다(#75: 다운로드 시 workspace 확인). 백엔드가 서명 URL을 지원해도 **기본은 서버 프록시 스트리밍**이다. 서명 URL 직접 다운로드는 §9의 결정 사항이다.
-- 크기 한도 `MAX_ATTACHMENT_SIZE_BYTES`는 스트리밍 중 강제한다(현재 동작 유지). 서버리스의 요청 본문 한도(Vercel 4.5MB 등)보다 큰 업로드는 **서명 업로드 URL 2단계**(init → PUT → complete)가 필요하다 — 초기 범위에서는 제외하고 한도를 문서화한다.
-- ticket/workspace 삭제 시 blob 삭제는 DB 커밋 **후** 최선 노력으로 수행하고, 실패분은 `blob_gc` 대상 테이블에 남겨 지연 정리한다.
+- **첨부/티켓 삭제 시 크래시 윈도우 방어 (Transactional Outbox, #147)**:
+  - 첨부 행 삭제 및 용량 차감과 같은 DB 트랜잭션에서 `blob_gc` 큐에 항목을 선기록(`attempts=0`)한 후 커밋한다.
+  - 커밋 직후 즉시 비동기 blob 삭제를 시도하며, 성공 시 `blob_gc` 항목을 삭제한다.
+  - 즉각 삭제 실패 또는 커밋 직후 프로세스 비정상 종료(크래시) 시에도 이미 DB에 기록된 `blob_gc` 항목이 남아 있으므로, 백그라운드 sweeper(`ak5 db maintenance --sweep-blob-gc`)가 이를 수거하여 고아(orphan) blob 누수가 발생하지 않는다.
+  - `max_attempts` 초과 항목은 dead-letter로 분류되며, sweeper 통계 및 CLI 출력에 건수가 명시된다.
 - **Vercel Blob 접근 모델 및 보안**:
   - Vercel Blob public store는 URL을 알면 인증 없이 직접 읽기가 가능하다(`x-add-random-suffix: false`로 키 경로가 결정적임).
   - AK5는 클라이언트에게 public URL을 노출하지 않고 항상 서버 프록시 스트리밍(워크스페이스 멤버십 검증 포함)으로 제공하므로, 외부 무단 직접 접근 방어는 키 경로 내 48-bit 암호학적 랜덤 `attachment_id`의 추측 불가성(unguessability)에 의존한다.

@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -24,6 +24,7 @@ from ak5.server.database import get_db
 from ak5.server.inbox import resolve_board_alias
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
+from ak5.server.models.blob_gc import BlobGc
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.server.models.workspace import Workspace, WorkspaceUsage
@@ -1179,17 +1180,35 @@ async def delete_attachment(
             "actor_id": current_actor.actor_id,
         },
     )
-    await db.commit()
+    # Transactional Outbox (deployment.md §2, #147):
+    # Enqueue into blob_gc in the SAME transaction as attachment row deletion.
+    # If the process terminates/crashes right after commit, the blob_gc row is already
+    # safely persisted and will be cleaned up by the background sweeper.
+    from ak5.server.services.blob_gc import record_failed_blob_deletion
 
-    # Blob removal is best effort and happens after the row is gone (deployment.md §2).
+    gc_entry = await record_failed_blob_deletion(db, storage_key, error=None, workspace_id=workspace_id)
+    await db.commit()
+    gc_id = gc_entry.id
+
+    # Immediate deletion attempt: if successful, clean up the outbox entry.
     try:
         await get_blob_store().delete(storage_key)
+        item = await db.get(BlobGc, gc_id)
+        if item is not None:
+            await db.delete(item)
+            await db.commit()
     except Exception as exc:
-        logger.warning("Failed to delete blob %s for attachment %s", storage_key, attachment_id, exc_info=True)
-        from ak5.server.services.blob_gc import record_failed_blob_deletion
-
-        with contextlib.suppress(Exception):
-            await record_failed_blob_deletion(db, storage_key, error=str(exc), workspace_id=workspace_id)
+        logger.warning(
+            "Immediate blob delete failed for key %s (attachment %s); deferred to sweeper: %s",
+            storage_key,
+            attachment_id,
+            exc,
+        )
+        item = await db.get(BlobGc, gc_id)
+        if item is not None:
+            item.attempts = 1
+            item.last_error = str(exc)
+            item.last_attempt_at = func.now()
             await db.commit()
 
     return {"deleted": True, "attachment_id": attachment_id}

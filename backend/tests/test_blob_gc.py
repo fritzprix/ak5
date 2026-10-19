@@ -140,11 +140,12 @@ def test_db_maintenance_cli_sweep_blob_gc(test_db: AsyncSession, monkeypatch: py
     res = runner.invoke(maintenance_cmd, ["--sweep-blob-gc"])
     assert res.exit_code == 0
     assert "Blob GC sweep finished:" in res.output
+    assert "0 dead-lettered" in res.output
 
 
 @pytest.mark.asyncio
 async def test_blob_gc_max_attempts_dead_letters(test_db: AsyncSession, tmp_path):
-    """Test #139: entries reaching max_attempts are stopped from continuous retry."""
+    """Test #139, #147: entries reaching max_attempts are stopped from retry and counted as dead_letters."""
     store = FsBlobStore(tmp_path)
 
     entry = await record_failed_blob_deletion(test_db, "ws/ws1/fail_key", error="Permanent error", workspace_id="ws1")
@@ -160,12 +161,56 @@ async def test_blob_gc_max_attempts_dead_letters(test_db: AsyncSession, tmp_path
     stats1 = await sweep_blob_gc(test_db, store, max_attempts=5)
     assert stats1["failed"] == 1
     assert stats1["total"] == 1
+    assert stats1["dead_letters"] == 1
 
     row = await test_db.get(BlobGc, entry.id)
     assert row is not None
     assert row.attempts == 5
 
-    # Subsequent sweep should skip this entry because attempts >= max_attempts
+    # Subsequent sweep should skip this entry because attempts >= max_attempts, but still report dead_letters
     stats2 = await sweep_blob_gc(test_db, store, max_attempts=5)
     assert stats2["total"] == 0
+    assert stats2["dead_letters"] == 1
+
+
+@pytest.mark.asyncio
+async def test_attachment_delete_success_cleans_outbox(
+    client: AsyncClient, test_db: AsyncSession
+):
+    """Test #147: successful immediate blob delete removes outbox entry from blob_gc."""
+    ws = Workspace(workspace_id="ws_outbox", name="Outbox Workspace")
+    user = User(user_id="usr_ob", email="ob@test.com", display_name="OB User")
+    member = Membership(membership_id="mem_ob", workspace_id="ws_outbox", user_id="usr_ob", role="owner")
+    actor = Actor(actor_id="usr_ob", actor_type="human", name="OB User", role="dev")
+    test_db.add_all([ws, user, member, actor])
+    from ak5.server.services.workspaces import provision_inbox_board
+
+    await provision_inbox_board(test_db, workspace_id="ws_outbox", created_by="usr_ob")
+    await test_db.commit()
+
+    headers = _auth_headers("usr_ob", "ws_outbox")
+
+    # Create ticket and upload attachment
+    t_resp = await client.post("/api/v1/tickets", headers=headers, json={"title": "OB Ticket"})
+    assert t_resp.status_code == 201
+    ticket_id = t_resp.json()["ticket_id"]
+
+    up_resp = await client.post(
+        f"/api/v1/tickets/{ticket_id}/attachments",
+        headers=headers,
+        files={"file": ("ob_test.txt", io.BytesIO(b"ob content"), "text/plain")},
+    )
+    assert up_resp.status_code == 201
+    attachment_id = up_resp.json()["attachment_id"]
+
+    # Delete attachment normally (default FsBlobStore succeeds)
+    del_resp = await client.delete(f"/api/v1/tickets/{ticket_id}/attachments/{attachment_id}", headers=headers)
+    assert del_resp.status_code == 200
+
+    # Verify attachment is deleted
+    assert await test_db.get(TicketAttachment, attachment_id) is None
+
+    # Verify outbox entry in blob_gc was cleaned up on successful delete
+    gc_rows = (await test_db.scalars(select(BlobGc).where(BlobGc.workspace_id == "ws_outbox"))).all()
+    assert len(gc_rows) == 0
 
