@@ -13,6 +13,7 @@ import httpx
 import pytest
 from ak5.config import settings
 from ak5.server.blob import (
+    BlobError,
     BlobNotFoundError,
     BlobTooLargeError,
     FsBlobStore,
@@ -275,6 +276,8 @@ def test_clean_stale_parts(tmp_path: Path):
     # 2. Fresh part (just created)
     fresh_part = parts_dir / ".att_2.def456.part"
     fresh_part.write_bytes(b"fresh")
+    fresh_time = time.time() - 60
+    os.utime(fresh_part, (fresh_time, fresh_time))
 
     # 3. Regular file
     regular_file = parts_dir / "att_3"
@@ -352,39 +355,62 @@ async def test_s3_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_vercel_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
     blobs: dict[str, tuple[bytes, str]] = {}
+    store_id = "store123"
+    token = f"vercel_blob_rw_{store_id}_secretxyz"
+    public_edge_host = f"{store_id}.public.blob.vercel-storage.com"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers.get("authorization") == "Bearer v_token_abc"
+        host = request.url.host
         path = request.url.path
-        if request.method == "HEAD":
+
+        # 1. Edge host requests (HEAD / GET directly from public edge URL)
+        if host == public_edge_host:
             key = path.lstrip("/")
-            if key in blobs:
-                return httpx.Response(200)
-            return httpx.Response(404)
-        if request.method == "GET":
-            key = path.lstrip("/")
-            if key == "":
-                return httpx.Response(200)
-            if key in blobs:
-                data, ct = blobs[key]
-                return httpx.Response(200, content=data, headers={"content-type": ct})
-            return httpx.Response(404)
+            if request.method == "HEAD":
+                if key in blobs:
+                    return httpx.Response(200)
+                return httpx.Response(404)
+            if request.method == "GET":
+                if key in blobs:
+                    data, ct = blobs[key]
+                    return httpx.Response(200, content=data, headers={"content-type": ct})
+                return httpx.Response(404)
+            return httpx.Response(405)
+
+        # 2. Management API requests (PUT, POST /delete, GET / probe)
+        assert request.headers.get("authorization") == f"Bearer {token}"
+        assert request.headers.get("x-api-version") == "7"
+
+        if request.method == "GET" and path == "/":
+            return httpx.Response(200, json={"blobs": [], "hasMore": False})
+
         if request.method == "PUT":
+            assert request.headers.get("x-add-random-suffix") == "false"
             key = path.lstrip("/")
             data = request.read()
             ct = request.headers.get("content-type", "application/octet-stream")
             blobs[key] = (data, ct)
-            return httpx.Response(200, json={"url": f"https://mock.blob/{key}"})
+            blob_url = f"https://{public_edge_host}/{key}"
+            return httpx.Response(
+                200,
+                json={
+                    "url": blob_url,
+                    "downloadUrl": f"{blob_url}?download=1",
+                    "pathname": key,
+                    "contentType": ct,
+                },
+            )
+
         if request.method == "POST" and path == "/delete":
             payload = json.loads(request.read())
             for url in payload.get("urls", []):
-                key = url.split("https://blob.vercel-storage.com/")[-1].lstrip("/")
+                key = url.split(f"https://{public_edge_host}/")[-1].lstrip("/")
                 blobs.pop(key, None)
             return httpx.Response(200)
+
         return httpx.Response(400)
 
     transport = httpx.MockTransport(handler)
-
     orig_client = httpx.AsyncClient
 
     def mock_client(*args, **kwargs):
@@ -393,7 +419,7 @@ async def test_vercel_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("ak5.server.blob.httpx.AsyncClient", mock_client)
 
-    store = VercelBlobStore("v_token_abc")
+    store = VercelBlobStore(token)
     await store.check_ready()
 
     key = "ws/ws_v/TK-1/att_v"
@@ -405,7 +431,7 @@ async def test_vercel_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
     assert size == 11
     assert await store.exists(key)
 
-    # Open
+    # Open (reads from store's public edge host)
     assert await _read(store, key) == b"vercel blob"
 
     # Over limit
@@ -417,7 +443,25 @@ async def test_vercel_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(BlobNotFoundError):
         await _read(store, "non_existent")
 
-    # Delete
+    # Delete (calls management API /delete with public edge URL)
     await store.delete(key)
     assert not await store.exists(key)
+
+
+@pytest.mark.asyncio
+async def test_vercel_blob_store_check_ready_failure(monkeypatch: pytest.MonkeyPatch):
+    def error_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    orig_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(error_handler)
+        return orig_client(*args, **kwargs)
+
+    monkeypatch.setattr("ak5.server.blob.httpx.AsyncClient", mock_client)
+    store = VercelBlobStore("vercel_blob_rw_test_secret")
+    with pytest.raises(BlobError, match="Vercel Blob probe failed"):
+        await store.check_ready()
+
 

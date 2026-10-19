@@ -207,8 +207,11 @@ class S3BlobStore:
             raise ValueError("S3BlobStore requires a non-empty bucket name")
         self.endpoint_url = endpoint_url
         self.region_name = region_name
+        self._client = None
 
     def _get_client(self):
+        if self._client is not None:
+            return self._client
         try:
             import boto3
         except ImportError as exc:
@@ -221,7 +224,8 @@ class S3BlobStore:
             kwargs["endpoint_url"] = self.endpoint_url
         if self.region_name:
             kwargs["region_name"] = self.region_name
-        return boto3.client("s3", **kwargs)
+        self._client = boto3.client("s3", **kwargs)
+        return self._client
 
     def local_path(self, key: str) -> Path | None:
         return None
@@ -262,6 +266,11 @@ class S3BlobStore:
         content_type: str,
         max_bytes: int,
     ) -> int:
+        """Upload stream to S3.
+
+        Buffers chunks in memory up to `max_bytes` (bounded by settings.MAX_ATTACHMENT_SIZE_BYTES)
+        before issuing put_object.
+        """
         buffer = io.BytesIO()
         total = 0
         async for chunk in chunks:
@@ -325,26 +334,62 @@ class S3BlobStore:
 
 
 class VercelBlobStore:
-    """Store attachments via Vercel Blob REST API."""
+    """Store attachments via Vercel Blob REST API (deployment.md §2, #109).
 
-    def __init__(self, token: str, *, api_url: str = "https://blob.vercel-storage.com") -> None:
+    Vercel Blob architecture:
+    - PUT requests go to the management API (api_url, default https://blob.vercel-storage.com/<pathname>).
+      The PUT response returns a JSON payload with `url` and `downloadUrl`, which point to the store's
+      public edge host (e.g. https://<store-id>.public.blob.vercel-storage.com/<pathname>).
+    - Content reads (GET) and presence checks (HEAD) go to the public store URL.
+    - Token format: `vercel_blob_rw_<storeId>_<secret>`. The store host is derived from storeId or
+      from the PUT response payload.
+    - Delete requests go to {api_url}/delete with body {"urls": [blob_url]}.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        *,
+        api_url: str = "https://blob.vercel-storage.com",
+        base_url: str | None = None,
+    ) -> None:
         self.token = token.strip()
         if not self.token:
             raise ValueError("VercelBlobStore requires a non-empty token")
         self.api_url = api_url.rstrip("/")
 
+        if base_url:
+            self.base_url = base_url.rstrip("/")
+        else:
+            match = re.match(r"^vercel_blob_rw_([A-Za-z0-9]+)_", self.token)
+            if match:
+                store_id = match.group(1).lower()
+                self.base_url = f"https://{store_id}.public.blob.vercel-storage.com"
+            else:
+                self.base_url = self.api_url
+
+        self._url_cache: dict[str, str] = {}
+
     def local_path(self, key: str) -> Path | None:
         return None
 
     def _headers(self, **extra: str) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self.token}"}
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "x-api-version": "7",
+        }
         headers.update(extra)
         return headers
 
+    def _get_blob_url(self, key: str) -> str:
+        if key in self._url_cache:
+            return self._url_cache[key]
+        return f"{self.base_url}/{key}"
+
     async def exists(self, key: str) -> bool:
-        url = f"{self.api_url}/{key}"
+        url = self._get_blob_url(key)
         async with httpx.AsyncClient() as client:
-            resp = await client.head(url, headers=self._headers())
+            resp = await client.head(url)
             return resp.status_code == 200
 
     async def check_ready(self) -> None:
@@ -352,8 +397,8 @@ class VercelBlobStore:
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.get(url, headers=self._headers())
-                if resp.status_code == 401:
-                    raise BlobError("Vercel Blob token is invalid (HTTP 401)")
+                if resp.status_code != 200:
+                    raise BlobError(f"Vercel Blob probe failed (HTTP {resp.status_code}): {resp.text}")
             except httpx.RequestError as exc:
                 raise BlobError(f"Vercel Blob probe failed: {exc}") from exc
 
@@ -385,13 +430,19 @@ class VercelBlobStore:
             resp = await client.put(url, headers=headers, content=data)
             if resp.status_code not in (200, 201):
                 raise BlobError(f"Vercel Blob PUT failed ({resp.status_code}): {resp.text}")
+            try:
+                payload = resp.json()
+                if isinstance(payload, dict) and "url" in payload:
+                    self._url_cache[key] = str(payload["url"])
+            except Exception:
+                pass
         return total
 
     async def open(self, key: str) -> AsyncIterator[bytes]:
-        url = f"{self.api_url}/{key}"
+        url = self._get_blob_url(key)
         client = httpx.AsyncClient()
         try:
-            req = client.build_request("GET", url, headers=self._headers())
+            req = client.build_request("GET", url)
             resp = await client.send(req, stream=True)
             if resp.status_code in (404, 403):
                 await resp.aclose()
@@ -410,7 +461,8 @@ class VercelBlobStore:
 
     async def delete(self, key: str) -> None:
         url = f"{self.api_url}/delete"
-        blob_url = f"{self.api_url}/{key}"
+        blob_url = self._get_blob_url(key)
+        self._url_cache.pop(key, None)
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=self._headers(), json={"urls": [blob_url]})
             if resp.status_code not in (200, 204, 404):
