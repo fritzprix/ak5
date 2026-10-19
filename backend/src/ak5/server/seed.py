@@ -13,7 +13,7 @@ from ak5.cli.config import clear_session, find_project_root
 from ak5.contracts.stages import STANDARD_STAGES
 from ak5.paths import get_app_data_dir
 from ak5.server.config import settings
-from ak5.server.database import AsyncSessionLocal
+from ak5.server.database import open_admin_session
 from ak5.server.inbox import INBOX_BOARD_ID, is_inbox_board_id
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
@@ -446,7 +446,7 @@ async def warn_inbox_like_standard_boards(db: AsyncSession) -> list[str]:
 
 async def seed_initial_data() -> None:
     """Seed initial actors, global inbox, and default board if not present."""
-    async with AsyncSessionLocal() as db:
+    async with open_admin_session() as db:
         await ensure_local_tenancy(db)
 
         # Check if default PM actor exists
@@ -622,7 +622,7 @@ async def reset_kanban_data(keep_boards: bool = False, clear_sessions: bool = Tr
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    async with AsyncSessionLocal() as db:
+    async with open_admin_session() as db:
         # Temporarily disable foreign keys during bulk purge
         await db.execute(text("PRAGMA foreign_keys = OFF;"))
 

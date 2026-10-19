@@ -231,10 +231,18 @@ def get_canonical_db_path() -> Path:
 
 
 def sqlite_file_from_database_url(database_url: str) -> Path | None:
-    """Return the SQLite file path for a SQLAlchemy URL, or ``None`` for ``:memory:``."""
+    """Return the SQLite file path for a SQLAlchemy URL, or ``None`` for non-SQLite / ``:memory:``.
+
+    PostgreSQL URLs must not be treated as filesystem paths: ``make_url`` puts the
+    database *name* in ``url.database`` (e.g. ``ak5``), which would otherwise resolve
+    to ``./ak5`` and trip the canonical-store gate (#106 / #155).
+    """
     from sqlalchemy.engine import make_url
 
     url = make_url(database_url)
+    driver = (url.drivername or "").lower()
+    if "sqlite" not in driver:
+        return None
     if not url.database or url.database == ":memory:":
         return None
     return Path(url.database).expanduser().resolve()

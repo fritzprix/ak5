@@ -228,4 +228,110 @@ async def test_live_postgres_rls_cross_workspace_blocking():
         all_ids = {b.board_id for b in all_boards}
         assert board_alpha_id in all_ids and board_beta_id in all_ids
 
+    # 5. Workspace GUC survives commit (after_begin re-applies session.info)
+    async with maker() as session:
+        await _scope(session, ws_alpha)
+        await session.commit()
+        boards = (await session.execute(select(Board))).scalars().all()
+        board_ids = {b.board_id for b in boards}
+        assert board_alpha_id in board_ids
+        assert board_beta_id not in board_ids
+
     await engine.dispose()
+
+
+def test_prepare_database_for_use_accepts_postgres_url(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """PostgreSQL DATABASE_URL must not trip the SQLite canonical-store gate (#155)."""
+    from ak5.server.services import db_safety
+
+    monkeypatch.setenv("AK5_DATA_DIR", str(tmp_path / "app"))
+    monkeypatch.delenv("AK5_ALLOW_DATABASE_URL_OVERRIDE", raising=False)
+    db_safety._prepared = False
+    live = db_safety.prepare_database_for_use(
+        "postgresql+asyncpg://ak5app:secret@localhost:5432/ak5"
+    )
+    assert live.name == "ak5.db"
+    db_safety._prepared = False
+
+
+@pytest.mark.asyncio
+async def test_live_postgres_nonsuperuser_prepare_and_seed():
+    """NOBYPASSRLS app role: prepare gate + admin seed + workspace-scoped reads (#155)."""
+    pg_url = os.environ.get("AK5_TEST_POSTGRES_URL") or os.environ.get("AK5_POSTGRES_URL")
+    if not pg_url:
+        pytest.skip("AK5_TEST_POSTGRES_URL is not set; skipping live PostgreSQL startup test")
+
+    from ak5.server import migrations as mig
+    from ak5.server.models.actor import Actor
+    from ak5.server.models.board import Board
+    from ak5.server.rls import set_bypass_rls_context, set_workspace_rls_context
+    from ak5.server.seed import LOCAL_WORKSPACE_ID, ensure_local_tenancy
+    from ak5.server.services.db_safety import prepare_database_for_use
+    from sqlalchemy import select, text
+    from sqlalchemy.engine import make_url
+
+    admin_engine = create_async_engine(pg_url, future=True)
+    await mig.ensure_schema(admin_engine)
+
+    app_user = "ak5_app_nonsuper"
+    app_pass = "ak5_app_password"
+    async with admin_engine.begin() as conn:
+        await conn.execute(
+            text(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{app_user}') THEN
+                        CREATE ROLE {app_user} LOGIN PASSWORD '{app_pass}'
+                            NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+                    END IF;
+                    GRANT ALL PRIVILEGES ON SCHEMA public TO {app_user};
+                    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {app_user};
+                    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {app_user};
+                    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {app_user};
+                    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {app_user};
+                END $$;
+            """)
+        )
+
+    parsed = make_url(pg_url)
+    app_url = parsed.set(username=app_user, password=app_pass).render_as_string(hide_password=False)
+    if app_url.startswith("postgresql://"):
+        app_url = "postgresql+asyncpg://" + app_url[len("postgresql://") :]
+    elif app_url.startswith("postgres://"):
+        app_url = "postgresql+asyncpg://" + app_url[len("postgres://") :]
+
+    # High-priority regression: PG URL must not raise DatabaseConflictError.
+    prepare_database_for_use(app_url)
+
+    admin_maker = async_sessionmaker(bind=admin_engine, class_=AsyncSession, expire_on_commit=False)
+    async with admin_maker() as session:
+        await set_bypass_rls_context(session, True)
+        await ensure_local_tenancy(session)
+        if await session.get(Actor, "user_pm") is None:
+            session.add(
+                Actor(
+                    actor_id="user_pm",
+                    name="Product Manager",
+                    actor_type="human",
+                    role="pm",
+                )
+            )
+        await session.commit()
+
+    app_engine = create_async_engine(app_url, future=True)
+    app_maker = async_sessionmaker(bind=app_engine, class_=AsyncSession, expire_on_commit=False)
+    async with app_maker() as session:
+        boards = (await session.execute(select(Board))).scalars().all()
+        assert boards == [], "NOBYPASSRLS app role without workspace GUC must see 0 boards"
+
+        await set_workspace_rls_context(session, LOCAL_WORKSPACE_ID)
+        boards = (await session.execute(select(Board))).scalars().all()
+        assert any(b.workspace_id == LOCAL_WORKSPACE_ID for b in boards)
+
+        # Commit must not drop workspace GUC (after_begin re-apply).
+        await session.commit()
+        boards_after = (await session.execute(select(Board))).scalars().all()
+        assert any(b.workspace_id == LOCAL_WORKSPACE_ID for b in boards_after)
+
+    await app_engine.dispose()
+    await admin_engine.dispose()

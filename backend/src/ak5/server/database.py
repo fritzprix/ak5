@@ -1,6 +1,7 @@
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +99,50 @@ AsyncSessionLocal = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+# Admin / background engine: prefer AK5_DATABASE_ADMIN_URL (BYPASSRLS role).
+# When unset, reuse DATABASE_URL and rely on ak5.bypass_rls GUC for seed/purge.
+_admin_url_raw = (settings.DATABASE_ADMIN_URL or "").strip() or settings.DATABASE_URL
+_admin_normalized, _admin_connect_args, _admin_engine_kwargs = get_engine_options(_admin_url_raw)
+if _admin_normalized == _normalized_db_url:
+    admin_engine = engine
+else:
+    admin_engine = create_async_engine(
+        _admin_normalized,
+        connect_args=_admin_connect_args,
+        **_admin_engine_kwargs,
+    )
+    if "sqlite" in _admin_normalized:
+
+        @event.listens_for(admin_engine.sync_engine, "connect")
+        def set_admin_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute(f"PRAGMA busy_timeout={settings.SQLITE_BUSY_TIMEOUT};")
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            cursor.close()
+
+AsyncSessionLocalAdmin = async_sessionmaker(
+    bind=admin_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+
+@asynccontextmanager
+async def open_admin_session() -> AsyncIterator[AsyncSession]:
+    """Open a session for seed / retention / maintenance (RLS bypass on PostgreSQL)."""
+    from ak5.server.rls import set_bypass_rls_context
+
+    async with AsyncSessionLocalAdmin() as session:
+        await set_bypass_rls_context(session, True)
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
 
 
 def _sqlite_blocked_by_has_ticket_fk(sync_conn: Connection) -> bool:
