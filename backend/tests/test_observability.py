@@ -316,3 +316,86 @@ def test_route_template_masks_parameter_values_only():
 def test_route_template_for_unmatched_requests():
     assert obs._route_template({"path": "/definitely/not/here/12345"}) == "<unmatched>"
     assert obs._route_template({"path": "/healthz"}) == "/healthz"
+
+
+# --- review follow-ups: uvicorn access line, readiness side effects ---------------------------------
+
+
+@pytest.fixture
+def clean_uvicorn_access():
+    access = logging.getLogger("uvicorn.access")
+    saved_level, saved_filters = access.level, list(access.filters)
+    yield access
+    access.setLevel(saved_level)
+    access.filters[:] = saved_filters
+
+
+def _uvicorn_record(target: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+        ("203.0.113.9:4000", "GET", target, "1.1", 302), None,
+    )
+
+
+def test_uvicorn_access_line_loses_its_query_string_and_tokens():
+    record = _uvicorn_record("/auth/callback?code=OIDC-CODE-123&state=STATE-456")
+    assert obs.UvicornAccessFilter().filter(record) is True
+    line = record.getMessage()
+    assert line == '203.0.113.9:4000 - "GET /auth/callback HTTP/1.1" 302'
+    assert "OIDC-CODE-123" not in line and "STATE-456" not in line
+
+    record = _uvicorn_record(f"/x/{SECRETS[0]}")  # a token in the path itself
+    obs.UvicornAccessFilter().filter(record)
+    assert SECRETS[0] not in record.getMessage()
+
+
+def test_uvicorn_access_filter_ignores_unexpected_record_shapes():
+    odd = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "plain message", None, None)
+    assert obs.UvicornAccessFilter().filter(odd) is True and odd.getMessage() == "plain message"
+
+
+def test_configure_logging_secures_uvicorn_access_in_every_mode(
+    monkeypatch: pytest.MonkeyPatch, clean_logging, clean_uvicorn_access
+):
+    access = clean_uvicorn_access
+    monkeypatch.delenv("AK5_LOG_FORMAT", raising=False)
+    monkeypatch.delenv("AK5_LOG_LEVEL", raising=False)
+    level_before = access.level
+    obs.configure_logging()
+    obs.configure_logging()
+    assert len([f for f in access.filters if isinstance(f, obs.UvicornAccessFilter)]) == 1
+    assert access.level == level_before  # default text mode: line kept, only sanitized
+
+    monkeypatch.setenv("AK5_LOG_FORMAT", "json")
+    obs.configure_logging()
+    assert access.level == logging.WARNING  # ak5.access is the structured replacement
+
+
+@pytest.mark.asyncio
+async def test_readiness_probe_does_not_create_the_attachments_directory(tmp_path: Path):
+    from ak5.server.blob import BlobError, FsBlobStore
+
+    root = tmp_path / "attachments"
+    store = FsBlobStore(root)
+    with pytest.raises(BlobError):
+        await store.check_ready()
+    assert not root.exists()  # a public probe has no side effects
+
+    await store.prepare()  # startup does the creating
+    assert root.is_dir()
+    await store.check_ready()
+
+
+@pytest.mark.asyncio
+async def test_readyz_reports_a_missing_attachments_dir_without_creating_it(
+    anon_client: AsyncClient, test_db: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    conn = await test_db.connection()
+    await conn.run_sync(mig.stamp_sync)
+    await test_db.commit()
+    missing = tmp_path / "not-created-yet"
+    monkeypatch.setattr(settings, "ATTACHMENTS_DIR", str(missing))
+
+    resp = await anon_client.get("/readyz")
+    assert resp.status_code == 503 and resp.json()["failed"] == ["blob"]
+    assert not missing.exists()

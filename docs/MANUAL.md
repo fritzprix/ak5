@@ -500,6 +500,7 @@ v2 서버는 시작할 때 v1 DB를 자동으로 변환한다.
 
 - 모든 응답에 `X-Request-ID`가 붙는다. 호출자가 보낸 값이 영숫자·`_`·`-` 8~64자면 그대로 쓰고, 아니면 서버가 새로 만든다. 이 ID는 접근 로그, 감사(audit) 기록, CLI/SDK 오류 출력(`request id: …`, SDK는 `AK5Error.requestId`)에 나타난다.
 - 접근 로그(`ak5.access`)에는 메서드, **라우트 템플릿**(`/api/v1/tickets/{ticket_id}`), 상태, 소요 시간, principal/workspace id, instance id만 남는다. 쿼리스트링·토큰·쿠키·본문은 기록하지 않으며, 토큰처럼 생긴 문자열은 로그 메시지와 예외 출력에서도 마스킹된다.
+- uvicorn 자체 접근 로그에서도 쿼리스트링(예: OIDC 콜백의 `?code=…`)은 잘려 나가고 토큰 모양 문자열은 마스킹된다. `AK5_LOG_FORMAT=json`에서는 `ak5.access`가 구조화된 대체이므로 uvicorn의 접근 로그는 끈다. `/readyz`는 아무것도 만들지 않는다 — 첨부 디렉터리는 서버 시작 때 한 번 만든다.
 - `GET /healthz` — 프로세스 생존(의존성 확인 없음, 기존 `/health`도 유지). `GET /readyz` — DB 연결, 스키마가 최신 revision인지, 첨부 저장소 사용 가능 여부. 실패하면 `503`과 실패한 검사 이름(`database`/`schema`/`blob`)만 돌려주고 원인은 서버 로그에만 남긴다. 둘 다 인증 없이 접근할 수 있고 접근 로그에서 제외된다.
 
 ### 데이터베이스 스키마 (Alembic)
