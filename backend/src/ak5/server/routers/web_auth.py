@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -19,6 +20,7 @@ from ak5.server.auth.sessions import (
 )
 from ak5.server.auth.users import ensure_local_owner_user
 from ak5.server.database import get_db
+from ak5.server.metrics import rate_limited_total, safe_inc
 from ak5.server.security import is_loopback_client
 from ak5.server.web_auth import (
     COOKIE_NAME,
@@ -30,6 +32,8 @@ from ak5.server.web_auth import (
     record_failed_attempt,
     record_successful_attempt,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["web-auth"])
 
@@ -62,7 +66,12 @@ async def web_login(
     ip = _client_ip(request)
     allowed, wait_seconds = check_rate_limit(ip)
     if not allowed:
+        safe_inc(rate_limited_total, rule="local_login_lockout")
         wait = wait_seconds or 60
+        logger.warning(
+            "Local login locked out due to consecutive failed attempts (retry after %ss)",
+            wait,
+        )
         response.status_code = 429
         response.headers["Retry-After"] = str(wait)
         return {"error": f"Too many failed attempts. Locked out for {wait} seconds."}

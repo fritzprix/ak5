@@ -66,7 +66,6 @@ IP_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"^/auth/login$"), "login_ip"),
     ("GET", re.compile(r"^/auth/callback$"), "login_ip"),
     ("POST", re.compile(r"^/auth/local/login$"), "login_ip"),
-    ("POST", re.compile(r"^/auth/login/password$"), "login_ip"),
     ("POST", re.compile(r"^/login$"), "login_ip"),
     ("POST", re.compile(r"^/api/auth/login$"), "login_ip"),
     ("POST", re.compile(r"^/auth/oidc/device/start$"), "login_ip"),

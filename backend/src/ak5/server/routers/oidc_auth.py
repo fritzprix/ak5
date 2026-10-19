@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -57,6 +58,7 @@ from ak5.server.auth.users import (
     verify_local_owner_password,
 )
 from ak5.server.database import get_db
+from ak5.server.metrics import rate_limited_total, safe_inc
 from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, User
 from ak5.server.schemas.workspace import SessionTokenOut, SessionTokenRequest
 from ak5.server.security import is_loopback_client
@@ -70,6 +72,8 @@ from ak5.server.web_auth import (
     record_failed_attempt,
     record_successful_attempt,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["oidc-auth"])
 
@@ -369,7 +373,12 @@ async def local_owner_login(
     )
     allowed, wait_seconds = check_rate_limit(ip)
     if not allowed:
+        safe_inc(rate_limited_total, rule="local_login_lockout")
         wait = wait_seconds or 60
+        logger.warning(
+            "Local login locked out due to consecutive failed attempts (retry after %ss)",
+            wait,
+        )
         return JSONResponse(
             status_code=429,
             content={"error": f"Too many failed attempts. Locked out for {wait} seconds."},

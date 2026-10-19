@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ak5.contracts.errors import ErrorCode
 from ak5.server.auth.bridge import actor_id_for_principal
 from ak5.server.inbox import inbox_board_id_for  # noqa: F401  (re-exported for routers)
+from ak5.server.metrics import quota_rejections_total, rate_limited_total, safe_inc
 from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.board import Board
@@ -35,6 +37,8 @@ from ak5.server.quota import (
 )
 from ak5.server.seed import LOCAL_USER_ID
 from ak5.server.services.templates import INBOX_TEMPLATE
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_POLICY: dict[str, Any] = {
     "require_user_presence_for_approval": False,
@@ -411,6 +415,13 @@ async def create_invite(
         )
     ).scalar_one()
     if pending_count >= MAX_PENDING_INVITES_PER_WORKSPACE:
+        safe_inc(quota_rejections_total, quota="pending_invites")
+        logger.warning(
+            "Workspace pending invites quota exceeded: workspace_id=%s, limit=%s, current=%s",
+            workspace_id,
+            MAX_PENDING_INVITES_PER_WORKSPACE,
+            pending_count,
+        )
         raise WorkspaceServiceError(
             ErrorCode.QUOTA_EXCEEDED,
             f"Workspace pending invites limit ({MAX_PENDING_INVITES_PER_WORKSPACE}) exceeded",
@@ -422,6 +433,7 @@ async def create_invite(
         )
 
     # Same email re-invite cooldown check (operations.md §6 / #118: 10 minutes)
+    # Revoked invites do not trigger cooldown so admins can promptly correct mistakes.
     cooldown_cutoff = now - timedelta(minutes=INVITE_COOLDOWN_MINUTES)
     recent_invite = (
         await db.execute(
@@ -429,10 +441,16 @@ async def create_invite(
                 WorkspaceInvite.workspace_id == workspace_id,
                 WorkspaceInvite.email == normalized,
                 WorkspaceInvite.created_at >= cooldown_cutoff,
+                WorkspaceInvite.revoked_at.is_(None),
             )
         )
     ).scalars().first()
     if recent_invite is not None:
+        safe_inc(rate_limited_total, rule="invite_cooldown")
+        logger.warning(
+            "Workspace invite rate limited by cooldown: workspace_id=%s",
+            workspace_id,
+        )
         raise WorkspaceServiceError(
             ErrorCode.RATE_LIMITED,
             f"Invite cooldown in effect: please wait {INVITE_COOLDOWN_MINUTES} minutes before reinviting the same email",

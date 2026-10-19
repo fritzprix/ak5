@@ -97,12 +97,31 @@ def verify_session_cookie(cookie_value: str | None) -> bool:
 
 BASE_DELAY_SECONDS = 2.0
 MAX_DELAY_SECONDS = 10 * 60.0
+MAX_ATTEMPT_ENTRIES = 1000
+
+
+def _prune_expired_attempts(now: float) -> None:
+    """Evict expired lockout entries and cap in-memory size (#118)."""
+    expired = [
+        ip
+        for ip, rec in _attempts.items()
+        if rec.blocked_until <= now and (now - rec.first_attempt) > WINDOW_SECONDS
+    ]
+    for ip in expired:
+        _attempts.pop(ip, None)
+    if len(_attempts) > MAX_ATTEMPT_ENTRIES:
+        # Evict oldest entries first to stay within bounded capacity
+        overflow = len(_attempts) - MAX_ATTEMPT_ENTRIES
+        oldest_ips = sorted(_attempts.keys(), key=lambda k: _attempts[k].first_attempt)[:overflow]
+        for ip in oldest_ips:
+            _attempts.pop(ip, None)
 
 
 def check_rate_limit(ip: str) -> tuple[bool, int | None]:
     """Return (allowed, wait_seconds_if_blocked)."""
     now = time.monotonic()
     with _lock:
+        _prune_expired_attempts(now)
         record = _attempts.get(ip)
         if not record:
             return True, None
@@ -117,6 +136,7 @@ def check_rate_limit(ip: str) -> tuple[bool, int | None]:
 def record_failed_attempt(ip: str) -> None:
     now = time.monotonic()
     with _lock:
+        _prune_expired_attempts(now)
         record = _attempts.get(ip)
         if not record or (now - record.first_attempt > WINDOW_SECONDS and record.blocked_until <= now):
             _attempts[ip] = _AttemptRecord(count=1, first_attempt=now, blocked_until=0.0)
