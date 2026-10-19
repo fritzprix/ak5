@@ -1,6 +1,6 @@
 # Deployment Abstraction — Spec (DRAFT)
 
-> **상태: 초안 (#20).** 확정 전에는 구현을 위임하지 않는다. 결정이 필요한 항목은 §9에 권장안과 함께 모았다.
+> **상태: 결정 반영 중 (#20).** §9-1(pending 상태 저장 방식)과 §9-7(2.0.0 포함)은 **확정**(2026-10-19, PR #98 코멘트). §9-2~6은 권장안 대기 — 모두 확정되면 상태를 "확정"으로 바꾸고 구현을 위임한다.
 > 관련: [identity.md](./identity.md) §8 (배포 모드) · [events.md](./events.md) §1 · #37 (hosted 운영 기본기)
 
 ## 0. 목표와 비목표
@@ -33,6 +33,7 @@
 - **Alembic을 단일 이행 경로로 도입한다.**
   1. v2.0.0 스키마를 **baseline revision** 하나로 고정한다. 신규 DB는 baseline부터 `upgrade head`.
   2. 기존 `migrate_sqlite_*`는 **v1 → v2 이행 전용**으로 동결한다(새 변경 금지). v2.0.0 이후의 모든 변경은 Alembic revision으로만 한다.
+    - **결정 (2026-10-19)**: 현재는 초기 단계이고 사용자가 많지 않아 **v1→v2 데이터 마이그레이션은 필요 없다**. baseline revision은 *신규 DB 생성용*이며, 기존 SQLite 파일은 `ak5 db export/import`(§1.4)로 한 번에 v2 스키마로 옮긴다. (기존 `migrate_sqlite_*`와 v1 회귀 게이트를 언제 제거할지는 #36에서 정한다.)
   3. 서버 시작 시 `upgrade head`를 자동 실행하되, 다중 인스턴스에서는 **advisory lock**(Postgres) / 파일 락(SQLite)으로 한 인스턴스만 실행한다. `AK5_AUTO_MIGRATE=0`이면 자동 실행을 끄고 `ak5 db upgrade`로만 실행한다(서버리스 권장).
   4. SQLite의 ALTER 한계(컬럼 삭제/제약 변경)는 Alembic `batch_alter_table`로 처리한다.
 - `db_safety`의 스냅샷/dual-DB 보호는 **SQLite 전용**으로 유지한다. Postgres의 백업·복구는 운영 책임이며 #37에서 다룬다.
@@ -133,6 +134,13 @@ class BlobStore(Protocol):
 | EventBus waiters | `event_bus` | 인스턴스 간 신호 없음 | §3 |
 | WebAuthn challenge | DB (#28에서 이미 해결) | — | 유지 |
 
+
+**결정 (2026-10-19)** — 위 표의 세 항목은 모두 **DB로 이전**한다.
+
+- `oidc_pending(state PK, provider_id, nonce, code_verifier, expires_at)` — expires_at은 naive UTC, TTL 10분, 1회용(콜백에서 조회 즉시 삭제). 만료분은 INSERT 시 기회적으로 삭제하고 선택적으로 cron(`ak5 db maintenance`)이 정리한다. `auth/sessions._oidc_pending`의 상한 256 방식은 폐기하고 **TTL + IP(및 가능하면 principal)별 상한**으로 대체한다.
+- upstream device flow pending(`oidc_device._pending`)은 위 테이블에 `kind` 구분으로 통합하거나 `device_pending` 테이블로 분리한다 — 구현 시 둘 중 단순한 쪽을 택한다(동작 차이 없음).
+- `device_grant_failures(client_key, created_at, PK(client_key, created_at))` — 윈도우(현행 10분)보다 오래된 행은 조회 시 `created_at > now - window`로 걸러내고 기회적으로 삭제한다. 한도(현행 20회)는 유지하며 다중 인스턴스에서 합산된다. 상세 한도·키 정책은 operations.md(#37)와 맞춘다.
+- 위 두 테이블은 **Alembic baseline revision에 포함**한다.
 원칙: **상한으로 밀어내는 방식은 금지**한다(공격자가 정상 사용자의 pending을 쫓아낼 수 있음). 만료(TTL)와 principal/IP별 상한으로만 제한한다.
 
 ## 7. 설정 요약
@@ -164,12 +172,11 @@ class BlobStore(Protocol):
 
 | # | 질문 | 권장 |
 |---|---|---|
-| 1 | OIDC pending 저장 방식 | **DB 테이블** (cookie 방식은 상태 크기·키 회전 부담) |
+| 1 | OIDC pending 저장 방식 | ✅ **확정: DB 테이블** (§6) |
 | 2 | 첨부 다운로드 | **서버 프록시 스트리밍**(권한 검사 단순). 서명 URL은 대용량 필요가 생길 때 |
 | 3 | 서버리스 대용량 업로드 | 초기 범위 제외, 한도 문서화 |
 | 4 | hosted 1차 대상 | **Vercel + Neon 하나만** 먼저 검증, AWS는 같은 인터페이스로 후속 |
 | 5 | Redis | **기본 의존성에서 제외**, `redis` 알림 모드만 선택 지원 |
 | 6 | RLS 범위 | workspace_id 보유 테이블 전부, 2차 방어로만 사용 |
-| 7 | v2.0.0 포함 여부 | 이 spec은 hosted(2.1) 대상으로 보고 **#36 릴리스 범위와 분리**할 것인지 확인 필요 |
+| 7 | v2.0.0 포함 여부 | ✅ **확정: hosted 배포 추상화는 v2.0.0 범위에 포함**. #36의 "wave 5 포함 전체 2.0.0"과 일치. #100 §9-8도 같은 결정 |
 
-> #36에서 "wave 5 포함 전체를 2.0.0"으로 결정했으므로 hosted 배포 자체가 2.0.0 범위인지 7번에서 명시해야 한다.
