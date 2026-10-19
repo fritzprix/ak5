@@ -74,6 +74,13 @@ class WorkflowError(Exception):
         self.code = code
         self.message = message
         self.details = details or {}
+        if code == ErrorCode.CLAIM_CONFLICT:
+            try:
+                from ak5.server.metrics import claim_conflicts_total
+
+                claim_conflicts_total.inc()
+            except Exception:
+                pass
         super().__init__(message)
 
 
@@ -587,6 +594,12 @@ async def _emit_transitioned(
         "ticket_id": ticket.ticket_id,
         "from_board_id": from_board_id,
     }
+    try:
+        from ak5.server.metrics import workflow_transitions_total
+
+        workflow_transitions_total.inc(op=op, from_stage=from_stage or "none", to_stage=to_stage)
+    except Exception:
+        pass
     await record_event(
         db,
         EventType.TICKET_TRANSITIONED,
@@ -751,6 +764,12 @@ async def _apply_escalation(db: AsyncSession, ticket: Ticket, actor: Actor) -> b
     ticket.blocked_by = f"attempt {ticket.attempt} reached max_attempts ({ticket.max_attempts})"
     ticket.blocked_since = now
     ticket.blocked_actor = "system"
+    try:
+        from ak5.server.metrics import escalations_total
+
+        escalations_total.inc(kind=BlockedKind.ESCALATION.value)
+    except Exception:
+        pass
     await record_event(
         db,
         EventType.TICKET_BLOCKED,
@@ -800,6 +819,12 @@ async def reclaim_expired_leases(
         _clear_claim(ticket)
         if stage == Stage.IN_PROGRESS:
             ticket.lease_expirations = (ticket.lease_expirations or 0) + 1
+            try:
+                from ak5.server.metrics import lease_expirations_total
+
+                lease_expirations_total.inc()
+            except Exception:
+                pass
             await _move_ticket(db, ticket, board_id=ticket.board_id, stage=Stage.BACKLOG)
             to_stage = Stage.BACKLOG
             op = "lease_expire_t8"

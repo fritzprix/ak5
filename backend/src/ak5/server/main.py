@@ -58,6 +58,7 @@ _AUTH_PUBLIC_PREFIXES = (
     "/readyz",
     "/meta",
     "/mcp",
+    "/metrics",
     "/_next",
     "/login",
 )
@@ -271,6 +272,33 @@ def create_app() -> FastAPI:
             "min_client": MIN_CLIENT_VERSION,
             "capabilities": ["long_poll"],
         }
+
+    @application.get("/metrics", tags=["system"])
+    async def metrics_endpoint(request: Request):
+        """Prometheus metrics endpoint (operations.md §4.3). Off by default."""
+        from fastapi import Response
+
+        from ak5.server.connection_limit import connection_limiter
+        from ak5.server.metrics import active_connections, check_metrics_auth, metrics_enabled, registry
+
+        if not metrics_enabled():
+            return JSONResponse(status_code=404, content={"error": "Not Found"})
+        if not check_metrics_auth(request):
+            return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+        active_connections.set(connection_limiter.active_connections, kind="all")
+        active_connections.set(connection_limiter.count_for_kind("sse"), kind="sse")
+        active_connections.set(connection_limiter.count_for_kind("longpoll"), kind="longpoll")
+        try:
+            from ak5.server.database import engine
+            pool = getattr(engine.sync_engine, "pool", None)
+            if pool is not None and hasattr(pool, "checkedout"):
+                from ak5.server.metrics import db_pool_in_use
+                db_pool_in_use.set(pool.checkedout())
+        except Exception:
+            pass
+        content = registry.collect_all()
+        return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @application.middleware("http")
     async def web_dashboard_auth_gate(request: Request, call_next):

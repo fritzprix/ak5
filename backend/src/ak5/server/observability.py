@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 REQUEST_ID_HEADER = "X-Request-ID"
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
-_QUIET_PATHS = frozenset({"/health", "/healthz", "/readyz"})
+_QUIET_PATHS = frozenset({"/health", "/healthz", "/readyz", "/metrics"})
 
 request_id_var: ContextVar[str | None] = ContextVar("ak5_request_id", default=None)
 access_logger = logging.getLogger("ak5.access")
@@ -225,13 +225,24 @@ class RequestContextMiddleware:
             raise
         finally:
             path = _route_template(scope)
+            method = scope.get("method", "-")
+            status_code = status_holder["status"]
+            duration = time.perf_counter() - started
+            try:
+                from ak5.server.metrics import http_request_duration_seconds, http_requests_total
+
+                http_requests_total.inc(route=path, method=method, status=str(status_code))
+                http_request_duration_seconds.observe(duration, route=path, method=method, status=str(status_code))
+            except Exception:
+                pass
+
             if path not in _QUIET_PATHS:
                 access_logger.info(
                     "%s %s %s",
-                    scope.get("method", "-"),
+                    method,
                     path,
-                    status_holder["status"],
-                    extra=_access_extra(scope, status_holder["status"], started),
+                    status_code,
+                    extra=_access_extra(scope, status_code, started),
                 )
             request_id_var.reset(token)
 

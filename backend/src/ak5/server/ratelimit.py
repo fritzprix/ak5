@@ -78,6 +78,12 @@ class RateLimited(Exception):
         self.limit = limit
         self.retry_after = retry_after
         self.scope = rule.rsplit("_", 1)[-1]  # principal | workspace | ip
+        try:
+            from ak5.server.metrics import rate_limited_total
+
+            rate_limited_total.inc(rule=rule)
+        except Exception:
+            pass
         super().__init__(f"rate limit exceeded: {rule}")
 
     def body(self) -> dict[str, Any]:

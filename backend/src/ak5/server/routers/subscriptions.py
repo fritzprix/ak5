@@ -260,7 +260,7 @@ async def long_poll_subscription_events(
     wait = min(wait, settings.LONG_POLL_MAX_WAIT)
 
     try:
-        slot = connection_limiter.acquire(current_actor.actor_id, workspace_id)
+        slot = connection_limiter.acquire(current_actor.actor_id, workspace_id, kind="longpoll")
     except ConnectionLimitExceeded as exc:
         return exc.response()
 

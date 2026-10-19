@@ -114,16 +114,17 @@ def active_connection_limits() -> dict[str, int]:
 
 
 class ConnectionSlot:
-    def __init__(self, limiter: ConnectionLimiter, principal_id: str, workspace_id: str) -> None:
+    def __init__(self, limiter: ConnectionLimiter, principal_id: str, workspace_id: str, kind: str = "all") -> None:
         self._limiter = limiter
         self._principal_id = principal_id
         self._workspace_id = workspace_id
+        self._kind = kind
         self._released = False
 
     def release(self) -> None:
         if not self._released:
             self._released = True
-            self._limiter._release(self._principal_id, self._workspace_id)
+            self._limiter._release(self._principal_id, self._workspace_id, self._kind)
 
     def __enter__(self) -> ConnectionSlot:
         return self
@@ -141,10 +142,11 @@ class ConnectionSlot:
 class ConnectionLimiter:
     def __init__(self) -> None:
         self._instance_count: int = 0
+        self._kind_counts: collections.defaultdict[str, int] = collections.defaultdict(int)
         self._principal_counts: collections.defaultdict[str, int] = collections.defaultdict(int)
         self._workspace_counts: collections.defaultdict[str, int] = collections.defaultdict(int)
 
-    def acquire(self, principal_id: str, workspace_id: str) -> ConnectionSlot:
+    def acquire(self, principal_id: str, workspace_id: str, kind: str = "all") -> ConnectionSlot:
         limits = active_connection_limits()
         inst_limit = limits.get("instance")
         if inst_limit and self._instance_count >= inst_limit:
@@ -159,12 +161,15 @@ class ConnectionLimiter:
             raise ConnectionLimitExceeded("workspace", ws_limit)
 
         self._instance_count += 1
+        self._kind_counts[kind] += 1
         self._principal_counts[principal_id] += 1
         self._workspace_counts[workspace_id] += 1
-        return ConnectionSlot(self, principal_id, workspace_id)
+        return ConnectionSlot(self, principal_id, workspace_id, kind)
 
-    def _release(self, principal_id: str, workspace_id: str) -> None:
+    def _release(self, principal_id: str, workspace_id: str, kind: str = "all") -> None:
         self._instance_count = max(0, self._instance_count - 1)
+        if kind in self._kind_counts:
+            self._kind_counts[kind] = max(0, self._kind_counts[kind] - 1)
         if principal_id in self._principal_counts:
             self._principal_counts[principal_id] -= 1
             if self._principal_counts[principal_id] <= 0:
@@ -176,6 +181,7 @@ class ConnectionLimiter:
 
     def reset_for_testing(self) -> None:
         self._instance_count = 0
+        self._kind_counts.clear()
         self._principal_counts.clear()
         self._workspace_counts.clear()
         _parse_connection_limits.cache_clear()
@@ -183,6 +189,9 @@ class ConnectionLimiter:
     @property
     def active_connections(self) -> int:
         return self._instance_count
+
+    def count_for_kind(self, kind: str) -> int:
+        return self._kind_counts[kind]
 
 
 connection_limiter = ConnectionLimiter()
