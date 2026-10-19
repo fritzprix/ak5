@@ -1032,8 +1032,15 @@ async def upload_attachment(
         )
         await db.commit()
     except Exception:
-        with contextlib.suppress(Exception):
+        try:
             await get_blob_store().delete(blob_key)
+        except Exception as exc:
+            from ak5.server.services.blob_gc import record_failed_blob_deletion
+
+            with contextlib.suppress(Exception):
+                await db.rollback()
+                await record_failed_blob_deletion(db, blob_key, error=str(exc), workspace_id=workspace_id)
+                await db.commit()
         raise
 
     return attachment_out
@@ -1177,8 +1184,13 @@ async def delete_attachment(
     # Blob removal is best effort and happens after the row is gone (deployment.md §2).
     try:
         await get_blob_store().delete(storage_key)
-    except Exception:
+    except Exception as exc:
         logger.warning("Failed to delete blob %s for attachment %s", storage_key, attachment_id, exc_info=True)
+        from ak5.server.services.blob_gc import record_failed_blob_deletion
+
+        with contextlib.suppress(Exception):
+            await record_failed_blob_deletion(db, storage_key, error=str(exc), workspace_id=workspace_id)
+            await db.commit()
 
     return {"deleted": True, "attachment_id": attachment_id}
 

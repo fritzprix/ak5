@@ -167,7 +167,17 @@ def import_cmd(dump: Path, database_url: str | None) -> None:
     default=False,
     help="Reconcile workspace_usage attachment_bytes counters against ticket_attachments.",
 )
-def maintenance_cmd(clean_parts_older_than: float, reconcile_usage: bool) -> None:
+@click.option(
+    "--sweep-blob-gc",
+    is_flag=True,
+    default=False,
+    help="Sweep deferred blob_gc deletion queue.",
+)
+def maintenance_cmd(
+    clean_parts_older_than: float,
+    sweep_blob_gc: bool = False,
+    reconcile_usage: bool = False,
+) -> None:
     """Run routine storage maintenance (clean stale temporary upload part files)."""
     _require_server_extra()
     from ak5.server.blob import clean_stale_parts
@@ -191,4 +201,22 @@ def maintenance_cmd(clean_parts_older_than: float, reconcile_usage: bool) -> Non
 
         reconciled = asyncio.run(_reconcile())
         click.echo(f"Reconciled attachment bytes usage for {len(reconciled)} workspace(s).")
+
+    if sweep_blob_gc:
+        import asyncio
+
+        from ak5.server.blob import get_blob_store
+        from ak5.server.database import AsyncSessionLocal, ensure_database_schema
+        from ak5.server.services.blob_gc import sweep_blob_gc as run_sweep_blob_gc
+
+        async def _sweep() -> dict[str, int]:
+            await ensure_database_schema()
+            store = get_blob_store()
+            async with AsyncSessionLocal() as session:
+                return await run_sweep_blob_gc(session, store)
+
+        stats = asyncio.run(_sweep())
+        click.echo(
+            f"Blob GC sweep finished: {stats['deleted']} deleted, {stats['failed']} failed (processed {stats['total']})."
+        )
 

@@ -2,6 +2,7 @@ from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.auth_state import DeviceGrantFailure, DevicePending, OidcPending
 from ak5.server.models.base import Base
+from ak5.server.models.blob_gc import BlobGc
 from ak5.server.models.board import Board
 from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
@@ -35,6 +36,7 @@ __all__ = [
     "AgentCredential",
     "AuditLog",
     "Base",
+    "BlobGc",
     "DeviceGrantFailure",
     "DevicePending",
     "OidcPending",
