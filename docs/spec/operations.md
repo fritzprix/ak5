@@ -16,8 +16,7 @@ hosted 다중 사용자 배포 전에 필요한 **운영 기본기**를 정의�
 
 | 영역 | 현재 |
 |---|---|
-| rate limit | device grant `user_code` 실패만: client key당 10분에 20회, **프로세스 메모리**(`device_grant._rate_failures`). 다른 엔드포인트에는 없음 | 
-
+| rate limit | device grant `user_code` 실패만: client key당 10분에 20회, **프로세스 메모리**(`device_grant._rate_failures`). 다른 엔드포인트에는 없음 |
 | long-poll | subscription당 consumer 1(`409 CONSUMER_CONFLICT`), 대기 상한 `LONG_POLL_MAX_WAIT`(25초). 인스턴스/사용자별 총 연결 한도는 없음 |
 | quota | `max_auto_boards`(workspace 정책)와 첨부 파일당 크기 한도만. board/ticket/첨부 총량·멤버·agent 수 한도 없음 |
 | 로그/추적 | 요청 추적 ID, 구조화 로그, 메트릭 없음 |
