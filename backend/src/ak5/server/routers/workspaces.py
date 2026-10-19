@@ -27,6 +27,7 @@ from ak5.server.schemas.workspace import (
     WorkspaceCreate,
     WorkspaceOut,
     WorkspaceUpdate,
+    WorkspaceUsageOut,
 )
 from ak5.server.services.agents import (
     agent_to_dict,
@@ -60,7 +61,7 @@ router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 def _err(exc: WorkspaceServiceError) -> JSONResponse:
     return JSONResponse(
         status_code=HTTP_STATUS[exc.code],
-        content=error_body(exc.code, exc.message),
+        content=error_body(exc.code, exc.message, details=getattr(exc, "details", {})),
     )
 
 
@@ -237,6 +238,27 @@ async def patch_workspace(
             inbox_board_id=inbox_board_id_for(ws.workspace_id),
             membership_role=mem.role,
         )
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.get("/{workspace_id}/usage", response_model=None)
+async def get_workspace_usage_endpoint(
+    workspace_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> WorkspaceUsageOut | JSONResponse:
+    """Retrieve workspace resource quota usage (operations.md §3, #116)."""
+    try:
+        principal = _require_user(ctx)
+        await require_membership(db, workspace_id=workspace_id, user_id=principal.principal_id)
+        ws = await db.get(Workspace, workspace_id)
+        if ws is None:
+            raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
+        from ak5.server.quota import get_workspace_usage_summary
+
+        summary = await get_workspace_usage_summary(db, ws)
+        return WorkspaceUsageOut(workspace_id=ws.workspace_id, usage=summary)
     except WorkspaceServiceError as exc:
         return _err(exc)
 

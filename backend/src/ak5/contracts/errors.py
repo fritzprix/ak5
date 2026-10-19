@@ -36,6 +36,9 @@ class ErrorCode(StrEnum):
     RATE_LIMITED = "RATE_LIMITED"
     CONNECTION_LIMIT = "CONNECTION_LIMIT"
 
+    # operations.md §3 — non-retryable
+    QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
+
     # client.md §8
     DAEMON_UNAVAILABLE = "DAEMON_UNAVAILABLE"
 
@@ -60,6 +63,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.USER_PRESENCE_REQUIRED: 403,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.CONNECTION_LIMIT: 429,
+    ErrorCode.QUOTA_EXCEEDED: 403,
     ErrorCode.DAEMON_UNAVAILABLE: 503,
 }
 
@@ -72,6 +76,7 @@ EXIT_CODE: dict[ErrorCode, int] = {
     ErrorCode.ROLE_FORBIDDEN: 4,
     ErrorCode.SEPARATION_OF_DUTIES: 4,
     ErrorCode.SYSTEM_BOARD: 4,
+    ErrorCode.QUOTA_EXCEEDED: 4,  # operations.md §3 — non-retryable
     ErrorCode.WIP_LIMIT: 3,  # cli.md §3.1 — retryable contention / capacity
     ErrorCode.RATE_LIMITED: 3,  # cli.md §3.1 — retryable, honour Retry-After
     ErrorCode.CONNECTION_LIMIT: 3,  # cli.md §3.1 — retryable, honour Retry-After

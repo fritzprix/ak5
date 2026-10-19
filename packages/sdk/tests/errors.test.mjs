@@ -14,9 +14,11 @@ describe("error contracts", () => {
   it("maps workflow and events error codes to HTTP/exit status", () => {
     assert.equal(HTTP_STATUS[ErrorCode.TICKET_BLOCKED], 423);
     assert.equal(HTTP_STATUS[ErrorCode.CURSOR_EXPIRED], 410);
+    assert.equal(HTTP_STATUS[ErrorCode.QUOTA_EXCEEDED], 403);
     assert.equal(EXIT_CODE[ErrorCode.CLAIM_CONFLICT], 3);
     assert.equal(EXIT_CODE[ErrorCode.VERSION_MISMATCH], 7);
     assert.equal(EXIT_CODE[ErrorCode.TICKET_BLOCKED], 5);
+    assert.equal(EXIT_CODE[ErrorCode.QUOTA_EXCEEDED], 4);
   });
 
   it("parses error envelopes from API bodies", () => {

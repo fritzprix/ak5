@@ -25,6 +25,7 @@ from ak5.server.models.workspace import (
     UserIdentity,
     UserSession,
     Workspace,
+    WorkspaceUsage,
 )
 from ak5.server.models.workspace_invite import WorkspaceInvite
 
@@ -61,4 +62,5 @@ __all__ = [
     "UserSession",
     "Workspace",
     "WorkspaceInvite",
+    "WorkspaceUsage",
 ]

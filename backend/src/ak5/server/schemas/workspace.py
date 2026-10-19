@@ -17,6 +17,22 @@ class WorkspacePolicyPatch(BaseModel):
     allowed_idp_issuers: list[str] | None = None
     allowed_email_domains: list[str] | None = None
     max_auto_boards: int | None = Field(default=None, ge=0)
+    max_boards: int | None = Field(default=None, ge=0)
+    max_open_tickets: int | None = Field(default=None, ge=0)
+    max_attachment_bytes_total: int | None = Field(default=None, ge=0)
+    max_members: int | None = Field(default=None, ge=0)
+    max_agents: int | None = Field(default=None, ge=0)
+    event_retention_days: int | None = Field(default=None, ge=0, le=30)
+
+
+class QuotaUsageItem(BaseModel):
+    limit: int
+    current: int
+
+
+class WorkspaceUsageOut(BaseModel):
+    workspace_id: str
+    usage: dict[str, QuotaUsageItem]
 
 
 class WorkspaceUpdate(BaseModel):

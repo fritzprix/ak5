@@ -843,6 +843,27 @@ export async function updateWorkspaceMemberRole(
   return res.json();
 }
 
+export interface QuotaUsageItem {
+  limit: number;
+  current: number;
+}
+
+export interface WorkspaceUsage {
+  workspace_id: string;
+  usage: Record<string, QuotaUsageItem>;
+}
+
+export async function fetchWorkspaceUsage(
+  workspaceId: string
+): Promise<WorkspaceUsage> {
+  const res = await apiFetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/usage`,
+    { cache: "no-store" }
+  );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
 export async function fetchWorkspaceAgents(
   workspaceId: string
 ): Promise<WorkspaceAgent[]> {

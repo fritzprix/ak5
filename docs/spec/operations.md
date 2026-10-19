@@ -92,6 +92,7 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 - 초과 시 `403 QUOTA_EXCEEDED`(신규) + `details {quota, limit, current}`. 이는 retryable이 **아니다**(사람이 정리하거나 한도를 올려야 함).
 - 기존 `max_auto_boards`는 `max_boards`의 하위 한도로 유지한다.
 - 집계는 쓰기 경로에서 `COUNT(*)` 또는 유지되는 카운터로 한다. 첨부 합계처럼 비싼 값은 `workspace_usage(workspace_id, key, value)` 테이블을 같은 트랜잭션에서 갱신한다(§9-4).
+- 동시성 모델: 첨부 파일 용량 카운터는 DB 수준 원자적 upsert(`on_conflict_do_update` + dialect별 `GREATEST`/`MAX`)로 추적된다. 개수 기반 한도(board, open ticket, member, agent)는 workspace 격리 하의 check-then-create(동시성 최선 노력, 별도 비관적 락 미사용)로 동작한다.
 - quota 값 변경은 **owner/admin**만(identity.md §5 정책 변경과 동일). 플랫폼 운영자가 올리는 hosted 상한은 서버 설정(`AK5_QUOTA_CEILING`)으로 별도 제한한다.
 - 사용량 조회: `GET /workspaces/{id}/usage` → 각 quota의 `{limit, current}`. Web UI 설정 화면에 표시한다.
 
