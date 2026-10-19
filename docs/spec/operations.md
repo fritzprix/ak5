@@ -203,7 +203,7 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | 2 | 알고리즘 | 고정 윈도우로 시작, 문제가 보이면 슬라이딩/토큰 버킷 |
 | 3 | 연결 한도의 전역 정확도 | 인스턴스 로컬 + principal/workspace는 근사치 허용 |
 | 4 | quota 집계 방식 | 가벼운 값은 `COUNT`, 첨부 합계는 `workspace_usage` 카운터 |
-| 5 | RPO / RTO 목표 | 서비스 수준 결정 필요 (제안: RPO ≤ 5분(PITR), RTO ≤ 1시간) |
+| 5 | RPO / RTO 목표 | ✅ **확정(2026-10-19): RPO ≤ 5분(PITR), RTO ≤ 1시간** |
 | 6 | `/metrics` 노출 | 기본 꺼짐, 켜면 토큰 또는 내부 bind만 |
 | 7 | 요청 본문/첨부 내용 로깅 | 영구 금지(§4.4) |
 | 8 | hosted가 v2.0.0 범위인가 | ✅ **확정: 포함** (deployment.md §9-7, #36 "wave 5 포함 전체 2.0.0"과 일치). §8의 구현 순서 전체가 2.0.0 대상이며, 1번(요청 ID/로그/healthz)부터 진행 |
