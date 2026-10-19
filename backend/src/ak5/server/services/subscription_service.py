@@ -125,6 +125,35 @@ class SubscriptionService:
         result = await session.execute(select(func.max(Event.seq)))
         return int(result.scalar_one_or_none() or 0)
 
+    async def compute_event_log_lag_seconds(self, session: AsyncSession) -> float:
+        """Lag in seconds for the oldest unacknowledged subscription (operations.md §4.3, #137).
+
+        Returns 0.0 if there are no subscriptions or all subscriptions are caught up.
+        Indexed lookup: O(1) on events.seq PK without scanning the event log table.
+        """
+        min_ack_result = await session.execute(select(func.min(Subscription.ack_cursor)))
+        min_ack = min_ack_result.scalar_one_or_none()
+        if min_ack is None:
+            return 0.0
+
+        oldest_created_result = await session.execute(
+            select(Event.created_at)
+            .where(Event.seq > min_ack)
+            .order_by(Event.seq.asc())
+            .limit(1)
+        )
+        oldest_created = oldest_created_result.scalar_one_or_none()
+        if oldest_created is None:
+            return 0.0
+
+        now = datetime.now(UTC)
+        if oldest_created.tzinfo is None:
+            oldest_dt = oldest_created.replace(tzinfo=UTC)
+        else:
+            oldest_dt = oldest_created.astimezone(UTC)
+
+        return max(0.0, (now - oldest_dt).total_seconds())
+
     async def _ensure_meta_table(self, session: AsyncSession) -> None:
         await session.execute(text(_META_TABLE_DDL))
 

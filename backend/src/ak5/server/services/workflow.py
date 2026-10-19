@@ -1563,10 +1563,6 @@ async def route_ticket(
             _require_unblocked(ticket)
     else:
         if not claim_token:
-            try:
-                claim_conflicts_total.inc()
-            except Exception:
-                logger.debug("Failed to record claim conflict metric", exc_info=True)
             raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "claim_token is required for agent route")
         _require_own_claim(ticket, actor, claim_token)
         _require_unblocked(ticket)

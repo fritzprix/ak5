@@ -224,6 +224,9 @@ db_pool_in_use = registry.register(
 quota_rejections_total = registry.register(
     Counter("ak5_quota_rejections_total", "Total quota rejections", ["quota"])
 )
+event_log_lag_seconds = registry.register(
+    Gauge("ak5_event_log_lag_seconds", "Event log consumer lag in seconds for the oldest unacknowledged subscription")
+)
 
 
 def metrics_enabled() -> bool:

@@ -235,3 +235,134 @@ def test_metrics_event_sources():
     lease_expirations_total.inc()
     lines = lease_expirations_total.collect()
     assert "ak5_lease_expirations_total 1.0" in lines
+
+
+async def test_event_log_lag_seconds_metric(test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
+    """Test ak5_event_log_lag_seconds gauge behavior (#137, operations.md §4.3)."""
+    from datetime import UTC, datetime, timedelta
+    from ak5.server.models.event import Event
+    from ak5.server.models.subscription import Subscription
+    from ak5.server.services.subscription_service import subscription_service
+
+    monkeypatch.setenv("AK5_METRICS_ENABLED", "1")
+    monkeypatch.setenv("AK5_PROFILE", "local")
+    monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
+    monkeypatch.delenv("AK5_METRICS_TOKEN", raising=False)
+
+    transport = ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Case 1: No subscriptions exist -> lag 0.0
+        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag == 0.0
+
+        resp = await client.get("/metrics")
+        assert resp.status_code == 200
+        assert "ak5_event_log_lag_seconds 0.0" in resp.text
+
+        # Case 2: Subscription exists with ack_cursor = 0, but no events exist -> lag 0.0
+        sub1 = Subscription(subscription_id="sub-1", ack_cursor=0)
+        test_db.add(sub1)
+        await test_db.commit()
+
+        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag == 0.0
+
+        # Case 3: Event 1 created 30 seconds ago
+        past_time = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=30)
+        ev1 = Event(
+            event_id="ev-1",
+            type="TICKET_CREATED",
+            created_at=past_time,
+        )
+        test_db.add(ev1)
+        await test_db.commit()
+
+        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag >= 29.0
+
+        resp = await client.get("/metrics")
+        assert resp.status_code == 200
+        lines = [line for line in resp.text.splitlines() if line.startswith("ak5_event_log_lag_seconds ")]
+        assert len(lines) == 1
+        val = float(lines[0].split()[1])
+        assert val >= 29.0
+
+        # Case 4: Subscription acks event 1 -> lag drops to 0.0
+        sub1.ack_cursor = ev1.seq
+        await test_db.commit()
+
+        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag == 0.0
+
+        resp = await client.get("/metrics")
+        assert resp.status_code == 200
+        assert "ak5_event_log_lag_seconds 0.0" in resp.text
+
+
+async def test_route_ticket_missing_claim_token_does_not_increment_conflicts(test_db: AsyncSession):
+    """Test #137 low-priority fix: missing claim_token in route_ticket is not counted as conflict."""
+    from ak5.contracts.errors import ErrorCode
+    from ak5.contracts.payloads import RoutePlan, RouteTargetBoard
+    from ak5.contracts.stages import Role
+    from ak5.server.models.actor import Actor
+    from ak5.server.models.board import Board
+    from ak5.server.models.column import Column
+    from ak5.server.models.ticket import Ticket
+    from ak5.server.seed import LOCAL_USER_ID, ensure_local_tenancy
+    from ak5.server.services.workflow import WorkflowError, claim_ticket, route_ticket
+
+    await ensure_local_tenancy(test_db)
+
+    board = Board(board_id="b1", name="Test Board", created_by=LOCAL_USER_ID)
+    col = Column(column_id="c1", board_id="b1", stage="unclassified", name="Inbox")
+    ticket = Ticket(
+        ticket_id="t1",
+        board_id="b1",
+        column_id="c1",
+        title="Test Ticket",
+        rank=0,
+        created_by=LOCAL_USER_ID,
+    )
+    agent_actor = Actor(
+        actor_id="agent1",
+        name="Agent 1",
+        actor_type="agent",
+        role="triage",
+    )
+    worker_actor = Actor(
+        actor_id="worker2",
+        name="Worker 2",
+        actor_type="agent",
+        role="triage",
+    )
+    test_db.add_all([board, col, ticket, agent_actor, worker_actor])
+    await test_db.commit()
+
+    initial_conflicts = claim_conflicts_total._values.get((), 0.0)
+
+    # Calling route_ticket without claim_token
+    with pytest.raises(WorkflowError) as exc_info:
+        await route_ticket(
+            test_db,
+            actor=agent_actor,
+            ticket_id="t1",
+            plan=RoutePlan(
+                target=RouteTargetBoard(board_id="b1"),
+                refined_title="T",
+                refined_spec="S",
+                acceptance_criteria=["C"],
+            ),
+            claim_token=None,
+        )
+    assert exc_info.value.code == ErrorCode.CLAIM_CONFLICT
+    assert claim_conflicts_total._values.get((), 0.0) == initial_conflicts
+
+    # Now claim ticket properly
+    clm = await claim_ticket(test_db, actor=agent_actor, ticket_id="t1")
+    assert clm["claim_token"]
+
+    # Another worker attempting to claim the same ticket -> REAL claim conflict!
+    with pytest.raises(WorkflowError) as exc_info:
+        await claim_ticket(test_db, actor=worker_actor, ticket_id="t1")
+    assert exc_info.value.code == ErrorCode.CLAIM_CONFLICT
+    assert claim_conflicts_total._values.get((), 0.0) == initial_conflicts + 1.0

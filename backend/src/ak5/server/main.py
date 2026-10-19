@@ -23,6 +23,7 @@ from ak5.server.metrics import (
     active_connections,
     check_metrics_auth,
     db_pool_in_use,
+    event_log_lag_seconds,
     metrics_enabled,
     registry,
 )
@@ -304,6 +305,15 @@ def create_app() -> FastAPI:
                 db_pool_in_use.set(pool.checkedout())
         except Exception:
             logger.debug("Failed to record db_pool_in_use metric", exc_info=True)
+        try:
+            from ak5.server.services.subscription_service import subscription_service
+
+            factory = getattr(request.app.state, "session_factory", None) or AsyncSessionLocal
+            async with factory() as session:
+                lag = await subscription_service.compute_event_log_lag_seconds(session)
+                event_log_lag_seconds.set(lag)
+        except Exception:
+            logger.debug("Failed to record event_log_lag_seconds metric", exc_info=True)
         content = registry.collect_all()
         return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
 
