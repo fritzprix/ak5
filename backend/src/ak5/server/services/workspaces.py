@@ -27,6 +27,12 @@ from ak5.server.models.workspace import (
     Workspace,
 )
 from ak5.server.models.workspace_invite import WorkspaceInvite
+from ak5.server.quota import (
+    QUOTA_KEYS,
+    QuotaExceeded,
+    check_member_quota,
+    validate_quota_policy_patch,
+)
 from ak5.server.seed import LOCAL_USER_ID
 from ak5.server.services.templates import INBOX_TEMPLATE
 
@@ -35,12 +41,6 @@ DEFAULT_POLICY: dict[str, Any] = {
     "allowed_idp_issuers": [],
     "allowed_email_domains": [],
     "max_auto_boards": 50,
-    "max_boards": 0,
-    "max_open_tickets": 0,
-    "max_attachment_bytes_total": 0,
-    "max_members": 0,
-    "max_agents": 0,
-    "event_retention_days": 0,
 }
 
 _ADMIN_ROLES = frozenset({"owner", "admin"})
@@ -68,16 +68,16 @@ def parse_policy(raw: str | None) -> dict[str, Any]:
     if not isinstance(data, dict):
         return dict(DEFAULT_POLICY)
     merged = dict(DEFAULT_POLICY)
-    for key in DEFAULT_POLICY:
-        if key in data:
-            merged[key] = data[key]
+    for key, val in data.items():
+        if key in DEFAULT_POLICY or key in QUOTA_KEYS:
+            merged[key] = val
     return merged
 
 
 def merge_policy(existing: str, patch: dict[str, Any]) -> str:
     current = parse_policy(existing)
     for key, value in patch.items():
-        if key in DEFAULT_POLICY:
+        if key in DEFAULT_POLICY or key in QUOTA_KEYS:
             current[key] = value
     return json.dumps(current)
 
@@ -240,16 +240,8 @@ async def update_workspace(
     if name is not None and name.strip():
         workspace.name = name.strip()
     if policy_patch is not None:
-        from ak5.server.quota import QuotaExceeded, validate_quota_policy_patch
-
         try:
             validate_quota_policy_patch(policy_patch)
-        except QuotaExceeded as exc:
-            raise WorkspaceServiceError(
-                ErrorCode.QUOTA_EXCEEDED,
-                f"Workspace quota '{exc.quota}' exceeds server ceiling {exc.limit}",
-                details={"quota": exc.quota, "limit": exc.limit, "current": exc.current},
-            ) from exc
         except ValueError as exc:
             raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, str(exc)) from exc
 
@@ -393,8 +385,6 @@ async def create_invite(
 
     ws = await db.get(Workspace, workspace_id)
     if ws is not None:
-        from ak5.server.quota import QuotaExceeded, check_member_quota
-
         try:
             await check_member_quota(db, ws)
         except QuotaExceeded as exc:
@@ -485,8 +475,6 @@ async def accept_invite(
 
     ws = await db.get(Workspace, invite.workspace_id)
     if ws is not None:
-        from ak5.server.quota import QuotaExceeded, check_member_quota
-
         try:
             await check_member_quota(db, ws)
         except QuotaExceeded as exc:

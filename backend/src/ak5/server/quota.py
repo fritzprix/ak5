@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
@@ -42,17 +43,29 @@ HOSTED_QUOTA_DEFAULTS: dict[str, int] = {
 ATTACHMENT_BYTES_KEY = "attachment_bytes"
 
 
+
+def _inc_quota_rejection(quota: str) -> None:
+    try:
+        from ak5.server.metrics import quota_rejections_total
+
+        quota_rejections_total.inc(quota=quota)
+    except Exception:
+        pass
+
+
+def _upsert_for(dialect: str):
+    if dialect == "sqlite":
+        return sqlite.insert
+    if dialect == "postgresql":
+        return postgresql.insert
+    raise RuntimeError(f"Workspace usage does not support the {dialect!r} database dialect")
+
+
 class QuotaExceeded(Exception):
     def __init__(self, quota: str, limit: int, current: int) -> None:
         self.quota = quota
         self.limit = limit
         self.current = current
-        try:
-            from ak5.server.metrics import quota_rejections_total
-
-            quota_rejections_total.inc(quota=quota)
-        except Exception:
-            pass
         super().__init__(f"Workspace quota '{quota}' exceeded: current {current} >= limit {limit}")
 
     @property
@@ -100,7 +113,7 @@ def validate_quota_policy_patch(patch: dict[str, Any]) -> None:
             if key == "event_retention_days" and val > 30:
                 raise ValueError("event_retention_days cannot exceed 30")
             if key in ceilings and ceilings[key] > 0 and val > ceilings[key]:
-                raise QuotaExceeded(key, ceilings[key], val)
+                raise ValueError(f"Quota '{key}' value {val} exceeds server ceiling {ceilings[key]}")
 
 
 def get_effective_quotas(policy_input: Workspace | dict | str | None) -> dict[str, int]:
@@ -145,6 +158,7 @@ async def check_board_quota(db: AsyncSession, workspace: Workspace) -> None:
     )
     count = count or 0
     if count >= limit:
+        _inc_quota_rejection("max_boards")
         raise QuotaExceeded("max_boards", limit, count)
 
 
@@ -166,6 +180,7 @@ async def check_ticket_quota(db: AsyncSession, workspace: Workspace) -> None:
     )
     count = count or 0
     if count >= limit:
+        _inc_quota_rejection("max_open_tickets")
         raise QuotaExceeded("max_open_tickets", limit, count)
 
 
@@ -177,6 +192,7 @@ async def check_attachment_quota(db: AsyncSession, workspace: Workspace, new_byt
     row = await db.get(WorkspaceUsage, (workspace.workspace_id, ATTACHMENT_BYTES_KEY))
     current = row.value if row else 0
     if current + new_bytes > limit:
+        _inc_quota_rejection("max_attachment_bytes_total")
         raise QuotaExceeded("max_attachment_bytes_total", limit, current)
 
 
@@ -192,6 +208,7 @@ async def check_member_quota(db: AsyncSession, workspace: Workspace) -> None:
     )
     count = count or 0
     if count >= limit:
+        _inc_quota_rejection("max_members")
         raise QuotaExceeded("max_members", limit, count)
 
 
@@ -207,22 +224,28 @@ async def check_agent_quota(db: AsyncSession, workspace: Workspace) -> None:
     )
     count = count or 0
     if count >= limit:
+        _inc_quota_rejection("max_agents")
         raise QuotaExceeded("max_agents", limit, count)
 
 
 async def record_attachment_bytes(db: AsyncSession, workspace_id: str, delta_bytes: int) -> int:
-    row = await db.get(WorkspaceUsage, (workspace_id, ATTACHMENT_BYTES_KEY))
-    if not row:
-        row = WorkspaceUsage(
+    insert = _upsert_for(db.get_bind().dialect.name)
+    stmt = (
+        insert(WorkspaceUsage)
+        .values(
             workspace_id=workspace_id,
             key=ATTACHMENT_BYTES_KEY,
             value=max(0, delta_bytes),
         )
-        db.add(row)
-    else:
-        row.value = max(0, row.value + delta_bytes)
-    await db.flush()
-    return row.value
+        .on_conflict_do_update(
+            index_elements=[WorkspaceUsage.workspace_id, WorkspaceUsage.key],
+            set_={"value": func.max(0, WorkspaceUsage.value + delta_bytes)},
+        )
+        .returning(WorkspaceUsage.value)
+    )
+    result = await db.execute(stmt)
+    new_val = result.scalar_one()
+    return int(new_val)
 
 
 async def get_workspace_usage_summary(db: AsyncSession, workspace: Workspace) -> dict[str, Any]:

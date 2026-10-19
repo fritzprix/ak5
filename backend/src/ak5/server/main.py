@@ -32,6 +32,7 @@ from ak5.server.observability import (
     install_audit_hook,
     readiness_failures,
 )
+from ak5.server.quota import QuotaExceeded
 from ak5.server.ratelimit import RateLimitMiddleware
 from ak5.server.routers.actors import router as actors_router
 from ak5.server.routers.auth import router as auth_router
@@ -181,6 +182,11 @@ def create_app() -> FastAPI:
             status_code=HTTP_STATUS[exc.code],
             content=error_body(exc.code, exc.message, details=exc.details),
         )
+
+    @application.exception_handler(QuotaExceeded)
+    async def quota_exceeded_handler(_request: Request, exc: QuotaExceeded) -> JSONResponse:
+        """Map quota exceeded errors to contracts error envelope (HTTP 403, operations.md §3)."""
+        return exc.response()
 
     @application.exception_handler(HTTPException)
     async def http_exception_envelope_handler(

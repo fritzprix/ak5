@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,8 +26,14 @@ from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
-from ak5.server.models.workspace import Workspace
-from ak5.server.quota import QuotaExceeded
+from ak5.server.models.workspace import Workspace, WorkspaceUsage
+from ak5.server.quota import (
+    ATTACHMENT_BYTES_KEY,
+    QuotaExceeded,
+    check_ticket_quota,
+    get_effective_quotas,
+    record_attachment_bytes,
+)
 from ak5.server.routers.auth import (
     get_auth_workspace_id,
     get_current_actor,
@@ -251,8 +257,6 @@ async def create_ticket(
             )
         ws = await db.get(Workspace, workspace_id)
         if ws is not None:
-            from ak5.server.quota import check_ticket_quota
-
             await check_ticket_quota(db, ws)
 
         if req.board_id is None:
@@ -910,6 +914,7 @@ async def add_comment(
 async def upload_attachment(
     ticket_id: str,
     file: Annotated[UploadFile, File(...)],
+    request: Request,
     current_actor: Annotated[Actor, Depends(get_current_actor)],
     workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -925,12 +930,35 @@ async def upload_attachment(
         return _workspace_forbidden_ticket(ticket_id, workspace_id)
     _enforce_agent_board_scope(current_actor, ticket.board_id)
 
+    ws = await db.get(Workspace, ticket.workspace_id)
+    quota_limit = 0
+    current_bytes = 0
+    if ws is not None:
+        quotas = get_effective_quotas(ws)
+        quota_limit = quotas.get("max_attachment_bytes_total", 0)
+        if quota_limit > 0:
+            usage_row = await db.get(WorkspaceUsage, (ws.workspace_id, ATTACHMENT_BYTES_KEY))
+            current_bytes = usage_row.value if usage_row else 0
+            if current_bytes >= quota_limit:
+                raise QuotaExceeded("max_attachment_bytes_total", quota_limit, current_bytes)
+            cl_header = request.headers.get("content-length")
+            if cl_header:
+                with contextlib.suppress(ValueError):
+                    if current_bytes + int(cl_header) > quota_limit:
+                        raise QuotaExceeded("max_attachment_bytes_total", quota_limit, current_bytes)
+
     raw_filename = file.filename or "attachment.bin"
     # Extract only the base name to prevent directory traversal
     clean_filename = Path(raw_filename).name or "attachment.bin"
     attachment_id = f"att_{uuid.uuid4().hex[:12]}"
     blob_key = attachment_key(ticket.workspace_id, ticket_id, attachment_id)
     content_type = file.content_type or "application/octet-stream"
+
+    effective_max = settings.MAX_ATTACHMENT_SIZE_BYTES
+    if quota_limit > 0:
+        remaining = quota_limit - current_bytes
+        if remaining < effective_max:
+            effective_max = remaining
 
     async def _upload_chunks() -> AsyncIterator[bytes]:
         while chunk := await file.read(1024 * 1024):  # 1MB buffer
@@ -941,9 +969,11 @@ async def upload_attachment(
             blob_key,
             _upload_chunks(),
             content_type=content_type,
-            max_bytes=settings.MAX_ATTACHMENT_SIZE_BYTES,
+            max_bytes=effective_max,
         )
     except BlobTooLargeError as exc:
+        if quota_limit > 0 and current_bytes + exc.max_bytes >= quota_limit:
+            raise QuotaExceeded("max_attachment_bytes_total", quota_limit, current_bytes)
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File exceeds maximum allowed size ({exc.max_bytes} bytes)",
@@ -954,59 +984,58 @@ async def upload_attachment(
             detail=f"Failed to save uploaded file: {exc}",
         ) from exc
 
-    ws = await db.get(Workspace, ticket.workspace_id)
-    if ws is not None:
-        from ak5.server.quota import QuotaExceeded, check_attachment_quota, record_attachment_bytes
+    try:
+        if ws is not None:
+            new_total = await record_attachment_bytes(db, ticket.workspace_id, total_size)
+            if quota_limit > 0 and new_total > quota_limit:
+                raise QuotaExceeded("max_attachment_bytes_total", quota_limit, new_total)
 
-        try:
-            await check_attachment_quota(db, ws, total_size)
-        except QuotaExceeded as exc:
-            with contextlib.suppress(Exception):
-                await get_blob_store().delete(blob_key)
-            return exc.response()
-        await record_attachment_bytes(db, ticket.workspace_id, total_size)
+        attachment = TicketAttachment(
+            attachment_id=attachment_id,
+            workspace_id=ticket.workspace_id,
+            ticket_id=ticket_id,
+            actor_id=current_actor.actor_id,
+            filename=clean_filename,
+            file_size=total_size,
+            content_type=content_type,
+            storage_path=blob_key,
+        )
+        db.add(attachment)
 
-    attachment = TicketAttachment(
-        attachment_id=attachment_id,
-        workspace_id=ticket.workspace_id,
-        ticket_id=ticket_id,
-        actor_id=current_actor.actor_id,
-        filename=clean_filename,
-        file_size=total_size,
-        content_type=content_type,
-        storage_path=blob_key,
-    )
-    db.add(attachment)
+        audit = AuditLog(
+            workspace_id=ticket.workspace_id,
+            actor_id=current_actor.actor_id,
+            action="ATTACHMENT_UPLOADED",
+            target_type="ticket",
+            target_id=ticket_id,
+            payload=json.dumps({"attachment_id": attachment_id, "filename": clean_filename, "size": total_size}),
+        )
+        db.add(audit)
+        await db.flush()
+        await db.refresh(attachment)
 
-    audit = AuditLog(
-        workspace_id=ticket.workspace_id,
-        actor_id=current_actor.actor_id,
-        action="ATTACHMENT_UPLOADED",
-        target_type="ticket",
-        target_id=ticket_id,
-        payload=json.dumps({"attachment_id": attachment_id, "filename": clean_filename, "size": total_size}),
-    )
-    db.add(audit)
-    await db.flush()
-    await db.refresh(attachment)
+        attachment_out = TicketAttachmentOut.model_validate(attachment)
+        ticket_out = _format_ticket_out(ticket)
+        await record_event(
+            db,
+            "ATTACHMENT_ADDED",
+            board_id=ticket.board_id,
+            ticket_id=ticket_id,
+            actor_id=current_actor.actor_id,
+            data={
+                "board_id": ticket.board_id,
+                "ticket_id": ticket_id,
+                "ticket": ticket_out.model_dump(mode="json"),
+                "attachment": attachment_out.model_dump(mode="json"),
+                "actor_id": current_actor.actor_id,
+            },
+        )
+        await db.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            await get_blob_store().delete(blob_key)
+        raise
 
-    attachment_out = TicketAttachmentOut.model_validate(attachment)
-    ticket_out = _format_ticket_out(ticket)
-    await record_event(
-        db,
-        "ATTACHMENT_ADDED",
-        board_id=ticket.board_id,
-        ticket_id=ticket_id,
-        actor_id=current_actor.actor_id,
-        data={
-            "board_id": ticket.board_id,
-            "ticket_id": ticket_id,
-            "ticket": ticket_out.model_dump(mode="json"),
-            "attachment": attachment_out.model_dump(mode="json"),
-            "actor_id": current_actor.actor_id,
-        },
-    )
-    await db.commit()
     return attachment_out
 
 
@@ -1116,8 +1145,6 @@ async def delete_attachment(
     file_size = attachment.file_size or 0
     await db.delete(attachment)
     if ticket and file_size > 0:
-        from ak5.server.quota import record_attachment_bytes
-
         await record_attachment_bytes(db, ticket.workspace_id, -file_size)
 
     audit = AuditLog(

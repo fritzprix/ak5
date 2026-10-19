@@ -98,17 +98,16 @@ async def test_quota_ceiling_enforcement(client: AsyncClient, test_db: AsyncSess
     assert resp.status_code == 200
     assert resp.json()["policy"]["max_boards"] == 15
 
-    # Exceeds ceiling -> 403 QUOTA_EXCEEDED
+    # Exceeds ceiling -> 422 PAYLOAD_INVALID
     resp_exceed = await client.patch(
         "/api/v1/workspaces/ws_ceiling",
         headers=headers,
         json={"policy": {"max_boards": 25}},
     )
-    assert resp_exceed.status_code == 403
+    assert resp_exceed.status_code == 422
     data = resp_exceed.json()
-    assert data["error"]["code"] == "QUOTA_EXCEEDED"
-    assert data["error"]["details"]["quota"] == "max_boards"
-    assert data["error"]["details"]["limit"] == 20
+    assert data["error"]["code"] == "PAYLOAD_INVALID"
+    assert "exceeds server ceiling" in data["error"]["message"]
 
 
 async def test_board_quota_enforcement(client: AsyncClient, test_db: AsyncSession):
@@ -271,3 +270,43 @@ async def test_get_workspace_usage_endpoint(client: AsyncClient, test_db: AsyncS
     assert data["usage"]["max_boards"]["current"] == 0
     assert data["usage"]["max_open_tickets"]["limit"] == 50
     assert data["usage"]["max_members"]["current"] == 1
+
+
+async def test_hosted_defaults_inherited_on_new_workspace(test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AK5_PROFILE", "hosted")
+    from ak5.server.services.workspaces import create_workspace
+
+    user = User(user_id="usr_new_owner", display_name="New Owner", email="new@example.com")
+    test_db.add(user)
+    await test_db.flush()
+
+    ws, _ = await create_workspace(test_db, name="Hosted WS", owner=user)
+    quotas = get_effective_quotas(ws)
+    assert quotas["max_boards"] == 50
+    assert quotas["max_open_tickets"] == 10000
+    assert quotas["max_members"] == 50
+    assert quotas["max_agents"] == 50
+    assert quotas["max_attachment_bytes_total"] == 5 * 1024 * 1024 * 1024
+
+
+async def test_ticket_quota_idempotency_replay(client: AsyncClient, test_db: AsyncSession):
+    headers = await _setup_user_workspace(
+        test_db, "ws_idem_quota", "usr_idem_owner", policy={"max_open_tickets": 1}
+    )
+    idem_headers = {**headers, "Idempotency-Key": "test-idem-key-1"}
+
+    # 1. First ticket creation with Idempotency-Key -> 201 Created
+    r1 = await client.post("/api/v1/tickets", headers=idem_headers, json={"title": "Idempotent Ticket"})
+    assert r1.status_code == 201
+    ticket_id = r1.json()["ticket_id"]
+
+    # 2. Next distinct ticket creation fails because quota (1) is reached -> 403 QUOTA_EXCEEDED
+    r2 = await client.post("/api/v1/tickets", headers=headers, json={"title": "Exceeding Ticket"})
+    assert r2.status_code == 403
+    assert r2.json()["error"]["code"] == "QUOTA_EXCEEDED"
+
+    # 3. Replay of 1st ticket with same Idempotency-Key -> returns cached 201 even though quota is reached
+    r3 = await client.post("/api/v1/tickets", headers=idem_headers, json={"title": "Idempotent Ticket"})
+    assert r3.status_code == 201
+    assert r3.json()["ticket_id"] == ticket_id
+

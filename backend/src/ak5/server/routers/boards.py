@@ -17,6 +17,7 @@ from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket
 from ak5.server.models.workspace import Workspace
+from ak5.server.quota import QuotaExceeded, check_board_quota
 from ak5.server.routers.actors import _to_actor_out
 from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.actor import ActorOut
@@ -362,8 +363,6 @@ async def create_board(
 
     ws = await db.get(Workspace, workspace_id)
     if ws is not None:
-        from ak5.server.quota import QuotaExceeded, check_board_quota
-
         try:
             await check_board_quota(db, ws)
         except QuotaExceeded as exc:
