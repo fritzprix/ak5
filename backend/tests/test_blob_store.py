@@ -307,6 +307,8 @@ def test_db_maintenance_cli_cleans_stale_parts(tmp_path: Path, monkeypatch: pyte
 
 @pytest.mark.asyncio
 async def test_s3_blob_store_contract(monkeypatch: pytest.MonkeyPatch):
+    pytest.importorskip("moto")
+    pytest.importorskip("boto3")
     import boto3
     from moto import mock_aws
 
