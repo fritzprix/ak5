@@ -42,6 +42,16 @@ CHALLENGE_TTL = timedelta(minutes=5)
 # Window in which a WebAuthn assertion counts as "user present" for T15 (identity.md §6).
 PRESENCE_WINDOW = timedelta(seconds=60)
 MAX_PASSKEYS_PER_USER = 10
+# Challenge purposes: a second passkey needs a challenge issued *after* a presence check (#99).
+REGISTER_BOOTSTRAP = "register"
+REGISTER_STEPPED_UP = "register+pres"
+
+
+def presence_is_fresh(presence_at: datetime | None, *, now: datetime | None = None) -> bool:
+    """True when a WebAuthn assertion (``pres``) happened within ``PRESENCE_WINDOW``."""
+    if presence_at is None:
+        return False
+    return (now or datetime.now(UTC)) - presence_at <= PRESENCE_WINDOW
 
 
 class PasskeyError(Exception):
@@ -138,7 +148,8 @@ async def registration_options(db: AsyncSession, request: Request, user: User) -
             user_verification=UserVerificationRequirement.REQUIRED,
         ),
     )
-    challenge_id = await _store_challenge(db, user.user_id, "register", options.challenge)
+    purpose = REGISTER_STEPPED_UP if existing else REGISTER_BOOTSTRAP
+    challenge_id = await _store_challenge(db, user.user_id, purpose, options.challenge)
     return {"challenge_id": challenge_id, "options": json.loads(options_to_json(options))}
 
 
@@ -151,8 +162,10 @@ async def verify_registration(
     credential: dict[str, Any],
     label: str,
 ) -> PasskeyCredential:
+    # A bootstrap challenge (issued with no passkey yet) must not outlive that state (#99).
+    purpose = REGISTER_STEPPED_UP if await list_passkeys(db, user.user_id) else REGISTER_BOOTSTRAP
     challenge = await _consume_challenge(
-        db, challenge_id=challenge_id, user_id=user.user_id, purpose="register"
+        db, challenge_id=challenge_id, user_id=user.user_id, purpose=purpose
     )
     rp = relying_party(request)
     try:

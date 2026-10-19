@@ -136,6 +136,8 @@ passkey 확인은 §6.1에 정의한다(구현: #28).
 - **challenge**: DB에 저장(5분 TTL, 1회용, 검증 실패 시에도 폐기) — 다중 인스턴스에서 동작(#20).
 - **RP**: `AK5_WEBAUTHN_RP_ID` / `AK5_WEBAUTHN_ORIGIN` > `AK5_PUBLIC_URL` > 요청의 Host. 서버 extra(`ak5[server]`)가 `webauthn`을 포함한다. **운영 환경에서는 Host/`X-Forwarded-Proto` 헤더 신뢰를 피하도록 `AK5_PUBLIC_URL` 또는 `AK5_WEBAUTHN_*`를 반드시 설정한다.**
 - **웹 UI**: Settings → Passkeys(등록·삭제·테스트, 승인 정책 토글). 승인 시 서버가 `USER_PRESENCE_REQUIRED`를 돌려주면 UI가 passkey 확인 후 presence 토큰으로 한 번 재시도한다(`move`·`verdict`).
+- **step-up (#99, #102)**: passkey가 하나라도 있으면 **passkey 집합을 바꾸는 일**(추가 `register/options`, 삭제 `DELETE /auth/passkeys/{id}`)과 **승인 정책을 끄는 일**(`require_user_presence_for_approval` true→false)은 최근(≤60초) assertion이 필요하다. 증거는 `assert/verify`가 준 presence JWT를 `Authorization: Bearer`로 함께 보내는 것(같은 user여야 함)이며, 없으면 `USER_PRESENCE_REQUIRED`(403, `code` 필드 포함). 등록 `verify`는 presence 없이 제출할 수 있지만, challenge는 presence 확인 *이후에* 발급된 것(`purpose=register+pres`)만 받는다 — passkey가 없던 시점(부트스트랩)에 받은 challenge로 두 번째 키를 넣을 수 없다.
+- **예외(부트스트랩/복구)**: 첫 passkey 등록은 세션만으로 가능하다. 정책을 켜는 것은 presence가 필요 없다. passkey가 하나도 없는 user는 정책을 끌 수 있다(증명 수단이 없는 복구 경로 — 이때는 어차피 아무도 승인할 수 없다). 정책 변경은 `WORKSPACE_POLICY_UPDATED` audit에 남는다.
 
 **남는 위험**: 사람이 자기 user 토큰을 agent에게 넘기는 내부자 위임은 구조로 막을 수 없다. user 토큰의 짧은 수명, `require_user_presence_for_approval`, audit의 승인자 기록으로 대응한다.
 

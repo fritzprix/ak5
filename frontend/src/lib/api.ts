@@ -32,6 +32,7 @@ import {
   registrationToJSON,
   toCreationOptions,
   toRequestOptions,
+  USER_PRESENCE_REQUIRED,
   type CreationOptionsJSON,
   type RequestOptionsJSON,
 } from "./passkey";
@@ -931,18 +932,37 @@ export interface PasskeySummary {
   last_used_at: string | null;
 }
 
-async function passkeyJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+/**
+ * JSON call to the passkey endpoints (session cookie + CSRF). Changing the set of
+ * passkeys needs a fresh assertion once one exists (#99): a 403 with code
+ * USER_PRESENCE_REQUIRED asks for a passkey and replays once with the presence token.
+ */
+async function passkeyJson<T>(
+  path: string,
+  init: RequestInit = {},
+  allowPresenceRetry = true
+): Promise<T> {
   const res = await fetchWithCsrf(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...(init.headers as Record<string, string>) },
   });
   if (!res.ok) {
     let message = res.statusText || `HTTP ${res.status}`;
+    let code: string | null = null;
     try {
-      const body = (await res.json()) as { error?: unknown };
+      const body = (await res.json()) as { error?: unknown; code?: unknown };
       if (typeof body.error === "string") message = body.error;
+      if (typeof body.code === "string") code = body.code;
     } catch {
       // keep status text
+    }
+    if (res.status === 403 && code === USER_PRESENCE_REQUIRED && allowPresenceRetry) {
+      const token = await requestPresenceToken();
+      return passkeyJson<T>(
+        path,
+        { ...init, headers: { ...(init.headers as Record<string, string>), Authorization: `Bearer ${token}` } },
+        false
+      );
     }
     throw new Error(message);
   }
@@ -1049,7 +1069,7 @@ export async function updateWorkspacePolicy(
   workspaceId: string,
   policy: Record<string, unknown>
 ): Promise<WorkspaceSummary> {
-  const res = await apiFetch(`${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}`, {
+  const res = await apiFetchWithPresence(`${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ policy }),
