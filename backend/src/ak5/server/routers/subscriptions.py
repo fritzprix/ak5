@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.server.authz import is_admin, is_admin_or_owner
 from ak5.server.config import settings
+from ak5.server.connection_limit import ConnectionLimitExceeded, connection_limiter
 from ak5.server.database import get_db
 from ak5.server.inbox import resolve_board_alias
 from ak5.server.models.actor import Actor
@@ -259,6 +260,11 @@ async def long_poll_subscription_events(
     wait = min(wait, settings.LONG_POLL_MAX_WAIT)
 
     try:
+        slot = connection_limiter.acquire(current_actor.actor_id, workspace_id)
+    except ConnectionLimitExceeded as exc:
+        return exc.response()
+
+    try:
         events, next_cursor = await subscription_service.long_poll_events(
             sub=sub,
             cursor=cursor,
@@ -268,6 +274,8 @@ async def long_poll_subscription_events(
         )
     except SubscriptionServiceError as exc:
         return _error_response(exc)
+    finally:
+        slot.release()
 
     return LongPollEventsOut(events=events, next_cursor=next_cursor)
 

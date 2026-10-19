@@ -71,3 +71,38 @@ describe("RATE_LIMITED (#114)", () => {
     assert.equal(parseRetryAfter(""), undefined);
   });
 });
+
+describe("CONNECTION_LIMIT (#115)", () => {
+  it("is a retryable 429 with exit code 3", () => {
+    assert.equal(ErrorCode.CONNECTION_LIMIT, "CONNECTION_LIMIT");
+    assert.equal(HTTP_STATUS[ErrorCode.CONNECTION_LIMIT], 429);
+    assert.equal(EXIT_CODE[ErrorCode.CONNECTION_LIMIT], 3);
+  });
+
+  it("surfaces typed error with retryAfter and scope details", async () => {
+    mockFetch(async (url) => {
+      if (url.endsWith("/meta")) return Response.json(META);
+      return Response.json(
+        {
+          error: {
+            code: "CONNECTION_LIMIT",
+            message: "Connection limit exceeded for principal; retry later.",
+            details: { limit: 5, scope: "principal" },
+          },
+        },
+        { status: 429, headers: { "Retry-After": "5" } }
+      );
+    });
+    const client = new AK5Client({ token: "tok" });
+    await assert.rejects(() => client.nextTicket(), (err) => {
+      assert.ok(err instanceof AK5Error);
+      assert.equal(err.code, "CONNECTION_LIMIT");
+      assert.equal(err.status, 429);
+      assert.equal(err.exitCode, 3);
+      assert.equal(err.retryAfter, 5);
+      assert.equal(err.details.scope, "principal");
+      return true;
+    });
+  });
+});
+
