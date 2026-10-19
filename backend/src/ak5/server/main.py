@@ -313,7 +313,8 @@ def create_app() -> FastAPI:
                 lag = await subscription_service.compute_event_log_lag_seconds(session)
                 event_log_lag_seconds.set(lag)
         except Exception:
-            logger.debug("Failed to record event_log_lag_seconds metric", exc_info=True)
+            logger.warning("Failed to record event_log_lag_seconds metric", exc_info=True)
+            event_log_lag_seconds.reset()
         content = registry.collect_all()
         return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
 

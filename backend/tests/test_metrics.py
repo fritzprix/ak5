@@ -16,6 +16,7 @@ from ak5.server.metrics import (
     workflow_transitions_total,
 )
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.fixture(autouse=True)
@@ -240,6 +241,7 @@ def test_metrics_event_sources():
 async def test_event_log_lag_seconds_metric(test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
     """Test ak5_event_log_lag_seconds gauge behavior (#137, operations.md §4.3)."""
     from datetime import UTC, datetime, timedelta
+
     from ak5.server.models.event import Event
     from ak5.server.models.subscription import Subscription
     from ak5.server.services.subscription_service import subscription_service
@@ -303,7 +305,6 @@ async def test_route_ticket_missing_claim_token_does_not_increment_conflicts(tes
     """Test #137 low-priority fix: missing claim_token in route_ticket is not counted as conflict."""
     from ak5.contracts.errors import ErrorCode
     from ak5.contracts.payloads import RoutePlan, RouteTargetBoard
-    from ak5.contracts.stages import Role
     from ak5.server.models.actor import Actor
     from ak5.server.models.board import Board
     from ak5.server.models.column import Column

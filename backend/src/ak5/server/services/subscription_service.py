@@ -131,7 +131,16 @@ class SubscriptionService:
         Returns 0.0 if there are no subscriptions or all subscriptions are caught up.
         Indexed lookup: O(1) on events.seq PK without scanning the event log table.
         """
-        min_ack_result = await session.execute(select(func.min(Subscription.ack_cursor)))
+        now_utc = datetime.now(UTC).replace(tzinfo=None)
+        # Only consider active subscriptions (freshly created with None lease, or with unexpired lease)
+        # to avoid abandoned daemons pinning the lag gauge permanently (operations.md §4.3).
+        stmt = select(func.min(Subscription.ack_cursor)).where(
+            or_(
+                Subscription.consumer_lease_expires_at.is_(None),
+                Subscription.consumer_lease_expires_at > now_utc,
+            )
+        )
+        min_ack_result = await session.execute(stmt)
         min_ack = min_ack_result.scalar_one_or_none()
         if min_ack is None:
             return 0.0
