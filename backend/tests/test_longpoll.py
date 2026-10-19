@@ -300,6 +300,14 @@ async def test_cursor_expired_after_retention_purge(
     )
     await test_db.commit()
 
+    # Ack up to old_b so the subscription has moved past old_b (allowing retention purge under safety rule)
+    ack_res = await client.post(
+        f"/api/v1/subscriptions/{sub_id}/ack",
+        json={"cursor": old_b.seq},
+        headers={**headers, "X-AK5-Consumer": "daemon-a"},
+    )
+    assert ack_res.status_code == 200
+
     # Cursor inside the purged gap (processed old_a; old_b also gone) → CURSOR_EXPIRED
     res = await client.get(
         f"/api/v1/subscriptions/{sub_id}/events",

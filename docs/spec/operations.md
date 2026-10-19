@@ -96,6 +96,10 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 - 동시성 모델: 첨부 파일 용량 카운터는 DB 수준 원자적 upsert(`on_conflict_do_update` + dialect별 `GREATEST`/`MAX`)로 추적된다. 개수 기반 한도(board, open ticket, member, agent)는 workspace 격리 하의 check-then-create(동시성 최선 노력, 별도 비관적 락 미사용)로 동작한다.
 - quota 값 변경은 **owner/admin**만(identity.md §5 정책 변경과 동일). 플랫폼 운영자가 올리는 hosted 상한은 서버 설정(`AK5_QUOTA_CEILING`)으로 별도 제한한다.
 - 사용량 조회: `GET /workspaces/{id}/usage` → 각 quota의 `{limit, current}`. Web UI 설정 화면에 표시한다.
+- **이벤트 보존 정책 (`event_retention_days`) 상세**:
+  - `workspaces.policy.event_retention_days`: 워크스페이스별 이벤트 보존 기간(일 단위, 0..30). `0`/미설정은 무제한(local 기본, hosted 기본 7).
+  - 보존 기간 경과 이벤트는 `ak5 db maintenance` 실행 시 또는 주기적 lazy purge를 통해 삭제된다.
+  - **미-ack 구독 보호 (Safety Rule)**: 해당 워크스페이스에 활성 subscription이 존재하는 경우, 모든 subscription이 ack 완료한 커서(`seq <= min(ack_cursor)`) 이전의 이벤트만 삭제된다. 아직 ack되지 않은 이벤트(`seq > min(ack_cursor)`)는 보존 기간이 경과했더라도 구독자가 안전하게 처리할 때까지 보존된다.
 
 ## 4. 관측성
 
@@ -130,6 +134,11 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 - **라벨에 workspace_id/ticket_id/principal을 쓰지 않는다**(카디널리티 폭발·프라이버시). workspace별 사용량은 §3 usage API로 본다.
 - `/metrics`는 기본 비활성(`AK5_METRICS_ENABLED=1`로 켬). 켜면 **관리 토큰(`AK5_METRICS_TOKEN`) 또는 내부 bind에서만** 접근 가능하고, 공개 인터페이스에서는 인증 없이 열리지 않는다.
 - 서버리스에서는 pull 모델이 맞지 않으므로 로그 기반 메트릭(JSON 로그 → 플랫폼 집계)을 1차로 하고 `/metrics`는 상시 서버용이다.
+- **단일 프로세스/컨테이너 수집 모델과 멀티 인스턴스 집계 (#132)**:
+  - **컨테이너당 단일 프로세스 원칙 (Scale by Replicas)**: `/metrics`는 인프로세스 메모리 레지스트리를 사용하므로, 단일 포트 뒤에 여러 워커 프로세스를 띄우는 구조(`uvicorn --workers N`, `WEB_CONCURRENCY`, gunicorn)는 스크랩 요청이 임의의 워커로 분산되어 카운터 진동/리셋 착시가 발생하므로 지원하지 않는다(멀티프로세스 공유 디렉터리 스킴이 별도로 도입되지 않는 한 금지). hosted/메트릭 활성화 배포에서는 **컨테이너/포트당 1개 서버 프로세스**를 실행하고, 수평 확장은 **컨테이너 레플리카(인스턴스) 단위**로 수행한다.
+  - **인스턴스별 스크랩**: Prometheus는 각 컨테이너 인스턴스의 `/metrics`를 개별 스크랩하며, 인스턴스 식별 라벨(`instance`)은 스크랩 시 Prometheus 서버가 부여하여 내부 라벨 카디널리티 규칙(workspace_id 등 금지)을 유지한다.
+  - **클러스터 수준 합산**: 대시보드 및 경보는 PromQL 집계(예: `sum(rate(ak5_http_requests_total[5m])) by (route, status)`)를 통해 전체 레플리카 기준으로 합산한다.
+  - **Safe-emit 패턴**: 모든 도메인 로직(전이, 락/클레임, 리스 회수 등)과 미들웨어는 `safe_inc`, `safe_set`, `safe_dec`, `safe_observe`를 통해 안전하게 방출한다. 라벨/인자 오류(`ValueError`)는 경고(`WARNING`) 로그로 남기고 일반 방출 예외는 `DEBUG` 로그로 기록하여 비즈니스 트랜잭션에 영향을 주지 않는다.
 
 ### 4.4 로깅 금지 항목
 

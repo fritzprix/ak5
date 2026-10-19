@@ -488,5 +488,261 @@ def test_db_maintenance_cli_reconcile_usage(test_db: AsyncSession, monkeypatch: 
     assert "Reconciled attachment bytes usage for" in res.output
 
 
+async def test_event_retention_days_policy_purge(test_db: AsyncSession):
+    """Test #138: workspace event_retention_days policy purges expired events while 0=unlimited."""
+    from datetime import UTC, datetime, timedelta
+
+    from ak5.server.models.event import Event
+    from ak5.server.services.subscription_service import subscription_service
+
+    # Workspace 1: 3 days retention
+    ws1 = Workspace(workspace_id="ws_ret_3", name="Ret 3", policy=json.dumps({"event_retention_days": 3}))
+    # Workspace 2: 0 = unlimited retention
+    ws2 = Workspace(workspace_id="ws_unlim", name="Unlimited", policy=json.dumps({"event_retention_days": 0}))
+    test_db.add_all([ws1, ws2])
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    # ws1 expired event (5 days old)
+    e1_old = Event(
+        event_id="ev_ws1_old",
+        workspace_id="ws_ret_3",
+        type="TEST_EVENT",
+        created_at=now - timedelta(days=5),
+    )
+    # ws1 fresh event (1 day old)
+    e1_fresh = Event(
+        event_id="ev_ws1_fresh",
+        workspace_id="ws_ret_3",
+        type="TEST_EVENT",
+        created_at=now - timedelta(days=1),
+    )
+    # ws2 old event (10 days old, but unlimited retention)
+    e2_old = Event(
+        event_id="ev_ws2_old",
+        workspace_id="ws_unlim",
+        type="TEST_EVENT",
+        created_at=now - timedelta(days=10),
+    )
+    test_db.add_all([e1_old, e1_fresh, e2_old])
+    await test_db.commit()
+
+    deleted = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+
+    assert deleted == 1
+    assert await test_db.get(Event, e1_old.seq) is None
+    assert await test_db.get(Event, e1_fresh.seq) is not None
+    assert await test_db.get(Event, e2_old.seq) is not None
+
+
+async def test_event_retention_unexpired_preserved_and_expired_purged(test_db: AsyncSession):
+    """Test #138: unexpired events are preserved and expired events are purged per workspace policy."""
+    from datetime import UTC, datetime, timedelta
+
+    from ak5.server.models.event import Event
+    from ak5.server.services.subscription_service import SubscriptionServiceError, subscription_service
+
+    ws = Workspace(workspace_id="ws_sub_guard", name="Sub Guard", policy=json.dumps({"event_retention_days": 2}))
+    test_db.add(ws)
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    # Event 0 & 1 are 5 days old (older than 2 days retention -> expired)
+    ev0 = Event(
+        event_id="ev_guarded_0",
+        workspace_id="ws_sub_guard",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    ev1 = Event(
+        event_id="ev_guarded_1",
+        workspace_id="ws_sub_guard",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    # Event 2 is 1 day old (within 2 days retention -> unexpired / preserved)
+    ev2 = Event(
+        event_id="ev_guarded_2",
+        workspace_id="ws_sub_guard",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=1),
+    )
+    test_db.add_all([ev0, ev1, ev2])
+    await test_db.commit()
+
+    deleted = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+    assert deleted == 2
+    # ev0, ev1 are purged, ev2 is preserved
+    assert await test_db.get(Event, ev0.seq) is None
+    assert await test_db.get(Event, ev1.seq) is None
+    assert await test_db.get(Event, ev2.seq) is not None
+
+    # Stale cursor pointing below purged_through raises CURSOR_EXPIRED
+    with pytest.raises(SubscriptionServiceError) as ei:
+        await subscription_service.ensure_cursor_valid(test_db, cursor=ev0.seq, workspace_id="ws_sub_guard")
+    assert ei.value.code == ErrorCode.CURSOR_EXPIRED
+
+
+def test_db_maintenance_cli_purges_events(test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
+    """Test #138: ak5 db maintenance runs routine storage and event-log maintenance."""
+    import ak5.cli.commands.db as db_mod
+    from ak5.cli.commands.db import maintenance_cmd
+    from click.testing import CliRunner
+    from conftest import TestAsyncSessionLocal
+
+    monkeypatch.setattr(db_mod, "AsyncSessionLocal", TestAsyncSessionLocal, raising=False)
+
+    runner = CliRunner()
+    res = runner.invoke(maintenance_cmd, ["--clean-parts-older-than", "3600"])
+    assert res.exit_code == 0, res.output
+    assert "Cleaned" in res.output
+    assert "Purged" in res.output
+
+
+async def test_event_retention_lagging_subscription_safety_rule(test_db: AsyncSession):
+    """Test #138: un-acked old events survive while acked old events are purged (safety rule)."""
+    from datetime import UTC, datetime, timedelta
+
+    from ak5.server.models.event import Event
+    from ak5.server.models.subscription import Subscription
+    from ak5.server.services.subscription_service import subscription_service
+
+    ws = Workspace(
+        workspace_id="ws_lag_safety",
+        name="Lag Safety",
+        policy=json.dumps({"event_retention_days": 2}),
+    )
+    test_db.add(ws)
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    # Create 3 events, all 5 days old (exceeding 2 days retention window)
+    e1 = Event(
+        event_id="ev_lag_1",
+        workspace_id="ws_lag_safety",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    e2 = Event(
+        event_id="ev_lag_2",
+        workspace_id="ws_lag_safety",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    e3 = Event(
+        event_id="ev_lag_3",
+        workspace_id="ws_lag_safety",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    test_db.add_all([e1, e2, e3])
+    await test_db.commit()
+
+    # Create active subscription with ack_cursor = 0 (has not acked any events yet)
+    sub = Subscription(
+        subscription_id="sub_lag_1",
+        workspace_id="ws_lag_safety",
+        ack_cursor=0,
+    )
+    test_db.add(sub)
+    await test_db.commit()
+
+    # Step 1: Purge runs, but because ack_cursor=0, none of the events may be purged
+    del_0 = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+    assert del_0 == 0
+    assert await test_db.get(Event, e1.seq) is not None
+    assert await test_db.get(Event, e2.seq) is not None
+    assert await test_db.get(Event, e3.seq) is not None
+
+    # Step 2: Consumer advances ack_cursor to e1.seq
+    sub.ack_cursor = e1.seq
+    await test_db.commit()
+
+    del_1 = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+    assert del_1 == 1
+    # e1 (seq <= e1.seq) is purged; e2, e3 (seq > e1.seq) survive despite being 5 days old!
+    assert await test_db.get(Event, e1.seq) is None
+    assert await test_db.get(Event, e2.seq) is not None
+    assert await test_db.get(Event, e3.seq) is not None
+
+    # Step 3: Consumer advances ack_cursor past e3.seq
+    sub.ack_cursor = e3.seq
+    await test_db.commit()
+
+    del_2 = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+    assert del_2 == 2
+    assert await test_db.get(Event, e2.seq) is None
+    assert await test_db.get(Event, e3.seq) is None
+
+
+async def test_event_retention_cross_workspace_cursor_isolation(test_db: AsyncSession):
+    """Test #138: purging workspace A must not cause CURSOR_EXPIRED on workspace B (retention 0)."""
+    from datetime import UTC, datetime, timedelta
+
+    from ak5.server.models.event import Event
+    from ak5.server.services.subscription_service import SubscriptionServiceError, subscription_service
+
+    ws_a = Workspace(
+        workspace_id="ws_iso_a",
+        name="Workspace A",
+        policy=json.dumps({"event_retention_days": 2}),
+    )
+    ws_b = Workspace(
+        workspace_id="ws_iso_b",
+        name="Workspace B",
+        policy=json.dumps({"event_retention_days": 0}),  # 0 = unlimited
+    )
+    test_db.add_all([ws_a, ws_b])
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    # Old events for ws_a
+    ev_a1 = Event(
+        event_id="ev_a1",
+        workspace_id="ws_iso_a",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    ev_a2 = Event(
+        event_id="ev_a2",
+        workspace_id="ws_iso_a",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    # Events for ws_b
+    ev_b1 = Event(
+        event_id="ev_b1",
+        workspace_id="ws_iso_b",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    test_db.add_all([ev_a1, ev_a2, ev_b1])
+    await test_db.commit()
+
+    # ws_a has no active subscription -> purge deletes ev_a1, ev_a2
+    del_count = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+    assert del_count == 2
+    assert await test_db.get(Event, ev_a1.seq) is None
+    assert await test_db.get(Event, ev_a2.seq) is None
+    # ws_b event is preserved (retention 0)
+    assert await test_db.get(Event, ev_b1.seq) is not None
+
+    # ws_a cursor check raises CURSOR_EXPIRED for purged events
+    with pytest.raises(SubscriptionServiceError) as ei:
+        await subscription_service.ensure_cursor_valid(test_db, cursor=ev_a1.seq, workspace_id="ws_iso_a")
+    assert ei.value.code == ErrorCode.CURSOR_EXPIRED
+
+    # ws_b cursor check with a low cursor (e.g. 1, below ws_a's purged seq) must NOT raise
+    purged_b = await subscription_service.get_purged_through_seq(test_db, workspace_id="ws_iso_b")
+    assert purged_b == 0
+    await subscription_service.ensure_cursor_valid(test_db, cursor=1, workspace_id="ws_iso_b")
+
+
 
 

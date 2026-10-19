@@ -367,3 +367,64 @@ async def test_route_ticket_missing_claim_token_does_not_increment_conflicts(tes
         await claim_ticket(test_db, actor=worker_actor, ticket_id="t1")
     assert exc_info.value.code == ErrorCode.CLAIM_CONFLICT
     assert claim_conflicts_total._values.get((), 0.0) == initial_conflicts + 1.0
+
+
+def test_safe_emit_helpers(caplog: pytest.LogCaptureFixture):
+    """Test #132: safe_inc, safe_set, safe_dec, safe_observe suppress exceptions and log at DEBUG."""
+    import logging
+
+    from ak5.server.metrics import safe_dec, safe_inc, safe_observe, safe_set
+
+    # 1. Normal execution
+    c = Counter("test_safe_c", "Counter help", ["kind"])
+    g = Gauge("test_safe_g", "Gauge help", ["kind"])
+    h = Histogram("test_safe_h", "Hist help", ["kind"], buckets=(1.0, 5.0))
+
+    safe_inc(c, 2.0, kind="req")
+    assert c._values[(("kind", "req"),)] == 2.0
+
+    safe_set(g, 10.0, kind="conn")
+    assert g._values[(("kind", "conn"),)] == 10.0
+
+    safe_dec(g, 3.0, kind="conn")
+    assert g._values[(("kind", "conn"),)] == 7.0
+
+    safe_observe(h, 2.5, kind="lat")
+    assert h._totals[(("kind", "lat"),)] == 1
+
+    # 2. None metric is safe no-op
+    safe_inc(None, 1.0)
+    safe_set(None, 1.0)
+    safe_dec(None, 1.0)
+    safe_observe(None, 1.0)
+
+    # 3. Exceptions suppressed: ValueError at WARNING, general exceptions at DEBUG
+    with caplog.at_level(logging.DEBUG):
+        # Negative increment raises ValueError in Counter.inc -> logged at WARNING
+        safe_inc(c, -5.0, kind="req")
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Invalid metric emission for test_safe_c" in r.message for r in warning_records)
+
+        # Faulty gauge/histogram calls raise RuntimeError -> logged at DEBUG
+        class BrokenMetric:
+            name = "broken"
+
+            def set(self, *a, **k):
+                raise RuntimeError("Boom set")
+
+            def dec(self, *a, **k):
+                raise RuntimeError("Boom dec")
+
+            def observe(self, *a, **k):
+                raise RuntimeError("Boom observe")
+
+        broken = BrokenMetric()
+        safe_set(broken, 1.0)  # type: ignore[arg-type]
+        assert any("Failed to set gauge" in record.message for record in caplog.records if record.levelno == logging.DEBUG)
+
+        safe_dec(broken, 1.0)  # type: ignore[arg-type]
+        assert any("Failed to decrement gauge" in record.message for record in caplog.records if record.levelno == logging.DEBUG)
+
+        safe_observe(broken, 1.0)  # type: ignore[arg-type]
+        assert any("Failed to observe histogram" in record.message for record in caplog.records if record.levelno == logging.DEBUG)
+

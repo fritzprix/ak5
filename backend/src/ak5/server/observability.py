@@ -228,13 +228,15 @@ class RequestContextMiddleware:
             method = scope.get("method", "-")
             status_code = status_holder["status"]
             duration = time.perf_counter() - started
-            try:
-                from ak5.server.metrics import http_request_duration_seconds, http_requests_total
+            from ak5.server.metrics import (
+                http_request_duration_seconds,
+                http_requests_total,
+                safe_inc,
+                safe_observe,
+            )
 
-                http_requests_total.inc(route=path, method=method, status=str(status_code))
-                http_request_duration_seconds.observe(duration, route=path, method=method, status=str(status_code))
-            except Exception:
-                access_logger.debug("Failed to record HTTP metrics", exc_info=True)
+            safe_inc(http_requests_total, route=path, method=method, status=str(status_code))
+            safe_observe(http_request_duration_seconds, duration, route=path, method=method, status=str(status_code))
 
             if path not in _QUIET_PATHS:
                 access_logger.info(
