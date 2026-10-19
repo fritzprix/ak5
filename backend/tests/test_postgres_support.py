@@ -97,8 +97,11 @@ async def test_live_postgres_rls_cross_workspace_blocking():
     board_alpha_id = f"b_alpha_{run_id}"
     board_beta_id = f"b_beta_{run_id}"
 
-    # Setup: Create workspaces, actor, and boards
+    # Setup: Create workspaces, actor, and boards (using bypass context for cross-workspace seed)
     async with maker() as session:
+        from ak5.server.rls import set_bypass_rls_context
+
+        await set_bypass_rls_context(session, True)
         if await session.get(Actor, "user_pm") is None:
             session.add(
                 Actor(
@@ -179,5 +182,12 @@ async def test_live_postgres_rls_cross_workspace_blocking():
         # PostgreSQL raises error mentioning row-level security policy
         err_msg = str(exc_info.value).lower()
         assert "row-level security" in err_msg or "violates" in err_msg
+
+    # 4. Admin / maintenance bypass: when ak5.bypass_rls is on, both boards are visible
+    async with maker() as session:
+        await set_bypass_rls_context(session, True)
+        all_boards = (await session.execute(select(Board))).scalars().all()
+        all_ids = {b.board_id for b in all_boards}
+        assert board_alpha_id in all_ids and board_beta_id in all_ids
 
     await engine.dispose()

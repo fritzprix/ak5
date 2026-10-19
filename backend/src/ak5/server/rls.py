@@ -53,7 +53,10 @@ def apply_postgres_rls(connection: Connection) -> None:
             connection.execute(
                 text(
                     f"CREATE POLICY {RLS_POLICY_NAME} ON {table} "
-                    f"USING (workspace_id = current_setting('ak5.workspace_id', true))"
+                    f"USING ("
+                    f"  current_setting('ak5.bypass_rls', true) = 'on' "
+                    f"  OR workspace_id = current_setting('ak5.workspace_id', true)"
+                    f")"
                 )
             )
         except Exception as exc:
@@ -84,3 +87,16 @@ async def set_workspace_rls_context(db: AsyncSession, workspace_id: str) -> None
 
     if bind is not None and bind.dialect.name == "postgresql":
         await db.execute(text("SET LOCAL ak5.workspace_id = :ws"), {"ws": workspace_id})
+
+
+async def set_bypass_rls_context(db: AsyncSession, bypass: bool = True) -> None:
+    """Set transaction-local ak5.bypass_rls setting on PostgreSQL sessions."""
+    try:
+        bind = db.get_bind()
+    except Exception:
+        bind = None
+
+    if bind is not None and bind.dialect.name == "postgresql":
+        val = "on" if bypass else "off"
+        await db.execute(text(f"SET LOCAL ak5.bypass_rls = '{val}'"))
+
