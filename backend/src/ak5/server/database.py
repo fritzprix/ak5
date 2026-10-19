@@ -32,30 +32,55 @@ LEGACY_SUBSCRIPTIONS_EXPORT_KEYS = (
 # reset → seed) must not refuse dual-DB before `ak5 migrate-legacy` can run.
 # Safety gate lives in lifespan + `ak5 serve` / `ak5 web` (see main.py).
 
-# Configure SQLite async engine with WAL mode and busy_timeout
-connect_args = {}
-if "sqlite" in settings.DATABASE_URL:
-    connect_args["timeout"] = settings.SQLITE_BUSY_TIMEOUT / 1000.0
-    try:
-        url = make_url(settings.DATABASE_URL)
-        if url.database and url.database != ":memory:":
-            Path(url.database).parent.mkdir(parents=True, exist_ok=True)
-    except (ValueError, OSError) as e:
-        logger.warning(
-            "Failed to create SQLite database parent directory for %s: %s",
-            settings.DATABASE_URL,
-            e,
+def normalize_database_url(url_str: str) -> str:
+    """Normalize DATABASE_URL for SQLAlchemy async drivers (deployment.md §1.1)."""
+    if url_str.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url_str[len("postgresql://") :]
+    if url_str.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url_str[len("postgres://") :]
+    return url_str
+
+
+def get_engine_options(url_str: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Return (normalized_url, connect_args, engine_kwargs) based on dialect scheme."""
+    normalized = normalize_database_url(url_str)
+    connect_args: dict[str, Any] = {}
+    engine_kwargs: dict[str, Any] = {"echo": False, "future": True}
+
+    if "sqlite" in normalized:
+        connect_args["timeout"] = settings.SQLITE_BUSY_TIMEOUT / 1000.0
+        try:
+            url = make_url(normalized)
+            if url.database and url.database != ":memory:":
+                Path(url.database).parent.mkdir(parents=True, exist_ok=True)
+        except (ValueError, OSError) as e:
+            logger.warning(
+                "Failed to create SQLite database parent directory for %s: %s",
+                normalized,
+                e,
+            )
+    elif "postgresql" in normalized:
+        engine_kwargs["pool_size"] = settings.AK5_DB_POOL_SIZE
+        engine_kwargs["max_overflow"] = settings.AK5_DB_MAX_OVERFLOW
+        engine_kwargs["pool_timeout"] = settings.AK5_DB_POOL_TIMEOUT
+    else:
+        raise RuntimeError(
+            f"Unsupported DATABASE_URL scheme in '{url_str}'. Only SQLite and PostgreSQL are supported."
         )
 
+    return normalized, connect_args, engine_kwargs
+
+
+_normalized_db_url, connect_args, _engine_kwargs = get_engine_options(settings.DATABASE_URL)
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
+    _normalized_db_url,
     connect_args=connect_args,
-    future=True,
+    **_engine_kwargs,
 )
 
 # Apply SQLite pragmas for WAL mode, busy timeout, and foreign key enforcement
-if "sqlite" in settings.DATABASE_URL:
+if "sqlite" in _normalized_db_url:
 
     @event.listens_for(engine.sync_engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = Field(default_factory=get_default_database_url)
     SQLITE_BUSY_TIMEOUT: int = 5000
+    AK5_DB_POOL_SIZE: int = 5
+    AK5_DB_MAX_OVERFLOW: int = 10
+    AK5_DB_POOL_TIMEOUT: float = 30.0
 
     # Prefer AK5_JWT_SECRET env. Empty → auto-generate/persist under app local storage (jwt_secret).
     JWT_SECRET: str = ""

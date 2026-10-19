@@ -167,6 +167,9 @@ async def get_auth_context(
     # Who made the request, for the access log (ids only — never the token).
     request.state.principal_id = ctx.principal.principal_id if ctx.principal else ctx.actor.actor_id
     request.state.workspace_id = ctx.workspace_id
+    from ak5.server.rls import set_workspace_rls_context
+
+    await set_workspace_rls_context(db, ctx.workspace_id)
     # Per-principal / per-workspace rate limits (operations.md §2, no-op unless enabled).
     try:
         await enforce_authenticated(
