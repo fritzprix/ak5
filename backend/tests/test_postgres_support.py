@@ -80,6 +80,7 @@ async def test_live_postgres_rls_cross_workspace_blocking():
         pytest.skip("AK5_TEST_POSTGRES_URL is not set; skipping live PostgreSQL RLS test")
 
     from ak5.server import migrations as mig
+    from ak5.server.models.actor import Actor
     from ak5.server.models.board import Board
     from ak5.server.models.workspace import Workspace
     from sqlalchemy import select
@@ -96,8 +97,17 @@ async def test_live_postgres_rls_cross_workspace_blocking():
     board_alpha_id = f"b_alpha_{run_id}"
     board_beta_id = f"b_beta_{run_id}"
 
-    # Setup: Create workspaces and boards
+    # Setup: Create workspaces, actor, and boards
     async with maker() as session:
+        if await session.get(Actor, "user_pm") is None:
+            session.add(
+                Actor(
+                    actor_id="user_pm",
+                    name="Product Manager",
+                    actor_type="human",
+                    role="pm",
+                )
+            )
         session.add(Workspace(workspace_id=ws_alpha, name="Workspace Alpha", policy="{}"))
         session.add(Workspace(workspace_id=ws_beta, name="Workspace Beta", policy="{}"))
 
