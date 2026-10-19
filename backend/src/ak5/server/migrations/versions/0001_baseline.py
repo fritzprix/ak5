@@ -10,7 +10,8 @@ stamped at this revision. Do not edit: change the schema with a new revision.
 
 ``upgrade()`` creates only what is missing (``_create_table`` / ``_create_index``), so
 the same code both builds a new database and *adopts* a pre-Alembic one without
-touching tables that already exist.
+touching tables that already exist. Adopted tables have missing baseline indexes
+supplemented (via ``if_not_exists=True``) when all indexed columns exist (#120).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ branch_labels = None
 depends_on = None
 
 _adopted: set[str] = set()
+_adopted_columns: dict[str, set[str]] = {}
 
 
 def _create_table(name, *args, **kwargs):
@@ -35,12 +37,22 @@ def _create_table(name, *args, **kwargs):
 
 def _create_index(index_name, table_name, columns, unique=False, **kwargs):
     if table_name in _adopted:
+        bind = op.get_bind()
+        if table_name not in _adopted_columns:
+            _adopted_columns[table_name] = {
+                col["name"] for col in sa.inspect(bind).get_columns(table_name)
+            }
+        col_names = {c if isinstance(c, str) else getattr(c, "name", str(c)) for c in columns}
+        if not col_names.issubset(_adopted_columns[table_name]):
+            return
+        op.create_index(index_name, table_name, columns, unique=unique, if_not_exists=True, **kwargs)
         return
     op.create_index(index_name, table_name, columns, unique=unique, **kwargs)
 
 
 def upgrade() -> None:
     _adopted.clear()
+    _adopted_columns.clear()
     _create_table('actors',
     sa.Column('actor_id', sa.String(length=128), nullable=False),
     sa.Column('actor_type', sa.String(length=16), nullable=False),
