@@ -7,6 +7,8 @@ this module no longer keeps an in-memory session store.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import logging
 import os
 import secrets
 import threading
@@ -14,6 +16,8 @@ import time
 from dataclasses import dataclass
 
 from ak5.server.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Legacy cookie name kept for clearing old browsers; gate uses ``ak5_session``.
 COOKIE_NAME = "ak5_auth"
@@ -127,11 +131,53 @@ def record_successful_attempt(ip: str) -> None:
         _attempts.pop(ip, None)
 
 
+def trusted_proxy_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """``AK5_TRUSTED_PROXIES``: comma-separated IPs / CIDRs of reverse proxies we sit behind."""
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for raw in (os.environ.get("AK5_TRUSTED_PROXIES") or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(raw, strict=False))
+        except ValueError:
+            logger.warning("Ignoring invalid AK5_TRUSTED_PROXIES entry %r", raw)
+    return networks
+
+
+def _ip_or_none(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+
+
+def _is_trusted(value: str, networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> bool:
+    ip = _ip_or_none(value)
+    return ip is not None and any(ip in net for net in networks)
+
+
 def client_ip_from_headers(x_forwarded_for: str | None, x_real_ip: str | None, fallback: str) -> str:
-    if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip() or fallback
-    if x_real_ip:
-        return x_real_ip.strip() or fallback
+    """The caller's IP, for per-IP limits (#122, operations.md §2.1).
+
+    ``fallback`` is the socket peer. Forwarding headers are believed **only when the peer is a
+    configured trusted proxy** (``AK5_TRUSTED_PROXIES``); otherwise anyone could pick their own
+    rate-limit bucket by sending ``X-Forwarded-For``. With a trusted peer, ``X-Forwarded-For`` is
+    walked from the right and the first hop that is not itself a trusted proxy is the client.
+    """
+    networks = trusted_proxy_networks()
+    if not networks or not _is_trusted(fallback, networks):
+        return fallback
+    hops = [hop.strip() for hop in (x_forwarded_for or "").split(",") if hop.strip()]
+    for hop in reversed(hops):
+        if _ip_or_none(hop) is None:
+            return fallback  # garbage in the chain: do not guess
+        if not _is_trusted(hop, networks):
+            return hop
+    if hops:
+        return hops[0]  # every hop is a trusted proxy: the leftmost is as far as we can see
+    if x_real_ip and _ip_or_none(x_real_ip) is not None:
+        return x_real_ip.strip()
     return fallback
 
 

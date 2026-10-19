@@ -48,6 +48,9 @@ def print_error(err: ClientError | dict[str, Any], *, json_mode: bool | None = N
         code = envelope.get("error", {}).get("code", "")
         prefix = f"[{code}] " if code else ""
         sys.stderr.write(f"Error: {prefix}{message}\n")
+        retry_after = getattr(err, "retry_after", None)
+        if retry_after is not None:
+            sys.stderr.write(f"  retry after {retry_after:g}s\n")
 
     raise SystemExit(exit_code)
 

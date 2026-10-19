@@ -84,6 +84,18 @@ def assert_safe_bind(
     exposed = (not is_loopback_bind(host)) or tailscale_serve
     if not exposed:
         return
+    if (os.environ.get("AK5_PROFILE") or "").strip().lower() == "hosted" and not os.environ.get(
+        "AK5_TRUSTED_PROXIES", ""
+    ).strip():
+        # Without it every request would share the proxy's IP (or let callers pick their own
+        # bucket), which makes per-IP limits meaningless (operations.md §7).
+        console.print(
+            "[bold red]✗ Refusing AK5_PROFILE=hosted on an exposed bind without "
+            "AK5_TRUSTED_PROXIES.[/bold red]\n"
+            "  Set [cyan]AK5_TRUSTED_PROXIES[/cyan] to the reverse proxy IPs/CIDRs in front of "
+            "this server\n  (operations.md §2.1), or unset AK5_PROFILE."
+        )
+        raise SystemExit(1)
     if auth_is_configured():
         return
     if insecure:

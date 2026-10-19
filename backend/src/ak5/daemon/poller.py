@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -15,6 +16,32 @@ from ak5.daemon.profiles import Profile, list_profiles
 from ak5.daemon.state import DaemonState
 
 logger = logging.getLogger(__name__)
+
+# A rate-limited server (429 + Retry-After, operations.md §2.4) must not be re-polled every
+# 0.5 s: each profile stays quiet until the time the server asked for.
+_DEFAULT_RETRY_AFTER = 5.0
+_MAX_RETRY_AFTER = 300.0
+_rate_limited_until: dict[str, float] = {}
+
+
+def retry_after_seconds(value: str | None) -> float:
+    """``Retry-After`` (delta-seconds) clamped to a sane range; a default when absent/unusable."""
+    try:
+        seconds = float((value or "").strip())
+    except ValueError:
+        return _DEFAULT_RETRY_AFTER
+    return min(max(seconds, 1.0), _MAX_RETRY_AFTER)
+
+
+def note_rate_limited(profile_name: str, retry_after: str | None) -> float:
+    seconds = retry_after_seconds(retry_after)
+    _rate_limited_until[profile_name] = time.monotonic() + seconds
+    logger.warning("server rate-limited profile %s; backing off %.0fs", profile_name, seconds)
+    return seconds
+
+
+def rate_limit_remaining(profile_name: str) -> float:
+    return max(0.0, _rate_limited_until.get(profile_name, 0.0) - time.monotonic())
 
 
 def _api_base(server: str) -> str:
@@ -108,6 +135,10 @@ async def poll_profile_once(
     wait: float = 25.0,
 ) -> int:
     """Pull one batch from the server into the spool. Returns events written."""
+    remaining = rate_limit_remaining(profile.name)
+    if remaining > 0:
+        await asyncio.sleep(min(remaining, 5.0))  # bounded so the stop event stays responsive
+        return 0
     cred = load_credential(profile.name)
     if cred is None or not cred.access_token or cred.status == "revoked":
         return 0
@@ -120,6 +151,12 @@ async def poll_profile_once(
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=wait + 10) as client:
         try:
             sub_id = await _ensure_subscription(client, profile, state)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                note_rate_limited(profile.name, exc.response.headers.get("retry-after"))
+            else:
+                logger.debug("subscription ensure failed for %s", profile.name, exc_info=True)
+            return 0
         except Exception:
             logger.debug("subscription ensure failed for %s", profile.name, exc_info=True)
             return 0
@@ -131,6 +168,9 @@ async def poll_profile_once(
             )
         except httpx.HTTPError:
             logger.debug("long-poll failed for %s", profile.name, exc_info=True)
+            return 0
+        if resp.status_code == 429:
+            note_rate_limited(profile.name, resp.headers.get("retry-after"))
             return 0
         if resp.status_code == 401:
             from ak5.daemon.credentials import mark_revoked

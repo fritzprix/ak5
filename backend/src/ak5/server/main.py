@@ -17,6 +17,7 @@ from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
 from ak5.server.auth.users import local_owner_configured
 from ak5.server.config import settings
 from ak5.server.database import AsyncSessionLocal, engine, ensure_database_schema
+from ak5.server.ratelimit import RateLimitMiddleware
 from ak5.server.routers.actors import router as actors_router
 from ak5.server.routers.auth import router as auth_router
 from ak5.server.routers.boards import router as boards_router
@@ -185,6 +186,10 @@ def create_app() -> FastAPI:
                 details={"errors": errors},
             ),
         )
+
+    # Per-IP limits for login / device grant / invite accept (off unless enabled, #114).
+    # Added before CORS so it sits inside it and a 429 still carries the CORS headers.
+    application.add_middleware(RateLimitMiddleware)
 
     application.add_middleware(
         CORSMiddleware,

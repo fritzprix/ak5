@@ -284,6 +284,7 @@ class AK5Client:
             exit_code=exit_code,
             details=details if isinstance(details, dict) else {},
             http_status=resp.status_code,
+            retry_after=_parse_retry_after(resp.headers.get("retry-after")),
         )
 
     # ---- convenience workflow helpers ----------------------------------------
@@ -471,3 +472,12 @@ class AK5Client:
         except httpx.HTTPError as exc:
             raise ClientError(f"Network error: {exc}", exit_code=EXIT_GENERIC) from exc
         return self._handle_response(resp, allow_204=False, expect_empty=False)
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """``Retry-After`` in delta-seconds form; ``None`` when absent or not a plain number."""
+    try:
+        seconds = float((value or "").strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None

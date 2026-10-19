@@ -20,6 +20,7 @@ from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
 from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+from ak5.server.ratelimit import RateLimited, enforce_authenticated
 from ak5.server.schemas.actor import ActorIdentifyRequest, ActorOut, TokenResponse
 from ak5.server.security import (
     IDENTIFY_SECRET_HEADER,
@@ -152,6 +153,7 @@ async def resolve_auth_context(token: str, db: AsyncSession) -> AuthContext:
 
 
 async def get_auth_context(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AuthContext:
@@ -161,7 +163,18 @@ async def get_auth_context(
             detail="Authorization header missing",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return await resolve_auth_context(credentials.credentials, db)
+    ctx = await resolve_auth_context(credentials.credentials, db)
+    # Per-principal / per-workspace rate limits (operations.md §2, no-op unless enabled).
+    try:
+        await enforce_authenticated(
+            db,
+            request,
+            principal_id=ctx.principal.principal_id if ctx.principal else ctx.actor.actor_id,
+            workspace_id=ctx.workspace_id,
+        )
+    except RateLimited as exc:
+        raise exc.http_exception() from exc
+    return ctx
 
 
 async def get_auth_workspace_id(

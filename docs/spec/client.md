@@ -126,6 +126,8 @@ daemon ── 수신 배치를 profile spool에 기록 (fsync) ── 서버에 
 - 서버 필터는 profile의 board 범위(+ 해당 role의 `WORK_AVAILABLE`, `HUMAN_ACTION_REQUIRED` 등 로컬 구독자들이 쓰는 타입의 합집합)로 설정한다. 세밀한 필터링은 daemon이 로컬에서 한다.
 - 서버 ack는 **spool에 기록한 직후** `next_cursor`로 한다. 로컬 구독자의 처리 성공과는 분리한다 (서버는 1:1, 로컬 전달 보장은 daemon이 책임).
 
+- **rate limit 대응**: 서버가 `429 RATE_LIMITED` + `Retry-After`를 주면 daemon은 해당 profile의 폴링과 ack를 그 시간(최소 1초, 최대 300초, 헤더가 없으면 5초)만큼 쉬고 다시 시작한다. 0.5초 간격으로 재시도하지 않는다 (operations.md §2.4).
+
 ### 4.3 로컬 구독자 (local subscriber)
 
 ```
