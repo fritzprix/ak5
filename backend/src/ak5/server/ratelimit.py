@@ -51,6 +51,7 @@ HOSTED_DEFAULTS: dict[str, int] = {
     "device_ip": 20,
     "invite_principal": 30,
     "invite_ip": 20,
+    "agent_issuance_principal": 20,
 }
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -58,12 +59,14 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _EXEMPT = re.compile(r"/events/stream$|/subscriptions/[^/]+/events$")
 _UPLOAD = re.compile(r"/tickets/[^/]+/attachments/?$")
 _INVITE = re.compile(r"/workspaces/[^/]+/members/?$")
+_AGENT = re.compile(r"/workspaces/[^/]+/agents/?$")
 
 #: (method, path regex, rule) for entry points that have no principal yet.
 IP_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("GET", re.compile(r"^/auth/login$"), "login_ip"),
     ("GET", re.compile(r"^/auth/callback$"), "login_ip"),
     ("POST", re.compile(r"^/auth/local/login$"), "login_ip"),
+    ("POST", re.compile(r"^/login$"), "login_ip"),
     ("POST", re.compile(r"^/api/auth/login$"), "login_ip"),
     ("POST", re.compile(r"^/auth/oidc/device/start$"), "login_ip"),
     ("POST", re.compile(r"^/oauth/device_authorization$"), "device_ip"),
@@ -204,6 +207,8 @@ async def enforce_authenticated(
         await enforce(db, "upload_principal", principal_id)
     if method == "POST" and _INVITE.search(path):
         await enforce(db, "invite_principal", principal_id)
+    if method == "POST" and _AGENT.search(path):
+        await enforce(db, "agent_issuance_principal", principal_id)
 
 
 # --- unauthenticated entry points ----------------------------------------------------------

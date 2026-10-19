@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -57,6 +58,7 @@ from ak5.server.auth.users import (
     verify_local_owner_password,
 )
 from ak5.server.database import get_db
+from ak5.server.metrics import rate_limited_total, safe_inc
 from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, User
 from ak5.server.schemas.workspace import SessionTokenOut, SessionTokenRequest
 from ak5.server.security import is_loopback_client
@@ -64,7 +66,14 @@ from ak5.server.services.workspaces import (
     get_membership,
     list_workspaces_for_user,
 )
-from ak5.server.web_auth import client_ip_from_headers
+from ak5.server.web_auth import (
+    check_rate_limit,
+    client_ip_from_headers,
+    record_failed_attempt,
+    record_successful_attempt,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["oidc-auth"])
 
@@ -357,6 +366,25 @@ async def local_owner_login(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JSONResponse:
     """Local-owner password login — **loopback only** (identity.md §8)."""
+    ip = client_ip_from_headers(
+        request.headers.get("x-forwarded-for"),
+        request.headers.get("x-real-ip"),
+        request.client.host if request.client else "127.0.0.1",
+    )
+    allowed, wait_seconds = check_rate_limit(ip)
+    if not allowed:
+        safe_inc(rate_limited_total, rule="local_login_lockout")
+        wait = wait_seconds or 60
+        logger.warning(
+            "Local login locked out due to consecutive failed attempts (retry after %ss)",
+            wait,
+        )
+        return JSONResponse(
+            status_code=429,
+            content={"error": f"Too many failed attempts. Locked out for {wait} seconds."},
+            headers={"Retry-After": str(wait)},
+        )
+
     if not is_loopback_client(request):
         return JSONResponse(
             status_code=403,
@@ -368,8 +396,10 @@ async def local_owner_login(
             content={"error": "Local owner password is not configured"},
         )
     if not verify_local_owner_password(body.password):
+        record_failed_attempt(ip)
         return JSONResponse(status_code=401, content={"error": "Invalid password"})
 
+    record_successful_attempt(ip)
     user = await ensure_local_owner_user(db)
     session_cookie, csrf = await create_web_session_tokens(db, user.user_id)
     await db.commit()
