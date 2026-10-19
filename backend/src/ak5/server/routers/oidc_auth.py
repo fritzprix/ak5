@@ -32,6 +32,11 @@ from ak5.server.auth.oidc_device import (
     start_upstream_device_flow,
     upstream_device_endpoints,
 )
+from ak5.server.auth.pending_state import (
+    PendingLimitError,
+    pop_oidc_pending,
+    store_oidc_pending,
+)
 from ak5.server.auth.principal import Principal
 from ak5.server.auth.sessions import (
     CSRF_COOKIE,
@@ -40,11 +45,9 @@ from ak5.server.auth.sessions import (
     SESSION_COOKIE,
     create_web_session_tokens,
     oidc_state_matches,
-    pop_oidc_pending,
     require_csrf_header,
     resolve_web_session,
     revoke_web_session,
-    store_oidc_pending,
 )
 from ak5.server.auth.tokens import issue_access_token, session_token_ttl
 from ak5.server.auth.users import (
@@ -61,12 +64,30 @@ from ak5.server.services.workspaces import (
     get_membership,
     list_workspaces_for_user,
 )
+from ak5.server.web_auth import client_ip_from_headers
 
 router = APIRouter(tags=["oidc-auth"])
 
 
 def _is_secure(request: Request) -> bool:
     return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+def _client_key(request: Request) -> str:
+    return client_ip_from_headers(
+        request.headers.get("x-forwarded-for"),
+        request.headers.get("x-real-ip"),
+        request.client.host if request.client else "127.0.0.1",
+    )
+
+
+def _too_many_pending(exc: PendingLimitError) -> JSONResponse:
+    """429 for the caller that exhausted *its own* budget; nobody else is affected."""
+    return JSONResponse(
+        status_code=429,
+        content={"error": "too_many_pending"},
+        headers={"Retry-After": str(exc.retry_after)},
+    )
 
 
 def _set_session_cookies(
@@ -142,8 +163,12 @@ class UpstreamDevicePollBody(BaseModel):
     device_code: str = Field(..., min_length=1)
 
 
-@router.get("/auth/login")
-async def oidc_login(provider: str, request: Request) -> RedirectResponse:
+@router.get("/auth/login", response_model=None)
+async def oidc_login(
+    provider: str,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> RedirectResponse | JSONResponse:
     """Start OIDC Authorization Code + PKCE flow."""
     cfg = get_oidc_provider(provider)
     if cfg is None:
@@ -151,12 +176,17 @@ async def oidc_login(provider: str, request: Request) -> RedirectResponse:
     endpoints = await discover_endpoints(cfg)
     state, nonce = generate_state_nonce()
     verifier, challenge = generate_pkce_pair()
-    store_oidc_pending(
-        state=state,
-        provider_id=cfg.id,
-        nonce=nonce,
-        code_verifier=verifier,
-    )
+    try:
+        await store_oidc_pending(
+            db,
+            state=state,
+            provider_id=cfg.id,
+            nonce=nonce,
+            code_verifier=verifier,
+            client_key=_client_key(request),
+        )
+    except PendingLimitError as exc:
+        return _too_many_pending(exc)
     base = public_base_url(
         bind_host=request.url.hostname or "127.0.0.1",
         bind_port=request.url.port or 8000,
@@ -208,7 +238,7 @@ async def oidc_callback(
         )
         _clear_oidc_state_cookie(fail, secure=secure)
         return fail
-    pending = pop_oidc_pending(state)
+    pending = await pop_oidc_pending(db, state)
     if pending is None:
         fail = JSONResponse(
             status_code=400,
@@ -487,7 +517,11 @@ async def csrf_check(
 
 
 @router.post("/auth/oidc/device/start")
-async def upstream_device_start(provider: str) -> JSONResponse:
+async def upstream_device_start(
+    provider: str,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> JSONResponse:
     """Start upstream IdP device flow when redirect URIs are unavailable (§8.1)."""
     cfg = get_oidc_provider(provider)
     if cfg is None:
@@ -498,7 +532,9 @@ async def upstream_device_start(provider: str) -> JSONResponse:
             content={"error": f"Provider '{provider}' does not support device flow"},
         )
     try:
-        started = await start_upstream_device_flow(cfg)
+        started = await start_upstream_device_flow(db, cfg, client_key=_client_key(request))
+    except PendingLimitError as exc:
+        return _too_many_pending(exc)
     except Exception as exc:
         return JSONResponse(status_code=502, content={"error": str(exc)})
     return JSONResponse(
@@ -524,7 +560,7 @@ async def upstream_device_poll(
     if cfg is None:
         return JSONResponse(status_code=404, content={"error": f"Unknown provider '{body.provider}'"})
     try:
-        claims = await poll_upstream_device_flow(cfg, device_code=body.device_code)
+        claims = await poll_upstream_device_flow(db, cfg, device_code=body.device_code)
     except UpstreamDevicePending as pending:
         payload: dict[str, Any] = {"error": pending.error}
         if pending.retry_after is not None:

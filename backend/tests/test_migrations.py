@@ -35,7 +35,7 @@ async def test_fresh_database_gets_baseline_and_matches_the_models(tmp_path: Pat
     engine = _engine(tmp_path)
     try:
         revision = await mig.ensure_schema(engine, legacy_upgrade=run_legacy_schema_upgrade)
-        assert revision == mig.head_revision() == mig.BASELINE_REVISION
+        assert revision == mig.head_revision()
         async with engine.connect() as conn:
             drift = await conn.run_sync(_diff)
         # A model change without a new Alembic revision lands here.
@@ -64,7 +64,7 @@ async def test_pre_alembic_database_is_upgraded_in_place_and_stamped(tmp_path: P
     try:
         # A database as the server created it before Alembic: tables, no alembic_version.
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(mig.adopt_baseline_sync)  # baseline shape, no alembic_version
             await conn.execute(
                 text("INSERT INTO workspaces (workspace_id, name, policy) VALUES ('ws_keep', 'Keep me', '{}')")
             )
