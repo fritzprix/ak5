@@ -152,9 +152,9 @@ jobs:
         run: |
           uv sync --all-packages --all-extras
 
-      - name: Run PostgreSQL backend & RLS tests
+      - name: Run PostgreSQL dialect, migrations & RLS tests
         env:
           AK5_TEST_POSTGRES_URL: postgresql+asyncpg://ak5:ak5password@localhost:5432/ak5_test
         run: |
-          uv run pytest backend/tests/test_postgres_support.py -v
+          uv run pytest backend/tests/test_dialect_compatibility.py backend/tests/test_postgres_support.py -v
 
