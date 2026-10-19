@@ -129,6 +129,10 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 - **라벨에 workspace_id/ticket_id/principal을 쓰지 않는다**(카디널리티 폭발·프라이버시). workspace별 사용량은 §3 usage API로 본다.
 - `/metrics`는 기본 비활성(`AK5_METRICS_ENABLED=1`로 켬). 켜면 **관리 토큰(`AK5_METRICS_TOKEN`) 또는 내부 bind에서만** 접근 가능하고, 공개 인터페이스에서는 인증 없이 열리지 않는다.
 - 서버리스에서는 pull 모델이 맞지 않으므로 로그 기반 메트릭(JSON 로그 → 플랫폼 집계)을 1차로 하고 `/metrics`는 상시 서버용이다.
+- **멀티 워커/인스턴스 집계 및 안전 방출 (Safe-emit, #132)**:
+  - **인스턴스별 수집 모델**: 각 컨테이너/워커 인스턴스는 자체 프로세스 레지스트리를 유지하며, Prometheus가 인스턴스별 `/metrics`를 개별 스크랩한다. 인스턴스 식별 라벨(`instance`)은 스크랩 시 Prometheus 서버가 부여하며 서버 내부 라벨 카디널리티 규칙을 유지한다.
+  - **클러스터 수준 합산**: 대시보드 및 경보는 PromQL 집계(`sum(rate(ak5_http_requests_total[5m])) by (route, status)`)를 통해 전체 워커 기준으로 합산한다.
+  - **Safe-emit 패턴**: 모든 도메인 로직(전이, 락/클레임, 리스 회수 등)과 미들웨어는 `safe_inc`, `safe_set`, `safe_dec`, `safe_observe`를 통해 안전하게 방출한다. 메트릭 기록 실패는 `DEBUG` 로그로 남으며 비즈니스 트랜잭션에 영향을 주지 않는다.
 
 ### 4.4 로깅 금지 항목
 

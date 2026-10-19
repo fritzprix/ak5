@@ -229,6 +229,46 @@ event_log_lag_seconds = registry.register(
 )
 
 
+def safe_inc(counter: Counter | None, amount: float = 1.0, **labels: Any) -> None:
+    """Safely increment a counter metric without propagating exceptions to callers (#132)."""
+    if counter is None:
+        return
+    try:
+        counter.inc(amount=amount, **labels)
+    except Exception as exc:
+        logger.debug("Failed to increment metric %s: %s", getattr(counter, "name", counter), exc, exc_info=True)
+
+
+def safe_set(gauge: Gauge | None, value: float, **labels: Any) -> None:
+    """Safely set a gauge metric without propagating exceptions to callers (#132)."""
+    if gauge is None:
+        return
+    try:
+        gauge.set(value=value, **labels)
+    except Exception as exc:
+        logger.debug("Failed to set gauge %s: %s", getattr(gauge, "name", gauge), exc, exc_info=True)
+
+
+def safe_dec(gauge: Gauge | None, amount: float = 1.0, **labels: Any) -> None:
+    """Safely decrement a gauge metric without propagating exceptions to callers (#132)."""
+    if gauge is None:
+        return
+    try:
+        gauge.dec(amount=amount, **labels)
+    except Exception as exc:
+        logger.debug("Failed to decrement gauge %s: %s", getattr(gauge, "name", gauge), exc, exc_info=True)
+
+
+def safe_observe(histogram: Histogram | None, amount: float, **labels: Any) -> None:
+    """Safely observe a histogram metric without propagating exceptions to callers (#132)."""
+    if histogram is None:
+        return
+    try:
+        histogram.observe(amount=amount, **labels)
+    except Exception as exc:
+        logger.debug("Failed to observe histogram %s: %s", getattr(histogram, "name", histogram), exc, exc_info=True)
+
+
 def metrics_enabled() -> bool:
     return (os.environ.get("AK5_METRICS_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
 

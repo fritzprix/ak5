@@ -26,6 +26,7 @@ from ak5.server.metrics import (
     event_log_lag_seconds,
     metrics_enabled,
     registry,
+    safe_set,
 )
 from ak5.server.observability import (
     RequestContextMiddleware,
@@ -296,22 +297,19 @@ def create_app() -> FastAPI:
         if not check_metrics_auth(request):
             return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
-        active_connections.set(connection_limiter.active_connections, kind="all")
-        active_connections.set(connection_limiter.count_for_kind("sse"), kind="sse")
-        active_connections.set(connection_limiter.count_for_kind("longpoll"), kind="longpoll")
-        try:
-            pool = getattr(engine.sync_engine, "pool", None)
-            if pool is not None and hasattr(pool, "checkedout"):
-                db_pool_in_use.set(pool.checkedout())
-        except Exception:
-            logger.debug("Failed to record db_pool_in_use metric", exc_info=True)
+        safe_set(active_connections, float(connection_limiter.active_connections), kind="all")
+        safe_set(active_connections, float(connection_limiter.count_for_kind("sse")), kind="sse")
+        safe_set(active_connections, float(connection_limiter.count_for_kind("longpoll")), kind="longpoll")
+        pool = getattr(engine.sync_engine, "pool", None)
+        if pool is not None and hasattr(pool, "checkedout"):
+            safe_set(db_pool_in_use, float(pool.checkedout()))
         try:
             from ak5.server.services.subscription_service import subscription_service
 
             factory = getattr(request.app.state, "session_factory", None) or AsyncSessionLocal
             async with factory() as session:
                 lag = await subscription_service.compute_event_log_lag_seconds(session)
-                event_log_lag_seconds.set(lag)
+                safe_set(event_log_lag_seconds, lag)
         except Exception:
             logger.warning("Failed to record event_log_lag_seconds metric", exc_info=True)
             event_log_lag_seconds.reset()

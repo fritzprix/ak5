@@ -41,6 +41,7 @@ from ak5.server.metrics import (
     claim_conflicts_total,
     escalations_total,
     lease_expirations_total,
+    safe_inc,
     workflow_transitions_total,
 )
 from ak5.server.models.actor import Actor
@@ -596,10 +597,7 @@ async def _emit_transitioned(
         "ticket_id": ticket.ticket_id,
         "from_board_id": from_board_id,
     }
-    try:
-        workflow_transitions_total.inc(op=op, from_stage=from_stage or "none", to_stage=to_stage)
-    except Exception:
-        logger.debug("Failed to record workflow transition metric", exc_info=True)
+    safe_inc(workflow_transitions_total, op=op, from_stage=from_stage or "none", to_stage=to_stage)
     await record_event(
         db,
         EventType.TICKET_TRANSITIONED,
@@ -764,10 +762,7 @@ async def _apply_escalation(db: AsyncSession, ticket: Ticket, actor: Actor) -> b
     ticket.blocked_by = f"attempt {ticket.attempt} reached max_attempts ({ticket.max_attempts})"
     ticket.blocked_since = now
     ticket.blocked_actor = "system"
-    try:
-        escalations_total.inc(kind=BlockedKind.ESCALATION.value)
-    except Exception:
-        logger.debug("Failed to record escalation metric", exc_info=True)
+    safe_inc(escalations_total, kind=BlockedKind.ESCALATION.value)
     await record_event(
         db,
         EventType.TICKET_BLOCKED,
@@ -817,10 +812,7 @@ async def reclaim_expired_leases(
         _clear_claim(ticket)
         if stage == Stage.IN_PROGRESS:
             ticket.lease_expirations = (ticket.lease_expirations or 0) + 1
-            try:
-                lease_expirations_total.inc()
-            except Exception:
-                logger.debug("Failed to record lease expiration metric", exc_info=True)
+            safe_inc(lease_expirations_total)
             await _move_ticket(db, ticket, board_id=ticket.board_id, stage=Stage.BACKLOG)
             to_stage = Stage.BACKLOG
             op = "lease_expire_t8"
@@ -1197,10 +1189,7 @@ async def claim_ticket(
     _require_unblocked(ticket)
     # Valid claim (incl. in_progress) → conflict for losers, not INVALID_TRANSITION.
     if is_claim_valid(ticket):
-        try:
-            claim_conflicts_total.inc()
-        except Exception:
-            logger.debug("Failed to record claim conflict metric", exc_info=True)
+        safe_inc(claim_conflicts_total)
         raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "Ticket is already claimed")
     stage = ticket_stage(ticket)
 
@@ -1267,10 +1256,7 @@ async def claim_ticket(
         .values(**values)
     )
     if result.rowcount != 1:
-        try:
-            claim_conflicts_total.inc()
-        except Exception:
-            logger.debug("Failed to record claim conflict metric", exc_info=True)
+        safe_inc(claim_conflicts_total)
         raise WorkflowError(ErrorCode.CLAIM_CONFLICT, "Ticket is already claimed")
 
     # Re-load with relationships after atomic update (avoid stale / lazy IO).
