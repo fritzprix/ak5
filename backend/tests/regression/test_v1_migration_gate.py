@@ -114,7 +114,15 @@ async def test_v1_fixture_migration_idempotent(tmp_path, monkeypatch):
         indexes = {
             r[1] for r in (await conn.execute(text("PRAGMA index_list(tickets)"))).fetchall()
         }
-        assert {"idx_tickets_board", "idx_tickets_column_rank", "idx_tickets_parent"} <= indexes
+        assert {"idx_tickets_board", "idx_tickets_column_rank", "idx_tickets_parent", "ix_tickets_workspace_id"} <= indexes
+
+        # #128: adopted tables must have workspace_id column and baseline indexes supplemented
+        for t in ("boards", "columns", "tickets", "subscriptions"):
+            t_cols = {r[1] for r in (await conn.execute(text(f"PRAGMA table_info('{t}')"))).fetchall()}
+            assert "workspace_id" in t_cols, f"{t} missing workspace_id"
+            t_indexes = {r[1] for r in (await conn.execute(text(f"PRAGMA index_list('{t}')"))).fetchall()}
+            assert f"ix_{t}_workspace_id" in t_indexes, f"{t} missing ix_{t}_workspace_id"
+
 
         # #79: rewriting actor refs must not touch updated_at. Only t_ip is a real
         # change (claimless in_progress → backlog by repair_claimless_in_progress_tickets).
