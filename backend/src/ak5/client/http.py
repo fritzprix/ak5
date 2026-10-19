@@ -284,6 +284,7 @@ class AK5Client:
             exit_code=exit_code,
             details=details if isinstance(details, dict) else {},
             http_status=resp.status_code,
+            request_id=resp.headers.get("x-request-id"),
         )
 
     # ---- convenience workflow helpers ----------------------------------------

@@ -134,7 +134,12 @@ export class AK5Client {
         body = text;
       }
     }
-    return AK5Error.fromResponse(res.status, body, res.statusText);
+    return AK5Error.fromResponse(
+      res.status,
+      body,
+      res.statusText,
+      res.headers.get("x-request-id") ?? undefined
+    );
   }
 
   private buildHeaders(
