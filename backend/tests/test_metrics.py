@@ -300,6 +300,31 @@ async def test_event_log_lag_seconds_metric(test_db: AsyncSession, monkeypatch: 
         assert resp.status_code == 200
         assert "ak5_event_log_lag_seconds 0.0" in resp.text
 
+        # Case 5 (#149): Abandoned subscription (lease expired or unleased > 300s grace)
+        # does not pin the lag gauge even if un-acked events exist
+        past_time_2 = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=50)
+        ev2 = Event(event_id="ev-2", type="TICKET_UPDATED", created_at=past_time_2)
+        test_db.add(ev2)
+        sub1.consumer_lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=10)
+        await test_db.commit()
+
+        # Since sub1's lease is expired, it is inactive -> lag is 0.0
+        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag == 0.0
+
+        # Now add an active subscription that has ack_cursor = ev1.seq (needs to catch up to ev2)
+        sub_active = Subscription(
+            subscription_id="sub-active-live",
+            ack_cursor=ev1.seq,
+            consumer_lease_expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=60),
+        )
+        test_db.add(sub_active)
+        await test_db.commit()
+
+        # Active sub has acked ev1, but not ev2 (created 50s ago) -> lag >= 49.0
+        lag = await subscription_service.compute_event_log_lag_seconds(test_db)
+        assert lag >= 49.0
+
 
 async def test_route_ticket_missing_claim_token_does_not_increment_conflicts(test_db: AsyncSession):
     """Test #137 low-priority fix: missing claim_token in route_ticket is not counted as conflict."""

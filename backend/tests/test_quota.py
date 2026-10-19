@@ -744,5 +744,141 @@ async def test_event_retention_cross_workspace_cursor_isolation(test_db: AsyncSe
     await subscription_service.ensure_cursor_valid(test_db, cursor=1, workspace_id="ws_iso_b")
 
 
+async def test_event_retention_abandoned_subscription_does_not_block_purge(test_db: AsyncSession):
+    """Test #149: abandoned subscriptions (lease expired or created > 300s ago without lease)
+    must not pin event retention; expired events are purged and CURSOR_EXPIRED is raised on access."""
+    from datetime import UTC, datetime, timedelta
+
+    from ak5.contracts.errors import ErrorCode
+    from ak5.server.models.event import Event
+    from ak5.server.models.subscription import Subscription
+    from ak5.server.services.subscription_service import SubscriptionServiceError, subscription_service
+
+    ws = Workspace(
+        workspace_id="ws_abandoned_test",
+        name="Abandoned Test",
+        policy=json.dumps({"event_retention_days": 2}),
+    )
+    test_db.add(ws)
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    ev1 = Event(
+        event_id="ev_ab_1",
+        workspace_id="ws_abandoned_test",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    ev2 = Event(
+        event_id="ev_ab_2",
+        workspace_id="ws_abandoned_test",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    test_db.add_all([ev1, ev2])
+    await test_db.commit()
+
+    # Sub A: lease expired 1 minute ago, ack_cursor = 0
+    sub_expired_lease = Subscription(
+        subscription_id="sub_ab_lease_expired",
+        workspace_id="ws_abandoned_test",
+        ack_cursor=0,
+        consumer_id="old_daemon",
+        consumer_lease_expires_at=now - timedelta(seconds=60),
+        created_at=now - timedelta(hours=2),
+    )
+    # Sub B: created 10 minutes ago, never polled/leased, ack_cursor = 0
+    sub_never_leased = Subscription(
+        subscription_id="sub_ab_never_leased",
+        workspace_id="ws_abandoned_test",
+        ack_cursor=0,
+        consumer_lease_expires_at=None,
+        created_at=now - timedelta(minutes=10),
+    )
+    test_db.add_all([sub_expired_lease, sub_never_leased])
+    await test_db.commit()
+
+    # Purge runs: both subscriptions are abandoned (inactive), so they do NOT hold back retention.
+    del_count = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+
+    assert del_count == 2
+    assert await test_db.get(Event, ev1.seq) is None
+    assert await test_db.get(Event, ev2.seq) is None
+
+    # Abandoned subscriptions attempting to poll with old cursor get CURSOR_EXPIRED
+    with pytest.raises(SubscriptionServiceError) as exc_info:
+        await subscription_service.ensure_cursor_valid(
+            test_db, cursor=ev1.seq, workspace_id="ws_abandoned_test"
+        )
+    assert exc_info.value.code == ErrorCode.CURSOR_EXPIRED
+
+
+async def test_event_retention_active_and_abandoned_subscription_coexistence(test_db: AsyncSession):
+    """Test #149: active subscription's ack_cursor governs retention safety rule;
+    abandoned subscription's low cursor is ignored."""
+    from datetime import UTC, datetime, timedelta
+
+    from ak5.server.models.event import Event
+    from ak5.server.models.subscription import Subscription
+    from ak5.server.services.subscription_service import subscription_service
+
+    ws = Workspace(
+        workspace_id="ws_coexist_test",
+        name="Coexistence Test",
+        policy=json.dumps({"event_retention_days": 2}),
+    )
+    test_db.add(ws)
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    e1 = Event(
+        event_id="ev_co_1",
+        workspace_id="ws_coexist_test",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    e2 = Event(
+        event_id="ev_co_2",
+        workspace_id="ws_coexist_test",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    test_db.add_all([e1, e2])
+    await test_db.commit()
+
+    # Sub Abandoned: ack_cursor = 0, lease expired
+    sub_abandoned = Subscription(
+        subscription_id="sub_co_abandoned",
+        workspace_id="ws_coexist_test",
+        ack_cursor=0,
+        consumer_id="dead_worker",
+        consumer_lease_expires_at=now - timedelta(seconds=120),
+        created_at=now - timedelta(days=1),
+    )
+    # Sub Active: ack_cursor = e1.seq, lease active for next 60s
+    sub_active = Subscription(
+        subscription_id="sub_co_active",
+        workspace_id="ws_coexist_test",
+        ack_cursor=e1.seq,
+        consumer_id="live_worker",
+        consumer_lease_expires_at=now + timedelta(seconds=60),
+        created_at=now - timedelta(minutes=1),
+    )
+    test_db.add_all([sub_abandoned, sub_active])
+    await test_db.commit()
+
+    # Purge runs:
+    # Abandoned sub (ack_cursor=0) is ignored!
+    # Active sub (ack_cursor=e1.seq) protects e2 (un-acked), but allows e1 (acked) to be purged!
+    del_count = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+
+    assert del_count == 1
+    assert await test_db.get(Event, e1.seq) is None
+    assert await test_db.get(Event, e2.seq) is not None
+
+
+
 
 

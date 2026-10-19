@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ak5.contracts.errors import ErrorCode
@@ -103,6 +103,24 @@ class SubscriptionServiceError(Exception):
         self.details = details or {}
 
 
+def active_subscription_clause(now_utc: datetime, *, grace_seconds: float | None = None):
+    """SQLAlchemy condition matching active subscriptions (#149, operations.md §3, §4.3).
+
+    A subscription is active if:
+    1. It holds an active (unexpired) consumer lease, OR
+    2. It was created recently without a lease within the active grace period.
+    """
+    grace = settings.ACTIVE_SUBSCRIPTION_GRACE_SECONDS if grace_seconds is None else grace_seconds
+    grace_cutoff = now_utc - timedelta(seconds=max(0.0, float(grace)))
+    return or_(
+        Subscription.consumer_lease_expires_at > now_utc,
+        and_(
+            Subscription.consumer_lease_expires_at.is_(None),
+            Subscription.created_at >= grace_cutoff,
+        ),
+    )
+
+
 class SubscriptionService:
     def __init__(
         self,
@@ -126,20 +144,16 @@ class SubscriptionService:
         return int(result.scalar_one_or_none() or 0)
 
     async def compute_event_log_lag_seconds(self, session: AsyncSession) -> float:
-        """Lag in seconds for the oldest unacknowledged subscription (operations.md §4.3, #137).
+        """Lag in seconds for the oldest unacknowledged subscription (operations.md §4.3, #137, #149).
 
         Returns 0.0 if there are no subscriptions or all subscriptions are caught up.
         Indexed lookup: O(1) on events.seq PK without scanning the event log table.
         """
         now_utc = datetime.now(UTC).replace(tzinfo=None)
-        # Only consider active subscriptions (freshly created with None lease, or with unexpired lease)
-        # to avoid abandoned daemons pinning the lag gauge permanently (operations.md §4.3).
-        stmt = select(func.min(Subscription.ack_cursor)).where(
-            or_(
-                Subscription.consumer_lease_expires_at.is_(None),
-                Subscription.consumer_lease_expires_at > now_utc,
-            )
-        )
+        # Only consider active subscriptions (freshly created with None lease within grace,
+        # or with unexpired lease) to avoid abandoned daemons pinning the lag gauge permanently (#149).
+        active_clause = active_subscription_clause(now_utc)
+        stmt = select(func.min(Subscription.ack_cursor)).where(active_clause)
         min_ack_result = await session.execute(stmt)
         min_ack = min_ack_result.scalar_one_or_none()
         if min_ack is None:
@@ -256,19 +270,24 @@ class SubscriptionService:
             if days <= 0:
                 continue
 
-            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+            now_utc = datetime.now(UTC).replace(tzinfo=None)
+            cutoff = now_utc - timedelta(days=days)
 
-            # Safety Rule (operations.md §3):
+            # Safety Rule (operations.md §3, #149):
             # If active subscriptions exist for this workspace, only delete events
             # where seq <= min(ack_cursor). Un-acked events (seq > min(ack_cursor))
-            # are preserved even if older than the retention window.
+            # are preserved even if older than the retention window. Inactive or
+            # abandoned subscriptions do not prevent retention purge.
             sub_filter = (
                 [Subscription.workspace_id == ws_id]
                 if ws_id is not None
                 else [Subscription.workspace_id.is_(None)]
             )
+            active_clause = active_subscription_clause(now_utc)
             sub_cursors = (
-                await session.execute(select(Subscription.ack_cursor).where(*sub_filter))
+                await session.execute(
+                    select(Subscription.ack_cursor).where(*sub_filter, active_clause)
+                )
             ).scalars().all()
 
             ws_filter = (
