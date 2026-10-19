@@ -185,3 +185,26 @@ async def test_migration_0004_backfills_existing_attachments(tmp_path: Path):
     finally:
         await engine.dispose()
 
+
+@pytest.mark.asyncio
+async def test_migration_0005_blob_gc_upgrade_and_downgrade(tmp_path: Path):
+    """Test #139: 0005_blob_gc upgrade creates table and indices, and downgrade cleanly removes them."""
+    engine = _engine(tmp_path)
+    try:
+        # Upgrade to 0004_workspace_usage
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: mig.command.upgrade(mig.alembic_config(c), "0004_workspace_usage"))
+        assert "blob_gc" not in await _tables(engine)
+
+        # Upgrade to 0005_blob_gc
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: mig.command.upgrade(mig.alembic_config(c), "0005_blob_gc"))
+        assert "blob_gc" in await _tables(engine)
+
+        # Downgrade back to 0004_workspace_usage
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda c: mig.command.downgrade(mig.alembic_config(c), "0004_workspace_usage"))
+        assert "blob_gc" not in await _tables(engine)
+    finally:
+        await engine.dispose()
+
