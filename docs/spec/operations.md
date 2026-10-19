@@ -1,6 +1,6 @@
 # Hosted Operations Basics — Spec (DRAFT)
 
-> **상태: 초안 (#37).** 확정 전에는 구현을 위임하지 않는다. 결정이 필요한 항목은 §9에 권장안과 함께 모았다.
+> **상태: 결정 반영 중 (#37).** §9-8(hosted는 v2.0.0 범위)은 **확정**(2026-10-19, #98 §9-7과 동일 결정). §9-1~7(특히 RPO/RTO)은 권장안 대기 — 모두 확정되면 "확정"으로 바꾸고 구현을 위임한다.
 > 선행/관련: [deployment.md](./deployment.md) (공유 저장소·다중 인스턴스, #20 초안) · [identity.md](./identity.md) · [events.md](./events.md)
 
 ## 0. 범위와 원칙
@@ -16,7 +16,8 @@ hosted 다중 사용자 배포 전에 필요한 **운영 기본기**를 정의�
 
 | 영역 | 현재 |
 |---|---|
-| rate limit | device grant `user_code` 실패만: client key당 10분에 20회, **프로세스 메모리**(`device_grant._rate_failures`). 다른 엔드포인트에는 없음 |
+| rate limit | device grant `user_code` 실패만: client key당 10분에 20회, **프로세스 메모리**(`device_grant._rate_failures`). 다른 엔드포인트에는 없음 | 
+
 | long-poll | subscription당 consumer 1(`409 CONSUMER_CONFLICT`), 대기 상한 `LONG_POLL_MAX_WAIT`(25초). 인스턴스/사용자별 총 연결 한도는 없음 |
 | quota | `max_auto_boards`(workspace 정책)와 첨부 파일당 크기 한도만. board/ticket/첨부 총량·멤버·agent 수 한도 없음 |
 | 로그/추적 | 요청 추적 ID, 구조화 로그, 메트릭 없음 |
@@ -206,4 +207,4 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | 5 | RPO / RTO 목표 | 서비스 수준 결정 필요 (제안: RPO ≤ 5분(PITR), RTO ≤ 1시간) |
 | 6 | `/metrics` 노출 | 기본 꺼짐, 켜면 토큰 또는 내부 bind만 |
 | 7 | 요청 본문/첨부 내용 로깅 | 영구 금지(§4.4) |
-| 8 | hosted가 v2.0.0 범위인가 | deployment.md §9-7과 **동일 결정**. 범위 밖이면 §8의 1번만 2.0.0에 포함하는 것을 제안 |
+| 8 | hosted가 v2.0.0 범위인가 | ✅ **확정: 포함** (deployment.md §9-7, #36 "wave 5 포함 전체 2.0.0"과 일치). §8의 구현 순서 전체가 2.0.0 대상이며, 1번(요청 ID/로그/healthz)부터 진행 |
