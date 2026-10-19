@@ -152,6 +152,7 @@ async def resolve_auth_context(token: str, db: AsyncSession) -> AuthContext:
 
 
 async def get_auth_context(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AuthContext:
@@ -161,7 +162,11 @@ async def get_auth_context(
             detail="Authorization header missing",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return await resolve_auth_context(credentials.credentials, db)
+    ctx = await resolve_auth_context(credentials.credentials, db)
+    # Who made the request, for the access log (ids only — never the token).
+    request.state.principal_id = ctx.principal.principal_id if ctx.principal else ctx.actor.actor_id
+    request.state.workspace_id = ctx.workspace_id
+    return ctx
 
 
 async def get_auth_workspace_id(

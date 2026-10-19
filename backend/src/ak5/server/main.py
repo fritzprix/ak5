@@ -4,11 +4,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
@@ -16,7 +17,13 @@ from ak5.server.auth.oidc_config import oidc_providers_configured
 from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
 from ak5.server.auth.users import local_owner_configured
 from ak5.server.config import settings
-from ak5.server.database import AsyncSessionLocal, engine, ensure_database_schema
+from ak5.server.database import AsyncSessionLocal, engine, ensure_database_schema, get_db
+from ak5.server.observability import (
+    RequestContextMiddleware,
+    configure_logging,
+    install_audit_hook,
+    readiness_failures,
+)
 from ak5.server.routers.actors import router as actors_router
 from ak5.server.routers.auth import router as auth_router
 from ak5.server.routers.boards import router as boards_router
@@ -46,6 +53,8 @@ _AUTH_PUBLIC_PREFIXES = (
     "/device",
     "/api/v1",
     "/health",
+    "/healthz",
+    "/readyz",
     "/meta",
     "/mcp",
     "/_next",
@@ -62,6 +71,7 @@ _DOCS_PUBLIC_PREFIXES = (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
     # One source of truth before create_all/seed — covers raw `uvicorn ak5.server.app:app`
     # (Docker/harness) which never passes through `ak5 serve` / `ak5 web` CLI gates.
     # Daemon is never started here (events.md §4.5 / cli.md §4.1): use `ak5 serve --daemon`.
@@ -226,6 +236,19 @@ def create_app() -> FastAPI:
     async def health_check():
         return {"status": "ok", "project": settings.PROJECT_NAME, "version": settings.VERSION}
 
+    @application.get("/healthz", tags=["system"])
+    async def liveness():
+        """Process is up (no dependency checks) — for container/orchestrator liveness probes."""
+        return {"status": "ok"}
+
+    @application.get("/readyz", tags=["system"], response_model=None)
+    async def readiness(db: AsyncSession = Depends(get_db)):
+        """Database reachable, schema at head, blob store usable. 503 names failed checks only."""
+        failed = await readiness_failures(db)
+        if failed:
+            return JSONResponse(status_code=503, content={"status": "not_ready", "failed": failed})
+        return {"status": "ready"}
+
     @application.get("/meta", tags=["system"])
     async def meta():
         """API version negotiation (cli.md §2). No authentication required."""
@@ -275,6 +298,10 @@ def create_app() -> FastAPI:
         @application.get("/api/system/web-ui", tags=["system"], include_in_schema=False)
         async def web_ui_status():
             return {"web_ui": True, "available": web_ui_available()}
+
+    # Outermost: request id in/out + access log. Added last so it wraps every other middleware.
+    install_audit_hook()
+    application.add_middleware(RequestContextMiddleware)
 
     return application
 

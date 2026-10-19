@@ -48,6 +48,9 @@ def print_error(err: ClientError | dict[str, Any], *, json_mode: bool | None = N
         code = envelope.get("error", {}).get("code", "")
         prefix = f"[{code}] " if code else ""
         sys.stderr.write(f"Error: {prefix}{message}\n")
+        request_id = envelope.get("error", {}).get("request_id")
+        if request_id:
+            sys.stderr.write(f"  request id: {request_id}\n")
 
     raise SystemExit(exit_code)
 

@@ -94,6 +94,8 @@ export class AK5Error extends Error {
   readonly status: number;
   readonly exitCode: number;
   readonly body: unknown;
+  /** Server `X-Request-ID` of the failed call — quote it when asking for support. */
+  readonly requestId?: string;
 
   constructor(
     code: ErrorCode | string,
@@ -102,6 +104,7 @@ export class AK5Error extends Error {
       details?: Record<string, unknown>;
       status?: number;
       body?: unknown;
+      requestId?: string;
     }
   ) {
     super(message);
@@ -113,22 +116,29 @@ export class AK5Error extends Error {
       (isErrorCode(code) ? HTTP_STATUS[code] : 500);
     this.exitCode = isErrorCode(code) ? EXIT_CODE[code] : 1;
     this.body = options?.body;
+    this.requestId = options?.requestId;
   }
 
-  static fromResponse(status: number, body: unknown, statusText?: string): AK5Error {
+  static fromResponse(
+    status: number,
+    body: unknown,
+    statusText?: string,
+    requestId?: string
+  ): AK5Error {
     const parsed = parseErrorEnvelope(body);
     if (parsed) {
       return new AK5Error(parsed.code, parsed.message, {
         details: parsed.details,
         status,
         body,
+        requestId,
       });
     }
     const fallback =
       typeof body === "string" && body.length > 0
         ? body
         : statusText || `HTTP ${status}`;
-    return new AK5Error("HTTP_ERROR", fallback, { status, body });
+    return new AK5Error("HTTP_ERROR", fallback, { status, body, requestId });
   }
 }
 
