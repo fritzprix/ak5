@@ -23,6 +23,9 @@ _USES_WORKSPACE = re.compile(
 _ALLOWED = {
     ("actors", "PATCH", "/actors/{actor_id}"): "self-or-admin only; admin ids/roles are reserved",
     ("templates", "GET", "/templates/{name}"): "built-in template registry, no workspace data",
+    ("passkeys", "DELETE", "/auth/passkeys/{passkey_id}"): (
+        "passkeys belong to the user, not a workspace; the row is matched on the session user_id"
+    ),
 }
 
 
@@ -46,7 +49,7 @@ def _routes_with_path_params() -> list[tuple[str, str, str, APIRoute]]:
 
 # #84: /events/stream had no path parameter, so the path-param audit never saw it.
 # Routers whose job is to establish identity run before any workspace exists.
-_AUTH_BOOTSTRAP_MODULES = {"auth", "device_auth", "oauth", "oidc_auth", "web_auth"}
+_AUTH_BOOTSTRAP_MODULES = {"auth", "device_auth", "oauth", "oidc_auth", "passkeys", "web_auth"}
 _ALLOWED_NO_PATH = {
     ("templates", "GET", "/templates"): "built-in template registry, no workspace data",
     ("workspaces", "POST", "/workspaces/invites/accept"): "invite token selects the workspace",

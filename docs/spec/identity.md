@@ -126,7 +126,16 @@ workspace admin이 웹 UI에서 Agent를 만들고 토큰을 발급 → agent �
 | `allowed_email_domains` | `[]` | 초대 없이 가입 허용할 이메일 도메인 |
 | `max_auto_boards` | 50 | triage의 board 자동 생성 한도 |
 
-passkey 확인은 spec에 정의하되 구현은 선택 기능(후속 이슈)으로 한다.
+passkey 확인은 §6.1에 정의한다(구현: #28).
+
+### 6.1 Passkey 사용자 존재 확인 (구현: #28)
+
+- **등록**: 웹 세션(+CSRF)에서 `POST /auth/passkeys/register/options` → 브라우저 `navigator.credentials.create` → `POST /auth/passkeys/register/verify`. user당 최대 10개, `GET /auth/passkeys`로 목록, `DELETE /auth/passkeys/{id}`로 삭제. user verification(UV) 필수.
+- **확인**: `POST /auth/passkeys/assert/options` → `navigator.credentials.get` → `POST /auth/passkeys/assert/verify`(+`workspace_id`). 성공하면 **수명 60초**의 user JWT를 발급하며 `pres`(assertion 시각, epoch 초) claim을 담는다. `/auth/session/token`, device grant, refresh로 발급되는 토큰에는 `pres`가 없다.
+- **강제**: `require_user_presence_for_approval=true`이면 T15(`verdict approve` 및 `move human_review→done`)는 `pres`가 60초 이내인 토큰만 허용한다. 그 외(CLI human approve 포함)는 `USER_PRESENCE_REQUIRED`(403). principal이 없으면 fail-closed.
+- **challenge**: DB에 저장(5분 TTL, 1회용, 검증 실패 시에도 폐기) — 다중 인스턴스에서 동작(#20).
+- **RP**: `AK5_WEBAUTHN_RP_ID` / `AK5_WEBAUTHN_ORIGIN` > `AK5_PUBLIC_URL` > 요청의 Host. 서버 extra(`ak5[server]`)가 `webauthn`을 포함한다.
+- 웹 UI의 passkey 등록·확인 화면은 후속 PR.
 
 **남는 위험**: 사람이 자기 user 토큰을 agent에게 넘기는 내부자 위임은 구조로 막을 수 없다. user 토큰의 짧은 수명, `require_user_presence_for_approval`, audit의 승인자 기록으로 대응한다.
 

@@ -51,6 +51,7 @@ def issue_access_token(
     *,
     ttl: timedelta | None = None,
     scope: str = "",
+    presence_at: datetime | None = None,
 ) -> str:
     """Sign a Principal access JWT (identity.md §2 claim shape)."""
     expire = datetime.now(UTC) + (
@@ -67,6 +68,8 @@ def issue_access_token(
     }
     if principal.principal_type == "agent":
         claims["role"] = principal.workflow_role.value
+    elif presence_at is not None:
+        claims["pres"] = int(presence_at.timestamp())
     return jwt.encode(claims, get_jwt_secret(), algorithm=settings.JWT_ALGORITHM)
 
 
@@ -243,6 +246,7 @@ async def verify_access_token(token: str, db: AsyncSession) -> Principal:
             workflow_role=Role.HUMAN,
             membership_role=membership.role,
             board_scope=(),
+            presence_at=_presence_from_claims(payload),
         )
 
     agent = await db.get(Agent, principal_id)
@@ -286,3 +290,14 @@ async def get_current_principal(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return await verify_access_token(credentials.credentials, db)
+
+
+def _presence_from_claims(payload: dict[str, Any]) -> datetime | None:
+    """Parse the ``pres`` claim (epoch seconds of the last WebAuthn assertion)."""
+    raw = payload.get("pres")
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    try:
+        return datetime.fromtimestamp(raw, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None

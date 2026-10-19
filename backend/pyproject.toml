@@ -60,6 +60,7 @@ server = [
     "pyjwt>=2.9.0",
     "sse-starlette>=2.1.0",
     "python-multipart>=0.0.9",
+    "webauthn>=2.5.0",
 ]
 postgres = [
     "asyncpg>=0.29.0",
