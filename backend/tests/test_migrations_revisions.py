@@ -184,3 +184,53 @@ async def test_legacy_adoption_skips_indexes_when_column_missing_on_adopted_tabl
             assert val == "board_1"
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_adoption_supplements_missing_columns_and_indexes(tmp_path: Path):
+    """#128: adopted tables lacking baseline columns (e.g. workspace_id on boards) have columns and indexes supplemented."""
+    engine = _engine(tmp_path)
+    try:
+        async with engine.begin() as conn:
+            # Create pre-Alembic actor and board table lacking workspace_id
+            await conn.execute(
+                text(
+                    "CREATE TABLE actors (actor_id TEXT PRIMARY KEY, actor_type TEXT NOT NULL, "
+                    "name TEXT NOT NULL, role TEXT NOT NULL, capabilities TEXT NOT NULL, "
+                    "status TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+                )
+            )
+            await conn.execute(
+                text("INSERT INTO actors VALUES ('act_1', 'human', 'User', 'admin', '[]', 'idle', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+            )
+            await conn.execute(
+                text(
+                    "CREATE TABLE boards (board_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                    "created_by TEXT NOT NULL, created_at DATETIME NOT NULL)"
+                )
+            )
+            await conn.execute(
+                text("INSERT INTO boards VALUES ('b_1', 'Board 1', 'act_1', CURRENT_TIMESTAMP)")
+            )
+
+        async with engine.connect() as conn:
+            b_cols_before = await conn.run_sync(lambda c: {x["name"] for x in inspect(c).get_columns("boards")})
+            assert "workspace_id" not in b_cols_before
+            b_ixs_before = await conn.run_sync(lambda c: {x["name"] for x in inspect(c).get_indexes("boards")})
+            assert "ix_boards_workspace_id" not in b_ixs_before
+
+        revision = await mig.ensure_schema(engine, legacy_upgrade=run_legacy_schema_upgrade)
+        assert revision == mig.head_revision()
+
+        async with engine.connect() as conn:
+            b_cols_after = await conn.run_sync(lambda c: {x["name"] for x in inspect(c).get_columns("boards")})
+            assert "workspace_id" in b_cols_after
+            assert "kind" in b_cols_after
+            assert "auto_created" in b_cols_after
+            b_ixs_after = await conn.run_sync(lambda c: {x["name"] for x in inspect(c).get_indexes("boards")})
+            assert "ix_boards_workspace_id" in b_ixs_after
+            ws = (await conn.execute(text("SELECT workspace_id FROM boards WHERE board_id = 'b_1'"))).scalar_one()
+            assert ws == "ws_local"
+    finally:
+        await engine.dispose()
+

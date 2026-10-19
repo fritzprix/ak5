@@ -722,9 +722,9 @@ async def run_legacy_schema_upgrade(async_engine: AsyncEngine = engine) -> None:
     """
     from ak5.server.migrations import adopt_baseline_sync
 
+    await run_sqlite_schema_migrations(async_engine)
     async with async_engine.begin() as conn:
         await conn.run_sync(adopt_baseline_sync)
-    await run_sqlite_schema_migrations(async_engine)
 
 
 async def ensure_database_schema(async_engine: AsyncEngine = engine) -> str:
