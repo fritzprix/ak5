@@ -98,7 +98,7 @@ async def sse_event_stream(
     resume_seq = last_event_id_header if last_event_id_header is not None else last_event_id
 
     try:
-        slot = connection_limiter.acquire(current_actor.actor_id, workspace_id)
+        slot = connection_limiter.acquire(current_actor.actor_id, workspace_id, kind="sse")
     except ConnectionLimitExceeded as exc:
         return exc.response()
 
