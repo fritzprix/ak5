@@ -43,6 +43,9 @@ export default function SettingsIndexPage() {
         <Link href="/settings/agents" className="ak-btn-ghost justify-start px-3 py-2 text-sm">
           Agents & credentials
         </Link>
+        <Link href="/settings/passkeys" className="ak-btn-ghost justify-start px-3 py-2 text-sm">
+          Passkeys
+        </Link>
         <Link href="/device" className="ak-btn-ghost justify-start px-3 py-2 text-sm">
           Device approval
         </Link>
@@ -51,8 +54,12 @@ export default function SettingsIndexPage() {
       {presence ? (
         <p className="text-sm text-[var(--warning)]">
           This workspace requires user presence (passkey) for human approval
-          (T15). Passkey UI ships in a follow-up (#28); approvals stay in the
-          web UI when this policy is on.
+          (T15): approvals happen in the web UI with a passkey confirmation and
+          the CLI cannot approve. Manage them under{" "}
+          <Link href="/settings/passkeys" className="underline">
+            Passkeys
+          </Link>
+          .
         </p>
       ) : null}
     </div>

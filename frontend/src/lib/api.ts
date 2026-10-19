@@ -24,6 +24,17 @@ import {
 } from "./authToken";
 import { attachmentUrl, fetchAttachmentBlob, saveBlob } from "./attachmentDownload";
 import { fetchWithCsrf, mapOauthDeviceRequest } from "./webSession";
+import {
+  assertionToJSON,
+  describeWebAuthnError,
+  isPresenceRequiredMessage,
+  passkeysSupported,
+  registrationToJSON,
+  toCreationOptions,
+  toRequestOptions,
+  type CreationOptionsJSON,
+  type RequestOptionsJSON,
+} from "./passkey";
 
 export type { CreateTicketOptions } from "./createTicketPayload";
 export { buildCreateTicketPayload } from "./createTicketPayload";
@@ -244,7 +255,7 @@ export async function moveTicket(
   if (reason != null && reason.trim().length > 0) {
     body.reason = reason.trim();
   }
-  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/move`, {
+  const res = await apiFetchWithPresence(`${API_BASE}/tickets/${ticketId}/move`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
@@ -599,7 +610,7 @@ export async function submitVerdict(
   reason: string = "",
   options?: { claimToken?: string | null; misrouted?: boolean }
 ): Promise<Ticket> {
-  const res = await apiFetch(`${API_BASE}/tickets/${ticketId}/verdict`, {
+  const res = await apiFetchWithPresence(`${API_BASE}/tickets/${ticketId}/verdict`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -904,6 +915,145 @@ export async function revokeAgentCredential(
     `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentId)}/credentials/${encodeURIComponent(credentialId)}/revoke`,
     { method: "POST" }
   );
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Passkeys / user presence (#28, identity.md §6.1)
+// ---------------------------------------------------------------------------
+
+export interface PasskeySummary {
+  passkey_id: string;
+  label: string;
+  credential_id: string;
+  created_at: string | null;
+  last_used_at: string | null;
+}
+
+async function passkeyJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetchWithCsrf(path, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init.headers as Record<string, string>) },
+  });
+  if (!res.ok) {
+    let message = res.statusText || `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body.error === "string") message = body.error;
+    } catch {
+      // keep status text
+    }
+    throw new Error(message);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function fetchPasskeys(): Promise<PasskeySummary[]> {
+  const data = await passkeyJson<{ passkeys: PasskeySummary[] }>("/auth/passkeys");
+  return data.passkeys;
+}
+
+/** Create a passkey with the browser authenticator and register it (session + CSRF). */
+export async function registerPasskey(label: string): Promise<PasskeySummary> {
+  if (!passkeysSupported()) throw new Error("This browser does not support passkeys.");
+  const begin = await passkeyJson<{ challenge_id: string; options: CreationOptionsJSON }>(
+    "/auth/passkeys/register/options",
+    { method: "POST" }
+  );
+  let credential: Credential | null;
+  try {
+    credential = await navigator.credentials.create({
+      publicKey: toCreationOptions(begin.options),
+    });
+  } catch (err) {
+    throw new Error(describeWebAuthnError(err));
+  }
+  if (!credential) throw new Error("No passkey was created.");
+  return passkeyJson<PasskeySummary>("/auth/passkeys/register/verify", {
+    method: "POST",
+    body: JSON.stringify({
+      challenge_id: begin.challenge_id,
+      credential: registrationToJSON(credential as PublicKeyCredential),
+      label: label.trim(),
+    }),
+  });
+}
+
+export async function deletePasskey(passkeyId: string): Promise<void> {
+  await passkeyJson<{ success: boolean }>(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Ask the user for a passkey and return a short-lived (60 s) user JWT that
+ * carries the `pres` claim. Never cached: presence is per approval.
+ */
+export async function requestPresenceToken(): Promise<string> {
+  if (!passkeysSupported()) {
+    throw new Error("Approving here needs a passkey, but this browser does not support them.");
+  }
+  const workspaceId = cachedAuth?.workspaceId ?? getStoredWorkspaceId();
+  if (!workspaceId) throw new Error("No workspace selected.");
+  let begin: { challenge_id: string; options: RequestOptionsJSON };
+  try {
+    begin = await passkeyJson("/auth/passkeys/assert/options", { method: "POST" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    if (/No passkey registered/i.test(msg)) {
+      throw new Error("This workspace requires a passkey to approve. Register one in Settings → Passkeys.");
+    }
+    throw err;
+  }
+  let credential: Credential | null;
+  try {
+    credential = await navigator.credentials.get({ publicKey: toRequestOptions(begin.options) });
+  } catch (err) {
+    throw new Error(describeWebAuthnError(err));
+  }
+  if (!credential) throw new Error("No passkey was provided.");
+  const out = await passkeyJson<{ access_token: string }>("/auth/passkeys/assert/verify", {
+    method: "POST",
+    body: JSON.stringify({
+      challenge_id: begin.challenge_id,
+      credential: assertionToJSON(credential as PublicKeyCredential),
+      workspace_id: workspaceId,
+    }),
+  });
+  return out.access_token;
+}
+
+/**
+ * ``apiFetch`` that answers a 403 USER_PRESENCE_REQUIRED by asking for a passkey
+ * and replaying the request once with the presence token. ``init.body`` must be
+ * re-sendable (a string).
+ */
+async function apiFetchWithPresence(input: string, init: RequestInit = {}): Promise<Response> {
+  const res = await apiFetch(input, init);
+  if (res.status !== 403) return res;
+  let required = false;
+  try {
+    required = isPresenceRequiredMessage(await readErrorDetail(res.clone()));
+  } catch {
+    required = false;
+  }
+  if (!required) return res;
+  const token = await requestPresenceToken();
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
+
+export async function updateWorkspacePolicy(
+  workspaceId: string,
+  policy: Record<string, unknown>
+): Promise<WorkspaceSummary> {
+  const res = await apiFetch(`${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ policy }),
+  });
   if (!res.ok) throw new Error(await readErrorDetail(res));
   return res.json();
 }
