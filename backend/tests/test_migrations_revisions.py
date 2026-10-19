@@ -11,13 +11,13 @@ from ak5.server.database import run_legacy_schema_upgrade
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-FAKE_0002 = '''
-"""fake 0003: one new column on an existing table, one new table"""
+FAKE_NEXT = '''
+"""fake next revision: one new column on an existing table, one new table"""
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0003_fake"
-down_revision = "0002_auth_state"
+revision = "zz_fake_next"
+down_revision = "__REAL_HEAD__"
 branch_labels = None
 depends_on = None
 
@@ -34,15 +34,18 @@ def downgrade() -> None:
 
 
 @pytest.fixture
-def with_fake_0003(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Point the migration machinery at a copy of the package that has a 0002 revision."""
+def with_fake_next(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Point the migration machinery at a copy of the package with one more revision on top."""
     script_dir = tmp_path / "migrations_copy"
     shutil.copytree(
         Path(mig.__file__).resolve().parent,
         script_dir,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    (script_dir / "versions" / "0003_fake.py").write_text(FAKE_0002, encoding="utf-8")
+    real_head = mig.head_revision()  # chain after whatever the real head is today
+    (script_dir / "versions" / "zz_fake_next.py").write_text(
+        FAKE_NEXT.replace("__REAL_HEAD__", real_head), encoding="utf-8"
+    )
 
     real = mig.alembic_config
 
@@ -52,7 +55,7 @@ def with_fake_0003(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         return cfg
 
     monkeypatch.setattr(mig, "alembic_config", patched)
-    return "0003_fake"
+    return "zz_fake_next"
 
 
 def _engine(tmp_path: Path) -> AsyncEngine:
@@ -71,7 +74,7 @@ async def _tables(engine: AsyncEngine) -> set[str]:
 
 @pytest.mark.asyncio
 async def test_pre_alembic_database_gets_later_revisions_applied(
-    tmp_path: Path, with_fake_0003: str
+    tmp_path: Path, with_fake_next: str
 ):
     engine = _engine(tmp_path)
     try:
@@ -80,11 +83,11 @@ async def test_pre_alembic_database_gets_later_revisions_applied(
             await conn.execute(
                 text("INSERT INTO workspaces (workspace_id, name, policy) VALUES ('ws_keep', 'Keep', '{}')")
             )
-        assert mig.head_revision() == with_fake_0003
+        assert mig.head_revision() == with_fake_next
 
         revision = await mig.ensure_schema(engine, legacy_upgrade=run_legacy_schema_upgrade)
 
-        assert revision == with_fake_0003
+        assert revision == with_fake_next
         assert "note" in await _columns(engine, "workspaces")  # column change was applied
         assert "extra_things" in await _tables(engine)  # new table was created exactly once
         async with engine.connect() as conn:
@@ -95,10 +98,10 @@ async def test_pre_alembic_database_gets_later_revisions_applied(
 
 
 @pytest.mark.asyncio
-async def test_fresh_database_runs_baseline_then_later_revisions(tmp_path: Path, with_fake_0003: str):
+async def test_fresh_database_runs_baseline_then_later_revisions(tmp_path: Path, with_fake_next: str):
     engine = _engine(tmp_path)
     try:
-        assert await mig.ensure_schema(engine) == with_fake_0003
+        assert await mig.ensure_schema(engine) == with_fake_next
         assert "note" in await _columns(engine, "workspaces")
         assert "extra_things" in await _tables(engine)
     finally:

@@ -22,6 +22,9 @@ export const ErrorCode = {
 
   // cli.md §2 / §3.1
   VERSION_MISMATCH: "VERSION_MISMATCH",
+
+  // operations.md §2.4 — retryable, honour `Retry-After` (AK5Error.retryAfter)
+  RATE_LIMITED: "RATE_LIMITED",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -40,6 +43,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.CONSUMER_CONFLICT]: 409,
   [ErrorCode.SUBSCRIPTION_NOT_FOUND]: 404,
   [ErrorCode.VERSION_MISMATCH]: 409,
+  [ErrorCode.RATE_LIMITED]: 429,
 };
 
 export const EXIT_CODE: Record<ErrorCode, number> = {
@@ -54,6 +58,7 @@ export const EXIT_CODE: Record<ErrorCode, number> = {
   [ErrorCode.WIP_LIMIT]: 4,
   [ErrorCode.TICKET_BLOCKED]: 5,
   [ErrorCode.VERSION_MISMATCH]: 7,
+  [ErrorCode.RATE_LIMITED]: 3,
   [ErrorCode.CURSOR_EXPIRED]: 1,
   [ErrorCode.SUBSCRIPTION_NOT_FOUND]: 1,
 };
@@ -94,6 +99,8 @@ export class AK5Error extends Error {
   readonly status: number;
   readonly exitCode: number;
   readonly body: unknown;
+  /** Seconds to wait before retrying (`Retry-After`), when the server asked for it. */
+  readonly retryAfter?: number;
   /** Server `X-Request-ID` of the failed call — quote it when asking for support. */
   readonly requestId?: string;
 
@@ -104,6 +111,7 @@ export class AK5Error extends Error {
       details?: Record<string, unknown>;
       status?: number;
       body?: unknown;
+      retryAfter?: number;
       requestId?: string;
     }
   ) {
@@ -116,6 +124,7 @@ export class AK5Error extends Error {
       (isErrorCode(code) ? HTTP_STATUS[code] : 500);
     this.exitCode = isErrorCode(code) ? EXIT_CODE[code] : 1;
     this.body = options?.body;
+    this.retryAfter = options?.retryAfter;
     this.requestId = options?.requestId;
   }
 
@@ -123,7 +132,8 @@ export class AK5Error extends Error {
     status: number,
     body: unknown,
     statusText?: string,
-    requestId?: string
+    requestId?: string,
+    retryAfter?: number
   ): AK5Error {
     const parsed = parseErrorEnvelope(body);
     if (parsed) {
@@ -132,13 +142,14 @@ export class AK5Error extends Error {
         status,
         body,
         requestId,
+        retryAfter,
       });
     }
     const fallback =
       typeof body === "string" && body.length > 0
         ? body
         : statusText || `HTTP ${status}`;
-    return new AK5Error("HTTP_ERROR", fallback, { status, body, requestId });
+    return new AK5Error("HTTP_ERROR", fallback, { status, body, requestId, retryAfter });
   }
 }
 
@@ -153,4 +164,10 @@ export function compareSemver(a: string, b: string): number {
     if (da !== db) return da - db;
   }
   return 0;
+}
+
+/** `Retry-After` as whole seconds (delta-seconds form only); `undefined` if absent or unusable. */
+export function parseRetryAfter(value: string | null | undefined): number | undefined {
+  if (!value || !/^\d{1,6}$/.test(value.trim())) return undefined;
+  return Number.parseInt(value.trim(), 10);
 }

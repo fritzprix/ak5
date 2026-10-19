@@ -20,6 +20,7 @@ from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.models.actor import Actor
 from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
+from ak5.server.ratelimit import RateLimited, enforce_authenticated
 from ak5.server.schemas.actor import ActorIdentifyRequest, ActorOut, TokenResponse
 from ak5.server.security import (
     IDENTIFY_SECRET_HEADER,
@@ -166,6 +167,16 @@ async def get_auth_context(
     # Who made the request, for the access log (ids only — never the token).
     request.state.principal_id = ctx.principal.principal_id if ctx.principal else ctx.actor.actor_id
     request.state.workspace_id = ctx.workspace_id
+    # Per-principal / per-workspace rate limits (operations.md §2, no-op unless enabled).
+    try:
+        await enforce_authenticated(
+            db,
+            request,
+            principal_id=ctx.principal.principal_id if ctx.principal else ctx.actor.actor_id,
+            workspace_id=ctx.workspace_id,
+        )
+    except RateLimited as exc:
+        raise exc.http_exception() from exc
     return ctx
 
 

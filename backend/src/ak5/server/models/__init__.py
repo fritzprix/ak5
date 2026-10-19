@@ -10,6 +10,7 @@ from ak5.server.models.event_log_meta import EventLogMeta
 from ak5.server.models.idempotency import IdempotencyKey
 from ak5.server.models.oauth_device import OAuthDeviceCode
 from ak5.server.models.passkey import PasskeyCredential, WebauthnChallenge
+from ak5.server.models.rate_counter import RateCounter
 from ak5.server.models.subscription import Subscription
 from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
 from ak5.server.models.ticket_postmortem import TicketPostmortem
@@ -46,6 +47,7 @@ __all__ = [
     "Membership",
     "OAuthDeviceCode",
     "PasskeyCredential",
+    "RateCounter",
     "WebauthnChallenge",
     "Subscription",
     "Ticket",

@@ -413,6 +413,9 @@ agent가 **서버와 같은 OS 사용자**로 돌면 DB 파일과 서명 키를 
 | `AK5_ENABLE_MCP` | 서버 | `1`이면 `/mcp` 마운트 (`ak5[mcp]` 필요) |
 | `AK5_DEV_INSECURE_IDENTIFY` | 서버 | `1`이면 loopback에서 v1 self-identify 허용 (개발 전용) |
 | `AK5_AUTO_MIGRATE` | 서버 | `0`이면 시작 시 스키마를 자동 변경하지 않고 head인지만 확인 (서버리스 권장). `ak5 db upgrade`로 직접 적용 |
+| `AK5_PROFILE` | 서버 | `hosted`이면 요청 한도 기본값을 켠다(§7.6). 기본 `local`은 한도 없음. `hosted` + 외부 bind + `AK5_TRUSTED_PROXIES` 없음이면 시작을 거부한다 |
+| `AK5_RATE_LIMITS` | 서버 | 규칙별 분당 한도 JSON (`{"write_principal": 60, "login_ip": 0}`, `0` = 끔). `local`에서도 켤 수 있다 |
+| `AK5_TRUSTED_PROXIES` | 서버 | 앞단 리버스 프록시의 IP/CIDR. **여기 적힌 프록시가 보낸 `X-Forwarded-For`만 믿고** IP별 한도·잠금에 쓴다 (기본: 헤더 무시, 소켓 주소 사용) |
 | `AK5_LOG_FORMAT`, `AK5_LOG_LEVEL` | 서버 | `json`이면 한 줄에 JSON 하나(`ts`,`level`,`msg`,`request_id`,…). 기본 `text`는 로깅 설정을 바꾸지 않는다 |
 | `AK5_INSTANCE_ID` | 서버 | 접근 로그의 `instance_id` (기본: 호스트명-PID) |
 | `AK5_PROFILE` | CLI | 사용할 profile |
@@ -423,6 +426,25 @@ agent가 **서버와 같은 OS 사용자**로 돌면 DB 파일과 서명 키를 
 | `XDG_RUNTIME_DIR`, `AK5_DAEMON_SOCK` | CLI·daemon | daemon 소켓 위치 |
 | `AK5_AGENT=1` | CLI | agent 런타임 표시 (blocking watch 거부) |
 
+
+### 7.6 요청 한도
+
+`AK5_PROFILE=hosted`(또는 `AK5_RATE_LIMITS`)이면 분당 고정 윈도우로 요청을 센다. 카운터는 DB(`rate_counters`)에 있어 인스턴스가 여럿이어도 한도를 공유한다.
+
+| 규칙 | hosted 기본 | 대상 |
+|---|---|---|
+| `read_principal` | 300 | 인증된 읽기, principal당 |
+| `write_principal` / `write_workspace` | 120 / 600 | 인증된 쓰기, principal당 / workspace당 |
+| `upload_principal` | 20 | 첨부 업로드 |
+| `invite_principal` | 30 | 초대 생성 |
+| `login_ip` | 20 | 로그인 시작·콜백·local 로그인·upstream device 시작, IP당 |
+| `device_ip` | 20 | device grant 시작·조회·승인, IP당 |
+| `invite_ip` | 20 | 초대 수락, IP당 |
+
+- 한도를 넘으면 `429 RATE_LIMITED` + `Retry-After`. 본문에는 규칙의 범위(`principal`/`workspace`/`ip`)와 한도만 있고 다른 사람의 사용량은 없다.
+- 이벤트 스트림(`/events/stream`, `/subscriptions/{id}/events`)은 요청 수가 아니라 연결 한도로 다룬다(후속).
+- CLI는 종료 코드 3과 `retry after Ns`를 출력하고, daemon은 해당 profile의 폴링을 `Retry-After`만큼 쉰다. SDK는 `AK5Error.retryAfter`로 노출한다.
+- IP별 규칙은 `AK5_TRUSTED_PROXIES`에 적힌 프록시가 보낸 `X-Forwarded-For`만 믿는다. 설정하지 않으면 헤더를 보내서 한도를 피할 수 없다.
 ---
 
 ## 8. MCP (선택)

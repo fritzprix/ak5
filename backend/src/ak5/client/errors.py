@@ -27,6 +27,7 @@ class ClientError(Exception):
         exit_code: int = EXIT_GENERIC,
         details: dict[str, Any] | None = None,
         http_status: int | None = None,
+        retry_after: float | None = None,
         request_id: str | None = None,
     ) -> None:
         super().__init__(message)
@@ -35,6 +36,7 @@ class ClientError(Exception):
         self.exit_code = exit_code
         self.details = details or {}
         self.http_status = http_status
+        self.retry_after = retry_after  # seconds, from `Retry-After` (RATE_LIMITED)
         self.request_id = request_id
 
     def envelope(self) -> dict[str, Any]:

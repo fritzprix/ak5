@@ -1,4 +1,4 @@
-import { AK5Error, compareSemver } from "./errors";
+import { AK5Error, compareSemver, parseRetryAfter } from "./errors";
 import {
   Actor,
   ActorDiscoveryFilter,
@@ -138,7 +138,8 @@ export class AK5Client {
       res.status,
       body,
       res.statusText,
-      res.headers.get("x-request-id") ?? undefined
+      res.headers.get("x-request-id") ?? undefined,
+      parseRetryAfter(res.headers.get("retry-after"))
     );
   }
 
