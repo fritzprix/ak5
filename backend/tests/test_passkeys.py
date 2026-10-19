@@ -336,3 +336,49 @@ async def test_presence_claim_round_trips_through_verify(test_db: AsyncSession):
 
 def test_base64url_helpers_available():
     assert base64url_to_bytes(bytes_to_base64url(b"ak5")) == b"ak5"
+
+
+@pytest.mark.asyncio
+async def test_move_human_review_to_done_requires_presence(
+    client: AsyncClient, web, test_db: AsyncSession
+):
+    """§6.1: `move human_review→done` delegates to T15, so it is gated as well."""
+    from ak5.server.models.column import Column
+    from ak5.server.models.ticket import Ticket
+    from helpers_workflow import board_ticket
+    from sqlalchemy.orm import selectinload
+
+    await _set_policy(test_db, True)
+    auth = VirtualAuthenticator()
+    await _register(client, web, auth)
+
+    async def _ticket_in_human_review(title: str) -> str:
+        created = await client.post("/api/v1/tickets", json=board_ticket(title))
+        assert created.status_code == 201, created.text
+        tid = created.json()["ticket_id"]
+        ticket = (
+            await test_db.execute(
+                select(Ticket).where(Ticket.ticket_id == tid).options(selectinload(Ticket.column))
+            )
+        ).scalar_one()
+        hr = await test_db.get(Column, "col_human_review")
+        ticket.column_id = hr.column_id
+        ticket.column = hr
+        await test_db.commit()
+        return tid
+
+    tid = await _ticket_in_human_review("Needs presence")
+    blocked = await client.patch(f"/api/v1/tickets/{tid}/move", json={"target_column_id": "col_done"})
+    assert blocked.status_code == 403, blocked.text
+    assert ErrorCode.USER_PRESENCE_REQUIRED.value in blocked.text
+
+    # a fresh passkey assertion (presence JWT) is accepted
+    result = await _assert(client, web, auth)
+    assert result["status"] == 200, result
+    ok = await client.patch(
+        f"/api/v1/tickets/{tid}/move",
+        json={"target_column_id": "col_done"},
+        headers={"Authorization": f"Bearer {result['json']['access_token']}"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["column_id"] == "col_done"

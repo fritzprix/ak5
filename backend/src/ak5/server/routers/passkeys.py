@@ -36,8 +36,6 @@ class RegisterVerifyRequest(BaseModel):
     label: str = Field(default="", max_length=128)
 
 
-
-
 class AssertVerifyRequest(BaseModel):
     challenge_id: str = Field(..., min_length=1, max_length=128)
     credential: dict[str, Any]
