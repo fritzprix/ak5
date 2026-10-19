@@ -135,10 +135,37 @@ def log_format() -> str:
     return (os.environ.get("AK5_LOG_FORMAT") or "text").strip().lower()
 
 
+class UvicornAccessFilter(logging.Filter):
+    """uvicorn's own access line carries the full request target, query string included.
+
+    That is where an OIDC callback's ``?code=…&state=…`` would land (operations.md §4.4), and
+    ``uvicorn.access`` has its own handler, so the handler-level ``ScrubFilter`` never sees it.
+    Keep the line, drop the query string, mask token-shaped strings.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            target = scrub(args[2].split("?", 1)[0])
+            record.args = (*args[:2], target, *args[3:])
+        return True
+
+
+def _secure_uvicorn_access_log(fmt: str) -> None:
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, UvicornAccessFilter) for f in access.filters):
+        access.addFilter(UvicornAccessFilter())
+    if fmt == "json":
+        # ``ak5.access`` is the structured replacement; uvicorn's would be a plain-text duplicate.
+        access.setLevel(logging.WARNING)
+
+
 def configure_logging() -> None:
-    """Idempotent. ``text`` (default) with no ``AK5_LOG_LEVEL`` changes nothing."""
+    """Idempotent. ``text`` (default) with no ``AK5_LOG_LEVEL`` leaves the logging setup as it was
+    (apart from keeping query strings out of uvicorn's access line)."""
     fmt = log_format()
     level_name = (os.environ.get("AK5_LOG_LEVEL") or "").strip().upper()
+    _secure_uvicorn_access_log(fmt)
     root = logging.getLogger()
     for handler in list(root.handlers):
         if getattr(handler, "_ak5_handler", False):

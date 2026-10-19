@@ -85,6 +85,15 @@ async def lifespan(app: FastAPI):
 
     # Alembic: new DB → baseline + upgrade head; pre-Alembic SQLite → legacy fixes + stamp.
     await ensure_database_schema()
+    # Create the attachments root here, once — /readyz only checks it (no side effects on a probe).
+    try:
+        from ak5.server.blob import get_blob_store
+
+        prepare = getattr(get_blob_store(), "prepare", None)
+        if prepare is not None:
+            await prepare()
+    except Exception:
+        logger.exception("Could not prepare the blob store; /readyz will report it")
     # Seed initial entities (never deletes existing boards/tickets)
     await seed_initial_data()
     # Keep a rolling backup whenever the live DB has real ticket data.

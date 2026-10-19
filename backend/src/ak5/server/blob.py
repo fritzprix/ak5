@@ -105,11 +105,16 @@ class FsBlobStore:
     async def exists(self, key: str) -> bool:
         return self.local_path(key) is not None
 
+    async def prepare(self) -> None:
+        """Create the root. Done once at startup (lifespan), never from a public probe."""
+        await asyncio.to_thread(self.root.mkdir, parents=True, exist_ok=True)
+
     async def check_ready(self) -> None:
-        """Readiness (/readyz): the attachments root exists (or can be created) and is writable."""
+        """Readiness (/readyz): the root exists and is writable. Read-only: it creates nothing."""
 
         def _check() -> None:
-            self.root.mkdir(parents=True, exist_ok=True)
+            if not self.root.is_dir():
+                raise BlobError(f"attachments root does not exist: {self.root}")
             if not os.access(self.root, os.W_OK):
                 raise BlobError(f"attachments root is not writable: {self.root}")
 
