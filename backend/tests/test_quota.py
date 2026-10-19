@@ -488,5 +488,116 @@ def test_db_maintenance_cli_reconcile_usage(test_db: AsyncSession, monkeypatch: 
     assert "Reconciled attachment bytes usage for" in res.output
 
 
+async def test_event_retention_days_policy_purge(test_db: AsyncSession):
+    """Test #138: workspace event_retention_days policy purges expired events while 0=unlimited."""
+    from datetime import UTC, datetime, timedelta
+    from ak5.server.models.event import Event
+    from ak5.server.services.subscription_service import subscription_service
+
+    # Workspace 1: 3 days retention
+    ws1 = Workspace(workspace_id="ws_ret_3", name="Ret 3", policy=json.dumps({"event_retention_days": 3}))
+    # Workspace 2: 0 = unlimited retention
+    ws2 = Workspace(workspace_id="ws_unlim", name="Unlimited", policy=json.dumps({"event_retention_days": 0}))
+    test_db.add_all([ws1, ws2])
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    # ws1 expired event (5 days old)
+    e1_old = Event(
+        event_id="ev_ws1_old",
+        workspace_id="ws_ret_3",
+        type="TEST_EVENT",
+        created_at=now - timedelta(days=5),
+    )
+    # ws1 fresh event (1 day old)
+    e1_fresh = Event(
+        event_id="ev_ws1_fresh",
+        workspace_id="ws_ret_3",
+        type="TEST_EVENT",
+        created_at=now - timedelta(days=1),
+    )
+    # ws2 old event (10 days old, but unlimited retention)
+    e2_old = Event(
+        event_id="ev_ws2_old",
+        workspace_id="ws_unlim",
+        type="TEST_EVENT",
+        created_at=now - timedelta(days=10),
+    )
+    test_db.add_all([e1_old, e1_fresh, e2_old])
+    await test_db.commit()
+
+    deleted = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+
+    assert deleted == 1
+    assert await test_db.get(Event, e1_old.seq) is None
+    assert await test_db.get(Event, e1_fresh.seq) is not None
+    assert await test_db.get(Event, e2_old.seq) is not None
+
+
+async def test_event_retention_unexpired_preserved_and_expired_purged(test_db: AsyncSession):
+    """Test #138: unexpired events are preserved and expired events are purged per workspace policy."""
+    from datetime import UTC, datetime, timedelta
+    from ak5.server.models.event import Event
+    from ak5.server.models.subscription import Subscription
+    from ak5.server.services.subscription_service import SubscriptionServiceError, subscription_service
+
+    ws = Workspace(workspace_id="ws_sub_guard", name="Sub Guard", policy=json.dumps({"event_retention_days": 2}))
+    test_db.add(ws)
+    await test_db.commit()
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    # Event 0 & 1 are 5 days old (older than 2 days retention -> expired)
+    ev0 = Event(
+        event_id="ev_guarded_0",
+        workspace_id="ws_sub_guard",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    ev1 = Event(
+        event_id="ev_guarded_1",
+        workspace_id="ws_sub_guard",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=5),
+    )
+    # Event 2 is 1 day old (within 2 days retention -> unexpired / preserved)
+    ev2 = Event(
+        event_id="ev_guarded_2",
+        workspace_id="ws_sub_guard",
+        type="WORK_AVAILABLE",
+        created_at=now - timedelta(days=1),
+    )
+    test_db.add_all([ev0, ev1, ev2])
+    await test_db.commit()
+
+    deleted = await subscription_service.purge_expired_events(test_db, force=True)
+    await test_db.commit()
+    assert deleted == 2
+    # ev0, ev1 are purged, ev2 is preserved
+    assert await test_db.get(Event, ev0.seq) is None
+    assert await test_db.get(Event, ev1.seq) is None
+    assert await test_db.get(Event, ev2.seq) is not None
+
+    # Stale cursor pointing below purged_through raises CURSOR_EXPIRED
+    with pytest.raises(SubscriptionServiceError) as ei:
+        await subscription_service.ensure_cursor_valid(test_db, cursor=ev0.seq, workspace_id="ws_sub_guard")
+    assert ei.value.code == ErrorCode.CURSOR_EXPIRED
+
+
+def test_db_maintenance_cli_purges_events(test_db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
+    """Test #138: ak5 db maintenance runs routine storage and event-log maintenance."""
+    from click.testing import CliRunner
+    from ak5.cli.commands.db import maintenance_cmd
+    from conftest import TestAsyncSessionLocal
+
+    import ak5.cli.commands.db as db_mod
+    monkeypatch.setattr(db_mod, "AsyncSessionLocal", TestAsyncSessionLocal, raising=False)
+
+    runner = CliRunner()
+    res = runner.invoke(maintenance_cmd, ["--clean-parts-older-than", "3600"])
+    assert res.exit_code == 0, res.output
+    assert "Cleaned" in res.output
+    assert "Purged" in res.output
+
 
 

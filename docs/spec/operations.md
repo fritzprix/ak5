@@ -95,6 +95,10 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 - 동시성 모델: 첨부 파일 용량 카운터는 DB 수준 원자적 upsert(`on_conflict_do_update` + dialect별 `GREATEST`/`MAX`)로 추적된다. 개수 기반 한도(board, open ticket, member, agent)는 workspace 격리 하의 check-then-create(동시성 최선 노력, 별도 비관적 락 미사용)로 동작한다.
 - quota 값 변경은 **owner/admin**만(identity.md §5 정책 변경과 동일). 플랫폼 운영자가 올리는 hosted 상한은 서버 설정(`AK5_QUOTA_CEILING`)으로 별도 제한한다.
 - 사용량 조회: `GET /workspaces/{id}/usage` → 각 quota의 `{limit, current}`. Web UI 설정 화면에 표시한다.
+- **이벤트 보존 정책 (`event_retention_days`) 상세**:
+  - `workspaces.policy.event_retention_days`: 워크스페이스별 이벤트 보존 기간(일 단위, 0..30). `0`/미설정은 무제한(local 기본, hosted 기본 7).
+  - 보존 기간 경과 이벤트는 `ak5 db maintenance` 실행 시 또는 주기적 lazy purge를 통해 삭제된다.
+  - **미-ack 구독 보호 (Safety Rule)**: 해당 워크스페이스에 활성 subscription이 존재하는 경우, 모든 subscription이 ack 완료한 커서(`seq <= min(ack_cursor)`) 이전의 이벤트만 삭제된다. 아직 ack되지 않은 이벤트(`seq > min(ack_cursor)`)는 보존 기간이 경과했더라도 구독자가 안전하게 처리할 때까지 보존된다.
 
 ## 4. 관측성
 

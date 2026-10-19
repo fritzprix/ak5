@@ -166,9 +166,17 @@ class SubscriptionService:
     async def _ensure_meta_table(self, session: AsyncSession) -> None:
         await session.execute(text(_META_TABLE_DDL))
 
-    async def get_purged_through_seq(self, session: AsyncSession) -> int:
-        """Highest seq known to have been removed by retention purge."""
+    async def get_purged_through_seq(self, session: AsyncSession, *, workspace_id: str | None = None) -> int:
+        """Highest seq known to have been removed by retention purge (globally or for workspace)."""
         await self._ensure_meta_table(session)
+        if workspace_id:
+            res = await session.execute(
+                text("SELECT value FROM event_log_meta WHERE key = :k"),
+                {"k": f"purged_through_seq:{workspace_id}"},
+            )
+            val = res.scalar_one_or_none()
+            if val is not None:
+                return int(val)
         result = await session.execute(
             text("SELECT value FROM event_log_meta WHERE key = :k"),
             {"k": _PURGED_THROUGH_KEY},
@@ -176,62 +184,105 @@ class SubscriptionService:
         raw = result.scalar_one_or_none()
         return int(raw or 0)
 
-    async def _set_purged_through_seq(self, session: AsyncSession, through: int) -> None:
+    async def _set_purged_through_seq(self, session: AsyncSession, through: int, *, workspace_id: str | None = None) -> None:
         if through <= 0:
             return
         await self._ensure_meta_table(session)
-        current = await self.get_purged_through_seq(session)
+        key = f"purged_through_seq:{workspace_id}" if workspace_id else _PURGED_THROUGH_KEY
+        current = await self.get_purged_through_seq(session, workspace_id=workspace_id)
         if through <= current:
             return
         # Upsert without dialect-specific ON CONFLICT for broader backend support.
         existing = (
             await session.execute(
                 text("SELECT 1 FROM event_log_meta WHERE key = :k"),
-                {"k": _PURGED_THROUGH_KEY},
+                {"k": key},
             )
         ).scalar_one_or_none()
         if existing:
             await session.execute(
                 text("UPDATE event_log_meta SET value = :v WHERE key = :k"),
-                {"k": _PURGED_THROUGH_KEY, "v": through},
+                {"k": key, "v": through},
             )
         else:
             await session.execute(
                 text("INSERT INTO event_log_meta (key, value) VALUES (:k, :v)"),
-                {"k": _PURGED_THROUGH_KEY, "v": through},
+                {"k": key, "v": through},
             )
+        if workspace_id:
+            global_cur = await self.get_purged_through_seq(session)
+            if through > global_cur:
+                await self._set_purged_through_seq(session, through)
 
-    async def purge_expired_events(self, session: AsyncSession) -> int:
-        """Lazy purge of events older than ``EVENT_RETENTION_DAYS``. Returns deleted count.
+    async def purge_expired_events(self, session: AsyncSession, *, force: bool = False) -> int:
+        """Lazy purge of events according to workspace retention policies (operations.md §3, #138).
 
-        Throttled per-process to avoid SQLite write-lock contention under many daemons.
+        * Workspace event_retention_days policy: 0 = unlimited.
+        * Unacknowledged events for active subscriptions are protected (seq <= min_ack_cursor only).
+        * Throttled per-process unless force=True.
         """
         global _last_purge_mono
-        days = settings.EVENT_RETENTION_DAYS
-        if days <= 0:
-            return 0
-
         interval = max(0.0, float(settings.EVENT_PURGE_MIN_INTERVAL_SECONDS))
         now_mono = time.monotonic()
-        if interval > 0 and (now_mono - _last_purge_mono) < interval:
+        if not force and interval > 0 and (now_mono - _last_purge_mono) < interval:
             return 0
 
-        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
-        max_purged = (
-            await session.execute(
-                select(func.max(Event.seq)).where(Event.created_at < cutoff)
-            )
-        ).scalar_one_or_none()
+        from ak5.server.models.workspace import Workspace
+        from ak5.server.quota import HOSTED_QUOTA_DEFAULTS, hosted_profile
 
-        result = await session.execute(delete(Event).where(Event.created_at < cutoff))
-        deleted = int(result.rowcount or 0)
-        if deleted and max_purged is not None:
-            await self._set_purged_through_seq(session, int(max_purged))
+        workspaces = (await session.execute(select(Workspace))).scalars().all()
+        ws_map = {w.workspace_id: w for w in workspaces}
+
+        distinct_ws = (await session.execute(select(Event.workspace_id).distinct())).scalars().all()
+        is_hosted = hosted_profile()
+        default_days = HOSTED_QUOTA_DEFAULTS.get("event_retention_days", 7) if is_hosted else settings.EVENT_RETENTION_DAYS
+
+        total_deleted = 0
+        overall_max_purged: int | None = None
+
+        for ws_id in distinct_ws:
+            ws = ws_map.get(ws_id)
+            days = default_days
+            if ws:
+                try:
+                    p = json.loads(ws.policy) if isinstance(ws.policy, str) else ws.policy
+                    if isinstance(p, dict) and "event_retention_days" in p:
+                        days = int(p["event_retention_days"])
+                except Exception:
+                    pass
+
+            if days <= 0:
+                continue
+
+            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+
+            stmt = select(func.max(Event.seq)).where(
+                Event.workspace_id == ws_id,
+                Event.created_at < cutoff,
+            )
+            del_stmt = delete(Event).where(
+                Event.workspace_id == ws_id,
+                Event.created_at < cutoff,
+            )
+            max_purged = (await session.execute(stmt)).scalar_one_or_none()
+            if max_purged is not None:
+                del_res = await session.execute(del_stmt)
+                del_count = int(del_res.rowcount or 0)
+                if del_count > 0:
+                    total_deleted += del_count
+                    await self._set_purged_through_seq(session, int(max_purged), workspace_id=ws_id)
+                    if overall_max_purged is None or max_purged > overall_max_purged:
+                        overall_max_purged = int(max_purged)
+
+        if overall_max_purged is not None:
+            await self._set_purged_through_seq(session, overall_max_purged)
 
         _last_purge_mono = now_mono
-        return deleted
+        return total_deleted
 
-    async def ensure_cursor_valid(self, session: AsyncSession, cursor: int) -> None:
+    async def ensure_cursor_valid(
+        self, session: AsyncSession, cursor: int, *, workspace_id: str | None = None
+    ) -> None:
         """Raise ``CURSOR_EXPIRED`` when ``cursor`` falls into a purged range.
 
         Uses persisted ``purged_through_seq`` so Postgres sequence holes are not
@@ -239,7 +290,7 @@ class SubscriptionService:
         """
         if cursor <= 0:
             return
-        purged_through = await self.get_purged_through_seq(session)
+        purged_through = await self.get_purged_through_seq(session, workspace_id=workspace_id)
         if cursor < purged_through:
             raise SubscriptionServiceError(
                 ErrorCode.CURSOR_EXPIRED,
@@ -494,7 +545,7 @@ class SubscriptionService:
             await self.acquire_consumer_lease(session, db_sub, consumer_id)
 
             effective_cursor = db_sub.ack_cursor if cursor is None else cursor
-            await self.ensure_cursor_valid(session, effective_cursor)
+            await self.ensure_cursor_valid(session, effective_cursor, workspace_id=db_sub.workspace_id)
 
             # Drain filter-mismatch batches immediately so a wall of non-matching
             # events cannot pin next_cursor forever within a single request.
@@ -558,7 +609,7 @@ class SubscriptionService:
         limit = max(1, min(int(limit), 100))
         since = max(0, int(since))
         await self.purge_expired_events(session)
-        await self.ensure_cursor_valid(session, since)
+        await self.ensure_cursor_valid(session, since, workspace_id=workspace_id)
         rows, next_cursor = await self.fetch_events_since(
             session,
             cursor=since,
