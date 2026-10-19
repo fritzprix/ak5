@@ -158,3 +158,29 @@ async def test_legacy_adoption_supplements_missing_baseline_indexes(tmp_path: Pa
             assert name == "Keep"
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_adoption_skips_indexes_when_column_missing_on_adopted_table(tmp_path: Path):
+    """#120 review: if an adopted legacy table lacks an indexed column, index creation is skipped without error."""
+    engine = _engine(tmp_path)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("CREATE TABLE subscriptions (sub_id INTEGER PRIMARY KEY, board_id TEXT NOT NULL)")
+            )
+            await conn.execute(
+                text("INSERT INTO subscriptions (sub_id, board_id) VALUES (1, 'board_1')")
+            )
+
+        async with engine.begin() as conn:
+            await conn.run_sync(mig.adopt_baseline_sync)
+
+        async with engine.connect() as conn:
+            indexes = await conn.run_sync(lambda c: {ix["name"] for ix in inspect(c).get_indexes("subscriptions")})
+            assert "ix_subscriptions_board_id" in indexes
+            assert "ix_subscriptions_workspace_id" not in indexes
+            val = (await conn.execute(text("SELECT board_id FROM subscriptions WHERE sub_id = 1"))).scalar_one()
+            assert val == "board_1"
+    finally:
+        await engine.dispose()
