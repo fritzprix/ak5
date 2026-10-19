@@ -56,6 +56,10 @@ def apply_postgres_rls(connection: Connection) -> None:
                     f"USING ("
                     f"  current_setting('ak5.bypass_rls', true) = 'on' "
                     f"  OR workspace_id = current_setting('ak5.workspace_id', true)"
+                    f") "
+                    f"WITH CHECK ("
+                    f"  current_setting('ak5.bypass_rls', true) = 'on' "
+                    f"  OR workspace_id = current_setting('ak5.workspace_id', true)"
                     f")"
                 )
             )

@@ -83,11 +83,51 @@ async def test_live_postgres_rls_cross_workspace_blocking():
     from ak5.server.models.actor import Actor
     from ak5.server.models.board import Board
     from ak5.server.models.workspace import Workspace
-    from sqlalchemy import select
+    from ak5.server.rls import set_bypass_rls_context, set_workspace_rls_context
+    from sqlalchemy import select, text
 
     engine = create_async_engine(pg_url, future=True)
     # Ensure all tables and RLS policies are applied
     await mig.ensure_schema(engine)
+
+    # In PostgreSQL, superusers and roles with BYPASSRLS bypass row-level security policies.
+    # In production (Neon, AWS RDS, Supabase), application sessions run under standard
+    # non-superuser roles where RLS is strictly enforced (deployment.md §1.5).
+    # If the test connection user has BYPASSRLS / rolsuper (such as in CI or local docker),
+    # create and switch to a non-superuser tenant role for RLS verification.
+    async with engine.begin() as conn:
+        has_bypass = bool(
+            (
+                await conn.execute(
+                    text(
+                        "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = CURRENT_USER"
+                    )
+                )
+            ).scalar()
+        )
+        if has_bypass:
+            await conn.execute(
+                text("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ak5_test_tenant') THEN
+                            CREATE ROLE ak5_test_tenant NOSUPERUSER NOBYPASSRLS;
+                        END IF;
+                        GRANT ALL PRIVILEGES ON SCHEMA public TO ak5_test_tenant;
+                        GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ak5_test_tenant;
+                        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ak5_test_tenant;
+                        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ak5_test_tenant;
+                    END $$;
+                """)
+            )
+
+    async def _scope(session: AsyncSession, ws_id: str | None = None, *, bypass: bool = False) -> None:
+        if has_bypass:
+            await session.execute(text("SET LOCAL ROLE ak5_test_tenant"))
+        if bypass:
+            await set_bypass_rls_context(session, True)
+        elif ws_id:
+            await set_workspace_rls_context(session, ws_id)
 
     maker = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -99,9 +139,7 @@ async def test_live_postgres_rls_cross_workspace_blocking():
 
     # Setup: Create workspaces, actor, and boards (using bypass context for cross-workspace seed)
     async with maker() as session:
-        from ak5.server.rls import set_bypass_rls_context
-
-        await set_bypass_rls_context(session, True)
+        await _scope(session, bypass=True)
         if await session.get(Actor, "user_pm") is None:
             session.add(
                 Actor(
@@ -139,7 +177,7 @@ async def test_live_postgres_rls_cross_workspace_blocking():
     # 1. Transaction scoped to ws_alpha:
     # Query without where clause (simulating bug where app omits workspace filter)
     async with maker() as session:
-        await set_workspace_rls_context(session, ws_alpha)
+        await _scope(session, ws_alpha)
 
         # Unfiltered query
         boards = (await session.execute(select(Board))).scalars().all()
@@ -156,7 +194,7 @@ async def test_live_postgres_rls_cross_workspace_blocking():
 
     # 2. Transaction scoped to ws_beta:
     async with maker() as session:
-        await set_workspace_rls_context(session, ws_beta)
+        await _scope(session, ws_beta)
 
         boards = (await session.execute(select(Board))).scalars().all()
         board_ids = {b.board_id for b in boards}
@@ -166,7 +204,7 @@ async def test_live_postgres_rls_cross_workspace_blocking():
 
     # 3. Write violation: attempting to insert row with workspace_id != current ak5.workspace_id
     async with maker() as session:
-        await set_workspace_rls_context(session, ws_alpha)
+        await _scope(session, ws_alpha)
         session.add(
             Board(
                 board_id=f"b_leak_{run_id}",
@@ -185,7 +223,7 @@ async def test_live_postgres_rls_cross_workspace_blocking():
 
     # 4. Admin / maintenance bypass: when ak5.bypass_rls is on, both boards are visible
     async with maker() as session:
-        await set_bypass_rls_context(session, True)
+        await _scope(session, bypass=True)
         all_boards = (await session.execute(select(Board))).scalars().all()
         all_ids = {b.board_id for b in all_boards}
         assert board_alpha_id in all_ids and board_beta_id in all_ids
