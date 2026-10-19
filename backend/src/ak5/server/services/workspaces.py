@@ -35,6 +35,12 @@ DEFAULT_POLICY: dict[str, Any] = {
     "allowed_idp_issuers": [],
     "allowed_email_domains": [],
     "max_auto_boards": 50,
+    "max_boards": 0,
+    "max_open_tickets": 0,
+    "max_attachment_bytes_total": 0,
+    "max_members": 0,
+    "max_agents": 0,
+    "event_retention_days": 0,
 }
 
 _ADMIN_ROLES = frozenset({"owner", "admin"})
@@ -43,9 +49,10 @@ _INVITE_ROLES = frozenset({"admin", "member"})
 
 
 class WorkspaceServiceError(Exception):
-    def __init__(self, code: ErrorCode, message: str) -> None:
+    def __init__(self, code: ErrorCode, message: str, details: dict[str, Any] | None = None) -> None:
         self.code = code
         self.message = message
+        self.details = details or {}
         super().__init__(message)
 
 
@@ -233,6 +240,19 @@ async def update_workspace(
     if name is not None and name.strip():
         workspace.name = name.strip()
     if policy_patch is not None:
+        from ak5.server.quota import QuotaExceeded, validate_quota_policy_patch
+
+        try:
+            validate_quota_policy_patch(policy_patch)
+        except QuotaExceeded as exc:
+            raise WorkspaceServiceError(
+                ErrorCode.QUOTA_EXCEEDED,
+                f"Workspace quota '{exc.quota}' exceeds server ceiling {exc.limit}",
+                details={"quota": exc.quota, "limit": exc.limit, "current": exc.current},
+            ) from exc
+        except ValueError as exc:
+            raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, str(exc)) from exc
+
         workspace.policy = merge_policy(workspace.policy, policy_patch)
         after_policy = parse_policy(workspace.policy)
         user = await db.get(User, actor_user_id)
@@ -370,6 +390,20 @@ async def create_invite(
     normalized = email.strip().lower()
     if not normalized or "@" not in normalized:
         raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Valid email required")
+
+    ws = await db.get(Workspace, workspace_id)
+    if ws is not None:
+        from ak5.server.quota import QuotaExceeded, check_member_quota
+
+        try:
+            await check_member_quota(db, ws)
+        except QuotaExceeded as exc:
+            raise WorkspaceServiceError(
+                ErrorCode.QUOTA_EXCEEDED,
+                f"Workspace quota '{exc.quota}' exceeded",
+                details={"quota": exc.quota, "limit": exc.limit, "current": exc.current},
+            ) from exc
+
     # Revoke prior pending invites for same email.
     pending = (
         await db.execute(
@@ -448,6 +482,19 @@ async def accept_invite(
         invite.accepted_at = _now()
         await db.flush()
         return existing
+
+    ws = await db.get(Workspace, invite.workspace_id)
+    if ws is not None:
+        from ak5.server.quota import QuotaExceeded, check_member_quota
+
+        try:
+            await check_member_quota(db, ws)
+        except QuotaExceeded as exc:
+            raise WorkspaceServiceError(
+                ErrorCode.QUOTA_EXCEEDED,
+                f"Workspace quota '{exc.quota}' exceeded",
+                details={"quota": exc.quota, "limit": exc.limit, "current": exc.current},
+            ) from exc
 
     await ensure_user_actor(db, user)
     membership = Membership(

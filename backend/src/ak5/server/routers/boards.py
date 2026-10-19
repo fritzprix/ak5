@@ -16,6 +16,7 @@ from ak5.server.models.board import Board
 from ak5.server.models.board_member import BoardMember
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket
+from ak5.server.models.workspace import Workspace
 from ak5.server.routers.actors import _to_actor_out
 from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.actor import ActorOut
@@ -358,6 +359,15 @@ async def create_board(
     existing = await db.get(Board, board_id)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Board '{board_id}' already exists")
+
+    ws = await db.get(Workspace, workspace_id)
+    if ws is not None:
+        from ak5.server.quota import QuotaExceeded, check_board_quota
+
+        try:
+            await check_board_quota(db, ws)
+        except QuotaExceeded as exc:
+            return exc.response()
 
     # Validate owners before mutating
     owner_ids = list(dict.fromkeys(req.owner_actor_ids))  # preserve order, dedupe

@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import urllib.parse
@@ -25,6 +26,8 @@ from ak5.server.models.actor import Actor
 from ak5.server.models.audit import AuditLog
 from ak5.server.models.column import Column
 from ak5.server.models.ticket import Ticket, TicketAttachment, TicketComment
+from ak5.server.models.workspace import Workspace
+from ak5.server.quota import QuotaExceeded
 from ak5.server.routers.auth import (
     get_auth_workspace_id,
     get_current_actor,
@@ -246,6 +249,12 @@ async def create_ticket(
                 ErrorCode.PAYLOAD_INVALID,
                 "assignee is derived from claim; do not set assigned_to on create",
             )
+        ws = await db.get(Workspace, workspace_id)
+        if ws is not None:
+            from ak5.server.quota import check_ticket_quota
+
+            await check_ticket_quota(db, ws)
+
         if req.board_id is None:
             original = req.original_request or req.description or req.title
             ticket = await wf.create_inbox(
@@ -305,6 +314,9 @@ async def create_ticket(
     except WorkflowError as exc:
         await db.rollback()
         return _workflow_error_response(exc)
+    except QuotaExceeded as exc:
+        await db.rollback()
+        return exc.response()
 
     if from_cache:
         return TicketOut.model_validate(out)
@@ -942,6 +954,18 @@ async def upload_attachment(
             detail=f"Failed to save uploaded file: {exc}",
         ) from exc
 
+    ws = await db.get(Workspace, ticket.workspace_id)
+    if ws is not None:
+        from ak5.server.quota import QuotaExceeded, check_attachment_quota, record_attachment_bytes
+
+        try:
+            await check_attachment_quota(db, ws, total_size)
+        except QuotaExceeded as exc:
+            with contextlib.suppress(Exception):
+                await get_blob_store().delete(blob_key)
+            return exc.response()
+        await record_attachment_bytes(db, ticket.workspace_id, total_size)
+
     attachment = TicketAttachment(
         attachment_id=attachment_id,
         workspace_id=ticket.workspace_id,
@@ -1089,7 +1113,13 @@ async def delete_attachment(
     board_id = ticket.board_id if ticket else None
 
     filename = attachment.filename
+    file_size = attachment.file_size or 0
     await db.delete(attachment)
+    if ticket and file_size > 0:
+        from ak5.server.quota import record_attachment_bytes
+
+        await record_attachment_bytes(db, ticket.workspace_id, -file_size)
+
     audit = AuditLog(
             workspace_id=ticket.workspace_id,
         actor_id=current_actor.actor_id,

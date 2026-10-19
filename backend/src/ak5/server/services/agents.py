@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ak5.contracts.errors import ErrorCode
 from ak5.contracts.stages import Role
 from ak5.server.models.actor import Actor
-from ak5.server.models.workspace import Agent, AgentCredential
+from ak5.server.models.workspace import Agent, AgentCredential, Workspace
 from ak5.server.services.workspaces import WorkspaceServiceError
 
 _AGENT_ROLES = frozenset(
@@ -83,6 +83,19 @@ async def create_agent_with_credential(
     clean_name = name.strip()
     if not clean_name:
         raise WorkspaceServiceError(ErrorCode.PAYLOAD_INVALID, "Agent name required")
+
+    ws = await db.get(Workspace, workspace_id)
+    if ws is not None:
+        from ak5.server.quota import QuotaExceeded, check_agent_quota
+
+        try:
+            await check_agent_quota(db, ws)
+        except QuotaExceeded as exc:
+            raise WorkspaceServiceError(
+                ErrorCode.QUOTA_EXCEEDED,
+                f"Workspace quota '{exc.quota}' exceeded",
+                details={"quota": exc.quota, "limit": exc.limit, "current": exc.current},
+            ) from exc
 
     agent_id = f"agt_{uuid.uuid4().hex[:16]}"
     caps = _caps_json(capabilities)

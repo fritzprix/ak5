@@ -26,6 +26,9 @@ export const ErrorCode = {
   // operations.md §2.4 / §2.5 — retryable, honour `Retry-After` (AK5Error.retryAfter)
   RATE_LIMITED: "RATE_LIMITED",
   CONNECTION_LIMIT: "CONNECTION_LIMIT",
+
+  // operations.md §3 — non-retryable
+  QUOTA_EXCEEDED: "QUOTA_EXCEEDED",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -46,6 +49,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.VERSION_MISMATCH]: 409,
   [ErrorCode.RATE_LIMITED]: 429,
   [ErrorCode.CONNECTION_LIMIT]: 429,
+  [ErrorCode.QUOTA_EXCEEDED]: 403,
 };
 
 export const EXIT_CODE: Record<ErrorCode, number> = {
@@ -57,6 +61,7 @@ export const EXIT_CODE: Record<ErrorCode, number> = {
   [ErrorCode.ROLE_FORBIDDEN]: 4,
   [ErrorCode.SEPARATION_OF_DUTIES]: 4,
   [ErrorCode.SYSTEM_BOARD]: 4,
+  [ErrorCode.QUOTA_EXCEEDED]: 4,
   [ErrorCode.WIP_LIMIT]: 4,
   [ErrorCode.TICKET_BLOCKED]: 5,
   [ErrorCode.VERSION_MISMATCH]: 7,
