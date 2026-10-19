@@ -117,6 +117,9 @@ async def test_live_postgres_rls_cross_workspace_blocking():
                         GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ak5_test_tenant;
                         GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ak5_test_tenant;
                         ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ak5_test_tenant;
+                        -- Creator must be a member to SET LOCAL ROLE (PG 16 admin option alone
+                        -- is not always enough under asyncpg transaction boundaries).
+                        EXECUTE format('GRANT ak5_test_tenant TO %I', current_user);
                     END $$;
                 """)
             )
@@ -124,6 +127,8 @@ async def test_live_postgres_rls_cross_workspace_blocking():
     async def _scope(session: AsyncSession, ws_id: str | None = None, *, bypass: bool = False) -> None:
         if has_bypass:
             await session.execute(text("SET LOCAL ROLE ak5_test_tenant"))
+            who = (await session.execute(text("SELECT current_user"))).scalar()
+            assert who == "ak5_test_tenant", f"SET LOCAL ROLE failed; current_user={who!r}"
         if bypass:
             await set_bypass_rls_context(session, True)
         elif ws_id:
@@ -303,6 +308,7 @@ async def test_live_postgres_nonsuperuser_prepare_and_seed():
     # High-priority regression: PG URL must not raise DatabaseConflictError.
     prepare_database_for_use(app_url)
 
+    board_id = f"b_local_{uuid.uuid4().hex[:6]}"
     admin_maker = async_sessionmaker(bind=admin_engine, class_=AsyncSession, expire_on_commit=False)
     async with admin_maker() as session:
         await set_bypass_rls_context(session, True)
@@ -316,6 +322,17 @@ async def test_live_postgres_nonsuperuser_prepare_and_seed():
                     role="pm",
                 )
             )
+        # ensure_local_tenancy does not create boards — insert one for RLS visibility checks.
+        session.add(
+            Board(
+                board_id=board_id,
+                workspace_id=LOCAL_WORKSPACE_ID,
+                name="Local Board",
+                created_by="user_pm",
+                kind="standard",
+                template="default",
+            )
+        )
         await session.commit()
 
     app_engine = create_async_engine(app_url, future=True)
@@ -326,12 +343,14 @@ async def test_live_postgres_nonsuperuser_prepare_and_seed():
 
         await set_workspace_rls_context(session, LOCAL_WORKSPACE_ID)
         boards = (await session.execute(select(Board))).scalars().all()
-        assert any(b.workspace_id == LOCAL_WORKSPACE_ID for b in boards)
+        assert any(b.board_id == board_id for b in boards), (
+            f"Expected {board_id} visible under workspace GUC; got {[b.board_id for b in boards]}"
+        )
 
         # Commit must not drop workspace GUC (after_begin re-apply).
         await session.commit()
         boards_after = (await session.execute(select(Board))).scalars().all()
-        assert any(b.workspace_id == LOCAL_WORKSPACE_ID for b in boards_after)
+        assert any(b.board_id == board_id for b in boards_after)
 
     await app_engine.dispose()
     await admin_engine.dispose()
