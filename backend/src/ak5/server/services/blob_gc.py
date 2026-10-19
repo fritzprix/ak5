@@ -77,5 +77,14 @@ async def sweep_blob_gc(
                 )
             failed += 1
 
+    await db.flush()
+    dead_letters_query = select(func.count()).select_from(BlobGc).where(BlobGc.attempts >= max_attempts)
+    dead_letters = int((await db.scalar(dead_letters_query)) or 0)
+
     await db.commit()
-    return {"deleted": deleted, "failed": failed, "total": len(rows)}
+    return {
+        "deleted": deleted,
+        "failed": failed,
+        "total": len(rows),
+        "dead_letters": dead_letters,
+    }

@@ -217,6 +217,6 @@ def maintenance_cmd(
 
         stats = asyncio.run(_sweep())
         click.echo(
-            f"Blob GC sweep finished: {stats['deleted']} deleted, {stats['failed']} failed (processed {stats['total']})."
+            f"Blob GC sweep finished: {stats['deleted']} deleted, {stats['failed']} failed, {stats.get('dead_letters', 0)} dead-lettered (processed {stats['total']})."
         )
 
