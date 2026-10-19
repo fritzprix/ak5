@@ -1,3 +1,5 @@
+import os
+import warnings
 from importlib.metadata import PackageNotFoundError, version
 
 from pydantic import AliasChoices, Field
@@ -9,6 +11,42 @@ try:
     _pkg_version = version("ak5")
 except PackageNotFoundError:
     _pkg_version = "1.0.3"
+
+
+def get_deploy_profile() -> str:
+    """Return the server deployment profile ('local' or 'hosted').
+
+    Precedence (operations.md §7, #156):
+    1. AK5_DEPLOY_PROFILE: explicit server deployment profile ('local' or 'hosted').
+    2. Deprecated fallback: AK5_PROFILE if set to 'hosted' or 'local'.
+       Emits a DeprecationWarning.
+       Note: If AK5_PROFILE is set to anything else (such as a CLI profile name 'worker-1'),
+       the server does not fallback and defaults to 'local'.
+    3. Default: 'local'.
+    """
+    deploy_profile = os.environ.get("AK5_DEPLOY_PROFILE")
+    if deploy_profile is not None and deploy_profile.strip():
+        return deploy_profile.strip().lower()
+
+    legacy_profile = os.environ.get("AK5_PROFILE")
+    if legacy_profile is not None and legacy_profile.strip():
+        val = legacy_profile.strip().lower()
+        if val in ("hosted", "local"):
+            warnings.warn(
+                f"AK5_PROFILE={legacy_profile!r} is deprecated for server deployment profile. "
+                "Use AK5_DEPLOY_PROFILE instead. "
+                "Note: If your CLI profile name is 'hosted' or 'local', set AK5_DEPLOY_PROFILE explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return val
+
+    return "local"
+
+
+def hosted_profile() -> bool:
+    """Return True if the active server deployment profile is 'hosted'."""
+    return get_deploy_profile() == "hosted"
 
 
 class Settings(BaseSettings):

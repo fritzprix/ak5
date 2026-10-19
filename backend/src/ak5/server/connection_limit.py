@@ -1,8 +1,8 @@
 """Long-poll and SSE connection limits (operations.md §2.5, #115, #130).
 
 * Tracks active long-poll and SSE stream connections per instance (process), principal, and workspace.
-* Off by default in local mode (``AK5_PROFILE=local``).
-  In ``AK5_PROFILE=hosted``:
+* Off by default in local mode (``AK5_DEPLOY_PROFILE=local``).
+  In ``AK5_DEPLOY_PROFILE=hosted``:
   - principal: 5 concurrent connections per instance (429 CONNECTION_LIMIT)
   - workspace: 50 concurrent connections per instance (429 CONNECTION_LIMIT)
   - instance: AK5_MAX_CONNECTIONS per process (default 500, 503 + Retry-After)
@@ -23,6 +23,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.server.config import hosted_profile
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,6 @@ class ConnectionLimitExceeded(Exception):
         return HTTPException(
             status_code=self.status_code, detail=self.body(), headers=self.headers()
         )
-
-
-def hosted_profile() -> bool:
-    return (os.environ.get("AK5_PROFILE") or "local").strip().lower() == "hosted"
 
 
 @functools.lru_cache(maxsize=16)

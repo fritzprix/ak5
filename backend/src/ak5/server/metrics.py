@@ -292,7 +292,9 @@ def check_metrics_auth(request: Request) -> bool:
 
     # No token configured: loopback fallback is only permitted in the 'local' profile
     # and only when no trusted reverse proxy is configured (fail-closed, #117, operations.md §4.3).
-    profile = (os.environ.get("AK5_PROFILE") or "local").strip().lower()
+    from ak5.server.config import get_deploy_profile
+
+    profile = get_deploy_profile()
     if profile != "local":
         return False
 

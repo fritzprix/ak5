@@ -2,8 +2,8 @@
 
 * Fixed window (60 s) counters in the ``rate_counters`` table, bumped with one atomic upsert,
   so every instance shares one budget and nothing lives in process memory.
-* Disabled by default (``AK5_PROFILE=local``): a single-user tool does not throttle itself.
-  ``AK5_PROFILE=hosted`` turns on the defaults below; ``AK5_RATE_LIMITS`` (JSON, ``0`` = off)
+* Disabled by default (``AK5_DEPLOY_PROFILE=local``): a single-user tool does not throttle itself.
+  ``AK5_DEPLOY_PROFILE=hosted`` turns on the defaults below; ``AK5_RATE_LIMITS`` (JSON, ``0`` = off)
   overrides either way.
 * Authenticated routes are limited per principal / workspace right after the token is resolved
   (``enforce_authenticated``); unauthenticated entry points per client IP (``RateLimitMiddleware``).
@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.server.config import hosted_profile
 from ak5.server.metrics import rate_limited_total, safe_inc
 from ak5.server.models.rate_counter import RateCounter
 from ak5.server.web_auth import client_ip_from_headers
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 WINDOW_SECONDS = 60
 
-#: Rule → requests per window under ``AK5_PROFILE=hosted`` (operations.md §2.3).
+#: Rule → requests per window under ``AK5_DEPLOY_PROFILE=hosted`` (operations.md §2.3).
 HOSTED_DEFAULTS: dict[str, int] = {
     "read_principal": 300,
     "write_principal": 120,
@@ -106,10 +107,6 @@ class RateLimited(Exception):
 
 
 # --- configuration -----------------------------------------------------------------------
-
-
-def hosted_profile() -> bool:
-    return (os.environ.get("AK5_PROFILE") or "local").strip().lower() == "hosted"
 
 
 @functools.lru_cache(maxsize=16)

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.stages import Stage
+from ak5.server.config import hosted_profile
 from ak5.server.metrics import quota_rejections_total, safe_inc
 from ak5.server.models.board import Board
 from ak5.server.models.column import Column
@@ -86,10 +87,6 @@ class QuotaExceeded(Exception):
 
     def http_exception(self) -> HTTPException:
         return HTTPException(status_code=self.status_code, detail=self.body())
-
-
-def hosted_profile() -> bool:
-    return (os.environ.get("AK5_PROFILE") or "local").strip().lower() == "hosted"
 
 
 def server_quota_ceilings() -> dict[str, int]:

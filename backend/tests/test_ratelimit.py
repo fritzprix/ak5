@@ -266,7 +266,7 @@ def test_client_ip_from_headers(monkeypatch, trusted, peer, xff, real, expected)
 def test_hosted_profile_refuses_an_exposed_bind_without_trusted_proxies(monkeypatch: pytest.MonkeyPatch):
     from ak5.cli.commands.serve import assert_safe_bind
 
-    monkeypatch.setenv("AK5_PROFILE", "hosted")
+    monkeypatch.setenv("AK5_DEPLOY_PROFILE", "hosted")
     monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
     with pytest.raises(SystemExit):
         assert_safe_bind("0.0.0.0", insecure=True)  # even --insecure does not waive it
@@ -275,9 +275,15 @@ def test_hosted_profile_refuses_an_exposed_bind_without_trusted_proxies(monkeypa
     monkeypatch.setenv("AK5_TRUSTED_PROXIES", "10.0.0.0/8")
     assert_safe_bind("0.0.0.0", insecure=True)  # configured: falls through to the usual auth rules
 
-    monkeypatch.setenv("AK5_PROFILE", "local")
+    monkeypatch.setenv("AK5_DEPLOY_PROFILE", "local")
     monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
     assert_safe_bind("0.0.0.0", insecure=True)
+
+    # Legacy fallback: AK5_PROFILE=hosted
+    monkeypatch.delenv("AK5_DEPLOY_PROFILE", raising=False)
+    monkeypatch.setenv("AK5_PROFILE", "hosted")
+    with pytest.raises(SystemExit):
+        assert_safe_bind("0.0.0.0", insecure=True)
 
 
 # --- clients ------------------------------------------------------------------------------------------------
