@@ -36,7 +36,7 @@ from webauthn.helpers.structs import (
 
 from ak5.server.auth.oidc_config import public_base_url
 from ak5.server.models.passkey import PasskeyCredential, WebauthnChallenge
-from ak5.server.models.workspace import User
+from ak5.server.models.workspace import Membership, User
 
 CHALLENGE_TTL = timedelta(minutes=5)
 # Window in which a WebAuthn assertion counts as "user present" for T15 (identity.md §6).
@@ -274,3 +274,14 @@ def credential_public(row: PasskeyCredential) -> dict[str, Any]:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
     }
+
+
+async def workspace_has_passkey_holder(db: AsyncSession, workspace_id: str) -> bool:
+    """True when any member of the workspace has a passkey (#102 recovery rule)."""
+    row = await db.execute(
+        select(PasskeyCredential.passkey_id)
+        .join(Membership, Membership.user_id == PasskeyCredential.user_id)
+        .where(Membership.workspace_id == workspace_id)
+        .limit(1)
+    )
+    return row.first() is not None

@@ -20,10 +20,10 @@ from ak5.server.auth.tokens import issue_access_token, verify_access_token
 from ak5.server.authz import attach_principal
 from ak5.server.models.actor import Actor
 from ak5.server.models.passkey import WebauthnChallenge
-from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, Workspace
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, Membership, User, Workspace
 from ak5.server.seed import LOCAL_USER_ID, ensure_local_tenancy
 from ak5.server.services.workflow import WorkflowError, _require_user_presence_for_approval
-from ak5.server.services.workspaces import merge_policy
+from ak5.server.services.workspaces import ensure_user_actor, merge_policy
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from httpx import AsyncClient
@@ -498,3 +498,83 @@ async def test_turning_policy_off_without_any_passkey_is_the_recovery_path(
     plain = {"Authorization": f"Bearer {await _session_token(client, web)}"}
     resp = await _patch_policy(client, plain, False)
     assert resp.status_code == 200, resp.text
+
+
+async def _add_member(db: AsyncSession, user_id: str, role: str) -> dict[str, str]:
+    """A second workspace member (no passkey) and a plain Bearer header for them."""
+    user = User(user_id=user_id, display_name=user_id, email=f"{user_id}@example.test")
+    db.add(user)
+    await db.flush()
+    await ensure_user_actor(db, user)
+    db.add(
+        Membership(
+            membership_id=f"mem_{LOCAL_WORKSPACE_ID}_{user_id}",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            user_id=user_id,
+            role=role,
+        )
+    )
+    await db.commit()
+    token = issue_access_token(
+        Principal(
+            principal_id=user_id,
+            principal_type="user",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            workflow_role=Role.HUMAN,
+            membership_role=role,
+        )
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.asyncio
+async def test_admin_without_own_passkey_cannot_turn_policy_off_while_another_member_has_one(
+    client: AsyncClient, web, test_db: AsyncSession
+):
+    """#102 review: the recovery exception is workspace-wide, not per requester."""
+    await ensure_local_tenancy(test_db)
+    await test_db.commit()
+    await _register(client, web, VirtualAuthenticator())  # the owner holds a passkey
+    other_admin = await _add_member(test_db, "usr_admin_b", "admin")
+
+    owner_plain = {"Authorization": f"Bearer {await _session_token(client, web)}"}
+    assert (await _patch_policy(client, owner_plain, True)).status_code == 200
+
+    denied = await _patch_policy(client, other_admin, False)
+    assert denied.status_code == 403, denied.text
+    assert ErrorCode.USER_PRESENCE_REQUIRED.value in denied.text
+    ws = await test_db.get(Workspace, LOCAL_WORKSPACE_ID)
+    await test_db.refresh(ws)
+    assert '"require_user_presence_for_approval": true' in ws.policy
+
+
+@pytest.mark.asyncio
+async def test_passkey_changes_reject_another_users_presence_token(
+    client: AsyncClient, web, test_db: AsyncSession
+):
+    """The presence proof must belong to the session user (#99)."""
+    await ensure_local_tenancy(test_db)
+    await test_db.commit()
+    auth = VirtualAuthenticator()
+    created = await _register(client, web, auth)
+    await _add_member(test_db, "usr_member_c", "member")
+    foreign_presence = issue_access_token(
+        Principal(
+            principal_id="usr_member_c",
+            principal_type="user",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            workflow_role=Role.HUMAN,
+            membership_role="member",
+        ),
+        presence_at=datetime.now(UTC),
+    )
+    headers = _bearer(web, foreign_presence)
+    assert (await client.post("/auth/passkeys/register/options", headers=headers)).status_code == 403
+    assert (
+        await client.delete(f"/auth/passkeys/{created['passkey_id']}", headers=headers)
+    ).status_code == 403
+    garbage = _bearer(web, "not-a-jwt")
+    assert (
+        await client.delete(f"/auth/passkeys/{created['passkey_id']}", headers=garbage)
+    ).status_code == 403
+    assert len((await client.get("/auth/passkeys")).json()["passkeys"]) == 1
