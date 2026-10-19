@@ -119,7 +119,7 @@ class BlobStore(Protocol):
 | blob GC | 주기 sweep | `ak5 db maintenance` (cron) |
 
 - 모든 lazy 작업은 **멱등**이고, 다중 인스턴스에서 동시에 실행되어도 안전해야 한다(워터마크 갱신은 조건부 UPDATE).
-- long-poll 최대 시간은 플랫폼 제한 이하로 설정한다(`AK5_LONGPOLL_MAX_SECONDS`, 서버리스 기본 20). daemon은 타임아웃을 정상 종료로 처리한다(events.md §3).
+- long-poll 최대 시간은 플랫폼 제한 이하로 설정한다(기존 설정 `LONG_POLL_MAX_WAIT`, 기본 25초 — events.md §3과 동일하며 서버리스 실행 제한보다 짧게 둔다). daemon은 타임아웃을 정상 종료로 처리한다(events.md §3).
 
 ## 6. 다중 인스턴스에서 옮겨야 하는 프로세스 메모리 상태
 
@@ -145,7 +145,7 @@ class BlobStore(Protocol):
 | `AK5_BLOB_BACKEND` | `fs` | `fs` / `s3` / `vercel-blob` |
 | `AK5_NOTIFY` | `inproc` | `inproc` / `poll` / `pg` / `redis` |
 | `AK5_NOTIFY_POLL_MS` | `1000` | `poll` 주기 |
-| `AK5_LONGPOLL_MAX_SECONDS` | `60` | long-poll 상한 |
+| `LONG_POLL_MAX_WAIT` (기존) | `25` | long-poll 상한(초), 플랫폼 실행 제한보다 짧게 |
 
 잘못된 조합은 **시작 시 거부**한다(예: `AK5_NOTIFY=inproc` + 비-loopback 다중 인스턴스 선언, Postgres인데 `fs` blob + `AK5_INSTANCES>1`).
 
