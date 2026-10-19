@@ -2,19 +2,28 @@
 
 Verifies:
 - AK5_DEPLOY_PROFILE=hosted -> hosted deployment profile.
+- AK5_DEPLOY_PROFILE with unknown values refuse (fail-closed).
 - AK5_PROFILE=worker-1 (CLI profile) -> local server deployment profile without interference.
-- AK5_PROFILE=hosted (legacy fallback) -> hosted + DeprecationWarning.
+- AK5_PROFILE=hosted (legacy fallback) -> hosted + one-time logger.warning.
 - Server code has exactly one os.environ.get("AK5_PROFILE") call for deprecated fallback.
 """
 
 from __future__ import annotations
 
+import logging
 import re
-import warnings
 from pathlib import Path
 
 import pytest
+import ak5.server.config as config_mod
 from ak5.server.config import get_deploy_profile, hosted_profile
+
+
+@pytest.fixture(autouse=True)
+def _reset_legacy_warning_flag() -> None:
+    config_mod._legacy_deploy_profile_warned = False
+    yield
+    config_mod._legacy_deploy_profile_warned = False
 
 
 def test_default_deploy_profile_is_local(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -31,40 +40,69 @@ def test_deploy_profile_hosted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert hosted_profile() is True
 
 
-def test_deploy_profile_precedence_over_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deploy_profile_precedence_over_legacy(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setenv("AK5_DEPLOY_PROFILE", "local")
     monkeypatch.setenv("AK5_PROFILE", "hosted")
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
+    with caplog.at_level(logging.WARNING, logger="ak5.server.config"):
         assert get_deploy_profile() == "local"
         assert hosted_profile() is False
-        assert len(recorded) == 0, "No warning when AK5_DEPLOY_PROFILE is explicitly set"
+    assert not any("deprecated" in r.message for r in caplog.records)
 
 
-def test_cli_profile_worker_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_profile_worker_defaults_to_local(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.delenv("AK5_DEPLOY_PROFILE", raising=False)
     monkeypatch.setenv("AK5_PROFILE", "worker-1")
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
+    with caplog.at_level(logging.WARNING, logger="ak5.server.config"):
         assert get_deploy_profile() == "local"
         assert hosted_profile() is False
-        assert len(recorded) == 0, "CLI profile name should not trigger warning or hosted mode"
+    assert not any("deprecated" in r.message for r in caplog.records)
 
 
-def test_legacy_profile_hosted_deprecation_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_deploy_profile_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AK5_DEPLOY_PROFILE", "hostd")
+    monkeypatch.delenv("AK5_PROFILE", raising=False)
+    with pytest.raises(ValueError, match="Invalid AK5_DEPLOY_PROFILE='hostd'.*Allowed values"):
+        get_deploy_profile()
+
+
+@pytest.mark.parametrize("bad", ["prod", "Hostd", " staging "])
+def test_invalid_deploy_profile_variants_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    monkeypatch.setenv("AK5_DEPLOY_PROFILE", bad)
+    with pytest.raises(ValueError, match="Invalid AK5_DEPLOY_PROFILE"):
+        get_deploy_profile()
+
+
+def test_legacy_profile_hosted_logs_warning_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.delenv("AK5_DEPLOY_PROFILE", raising=False)
     monkeypatch.setenv("AK5_PROFILE", "hosted")
-    with pytest.deprecated_call(match="AK5_PROFILE='hosted' is deprecated.*AK5_DEPLOY_PROFILE"):
+    with caplog.at_level(logging.WARNING, logger="ak5.server.config"):
         assert get_deploy_profile() == "hosted"
         assert hosted_profile() is True
+        assert get_deploy_profile() == "hosted"
+    messages = [r.message for r in caplog.records if "deprecated" in r.message]
+    assert len(messages) == 1
+    assert "AK5_DEPLOY_PROFILE" in messages[0]
 
 
-def test_legacy_profile_local_deprecation_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_profile_local_logs_warning_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.delenv("AK5_DEPLOY_PROFILE", raising=False)
     monkeypatch.setenv("AK5_PROFILE", "local")
-    with pytest.deprecated_call(match="AK5_PROFILE='local' is deprecated.*AK5_DEPLOY_PROFILE"):
+    with caplog.at_level(logging.WARNING, logger="ak5.server.config"):
         assert get_deploy_profile() == "local"
         assert hosted_profile() is False
+        assert get_deploy_profile() == "local"
+    messages = [r.message for r in caplog.records if "deprecated" in r.message]
+    assert len(messages) == 1
 
 
 def test_only_one_environ_get_ak5_profile_in_server_code() -> None:

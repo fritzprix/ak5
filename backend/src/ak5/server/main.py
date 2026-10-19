@@ -85,6 +85,11 @@ _DOCS_PUBLIC_PREFIXES = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    # Fail-closed on unknown AK5_DEPLOY_PROFILE before any DB/network work
+    # (covers raw `uvicorn ak5.server.app:app` which skips `ak5 serve` gates).
+    from ak5.server.config import get_deploy_profile
+
+    get_deploy_profile()
     # One source of truth before create_all/seed — covers raw `uvicorn ak5.server.app:app`
     # (Docker/harness) which never passes through `ak5 serve` / `ak5 web` CLI gates.
     # Daemon is never started here (events.md §4.5 / cli.md §4.1): use `ak5 serve --daemon`.

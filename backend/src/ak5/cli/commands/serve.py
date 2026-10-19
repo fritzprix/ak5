@@ -440,6 +440,13 @@ def run_serve(
 
     require_server_extra()
     _load_dotenv_files()
+    try:
+        from ak5.server.config import get_deploy_profile
+
+        get_deploy_profile()
+    except ValueError as exc:
+        console.print(f"[bold red]✗ {exc}[/bold red]")
+        raise SystemExit(1) from exc
     assert_safe_bind(host, insecure=insecure, tailscale_serve=tailscale_serve)
     assert_dev_insecure_identify_safe(
         host, dev_insecure_identify=dev_insecure_identify, tailscale_serve=tailscale_serve
