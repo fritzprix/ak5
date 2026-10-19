@@ -1,11 +1,14 @@
 import json
+import logging
+import urllib.parse
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,6 +17,7 @@ from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.contracts.payloads import Finding, Verdict
 from ak5.contracts.stages import BlockedKind
 from ak5.server.authz import RoleForbiddenError, require_board_scope
+from ak5.server.blob import BlobTooLargeError, attachment_key, get_blob_store
 from ak5.server.config import settings
 from ak5.server.database import get_db
 from ak5.server.inbox import resolve_board_alias
@@ -58,6 +62,8 @@ from ak5.server.services import workflow as wf
 from ak5.server.services.event_log import record_event
 from ak5.server.services.ticket_status import derive_status
 from ak5.server.services.workflow import WorkflowError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 
@@ -911,29 +917,26 @@ async def upload_attachment(
     # Extract only the base name to prevent directory traversal
     clean_filename = Path(raw_filename).name or "attachment.bin"
     attachment_id = f"att_{uuid.uuid4().hex[:12]}"
-    safe_disk_filename = f"{attachment_id}_{clean_filename}"
+    blob_key = attachment_key(ticket.workspace_id, ticket_id, attachment_id)
+    content_type = file.content_type or "application/octet-stream"
 
-    storage_dir = Path(settings.ATTACHMENTS_DIR).resolve()
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = storage_dir / safe_disk_filename
+    async def _upload_chunks() -> AsyncIterator[bytes]:
+        while chunk := await file.read(1024 * 1024):  # 1MB buffer
+            yield chunk
 
-    total_size = 0
     try:
-        with open(dest_path, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024):  # 1MB buffer
-                total_size += len(chunk)
-                if total_size > settings.MAX_ATTACHMENT_SIZE_BYTES:
-                    buffer.close()
-                    dest_path.unlink(missing_ok=True)
-                    raise HTTPException(
-                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                        detail=f"File exceeds maximum allowed size ({settings.MAX_ATTACHMENT_SIZE_BYTES} bytes)",
-                    )
-                buffer.write(chunk)
-    except HTTPException:
-        raise
+        total_size = await get_blob_store().put(
+            blob_key,
+            _upload_chunks(),
+            content_type=content_type,
+            max_bytes=settings.MAX_ATTACHMENT_SIZE_BYTES,
+        )
+    except BlobTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"File exceeds maximum allowed size ({exc.max_bytes} bytes)",
+        ) from exc
     except Exception as exc:
-        dest_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save uploaded file: {exc}",
@@ -946,8 +949,8 @@ async def upload_attachment(
         actor_id=current_actor.actor_id,
         filename=clean_filename,
         file_size=total_size,
-        content_type=file.content_type or "application/octet-stream",
-        storage_path=str(dest_path),
+        content_type=content_type,
+        storage_path=blob_key,
     )
     db.add(attachment)
 
@@ -1037,18 +1040,28 @@ async def download_attachment(
             detail=f"Attachment '{attachment_id}' not found on ticket '{ticket_id}'",
         )
 
-    storage_dir = Path(settings.ATTACHMENTS_DIR).resolve()
-    file_path = Path(attachment.storage_path).resolve()
-    if not file_path.is_relative_to(storage_dir) or not file_path.is_file():
+    store = get_blob_store()
+    if not await store.exists(attachment.storage_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Attachment file not found on storage",
         )
 
-    return FileResponse(
-        path=file_path,
-        filename=attachment.filename,
+    local = store.local_path(attachment.storage_path)
+    if local is not None:
+        return FileResponse(
+            path=local,
+            filename=attachment.filename,
+            media_type=attachment.content_type,
+        )
+    quoted = urllib.parse.quote(attachment.filename, safe="")
+    return StreamingResponse(
+        store.open(attachment.storage_path),
         media_type=attachment.content_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "Content-Length": str(attachment.file_size),
+        },
     )
 
 
@@ -1071,11 +1084,7 @@ async def delete_attachment(
             detail=f"Attachment '{attachment_id}' not found on ticket '{ticket_id}'",
         )
 
-    storage_dir = Path(settings.ATTACHMENTS_DIR).resolve()
-    file_path = Path(attachment.storage_path).resolve()
-    if file_path.is_relative_to(storage_dir) and file_path.is_file():
-        file_path.unlink(missing_ok=True)
-
+    storage_key = attachment.storage_path
     ticket = await db.get(Ticket, ticket_id)
     board_id = ticket.board_id if ticket else None
 
@@ -1107,6 +1116,12 @@ async def delete_attachment(
         },
     )
     await db.commit()
+
+    # Blob removal is best effort and happens after the row is gone (deployment.md §2).
+    try:
+        await get_blob_store().delete(storage_key)
+    except Exception:
+        logger.warning("Failed to delete blob %s for attachment %s", storage_key, attachment_id, exc_info=True)
 
     return {"deleted": True, "attachment_id": attachment_id}
 
