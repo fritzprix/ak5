@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 from ak5.contracts.stages import STANDARD_STAGES
-from ak5.database import run_sqlite_schema_migrations
-from ak5.models.base import Base
 from ak5.seed import seed_initial_data
+from ak5.server.database import run_legacy_schema_upgrade
+from ak5.server.migrations import current_revision, ensure_schema, head_revision
 from ak5.server.models.ticket import Ticket
 from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -62,9 +62,8 @@ async def test_v1_fixture_migration_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(seedmod, "AsyncSessionLocal", session_factory)
 
     async def _boot_once() -> None:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        await run_sqlite_schema_migrations(engine)
+        # The real startup path (#105): legacy fixes on a pre-Alembic file, then stamp head.
+        await ensure_schema(engine, legacy_upgrade=run_legacy_schema_upgrade)
         await seed_initial_data()
 
     await _boot_once()
@@ -88,6 +87,7 @@ async def test_v1_fixture_migration_idempotent(tmp_path, monkeypatch):
                 await conn.execute(text("SELECT stage FROM columns WHERE board_id = 'b1'"))
             ).fetchall()
         }
+        assert await conn.run_sync(current_revision) == head_revision()  # stamped, not re-created
         assert "open" not in stages and "review" not in stages
         assert {s.value for s in STANDARD_STAGES} <= stages
 

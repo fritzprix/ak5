@@ -16,8 +16,7 @@ from ak5.server.auth.oidc_config import oidc_providers_configured
 from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
 from ak5.server.auth.users import local_owner_configured
 from ak5.server.config import settings
-from ak5.server.database import AsyncSessionLocal, engine, run_sqlite_schema_migrations
-from ak5.server.models.base import Base
+from ak5.server.database import AsyncSessionLocal, engine, ensure_database_schema
 from ak5.server.routers.actors import router as actors_router
 from ak5.server.routers.auth import router as auth_router
 from ak5.server.routers.boards import router as boards_router
@@ -74,10 +73,8 @@ async def lifespan(app: FastAPI):
         logger.exception("Database safety preflight failed")
         raise
 
-    # Initialize DB tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await run_sqlite_schema_migrations()
+    # Alembic: new DB → baseline + upgrade head; pre-Alembic SQLite → legacy fixes + stamp.
+    await ensure_database_schema()
     # Seed initial entities (never deletes existing boards/tickets)
     await seed_initial_data()
     # Keep a rolling backup whenever the live DB has real ticket data.

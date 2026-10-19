@@ -412,6 +412,7 @@ agent가 **서버와 같은 OS 사용자**로 돌면 DB 파일과 서명 키를 
 | `AK5_DATA_DIR` | 서버 | DB와 첨부 파일 위치 |
 | `AK5_ENABLE_MCP` | 서버 | `1`이면 `/mcp` 마운트 (`ak5[mcp]` 필요) |
 | `AK5_DEV_INSECURE_IDENTIFY` | 서버 | `1`이면 loopback에서 v1 self-identify 허용 (개발 전용) |
+| `AK5_AUTO_MIGRATE` | 서버 | `0`이면 시작 시 스키마를 자동 변경하지 않고 head인지만 확인 (서버리스 권장). `ak5 db upgrade`로 직접 적용 |
 | `AK5_PROFILE` | CLI | 사용할 profile |
 | `AK5_TOKEN` | CLI | daemon 없이 쓸 agent 토큰 |
 | `AK5_API_URL` | CLI | 서버 API 주소 (profile이 없을 때) |
@@ -470,6 +471,13 @@ v2 서버는 시작할 때 v1 DB를 자동으로 변환한다.
 | 보드 컬럼 To Do / In Progress / Review / Done | stage `backlog` / `in_progress` / `agent_review` / `human_review` / `done` (+ inbox, postmortem_pending) |
 
 예전 이슈 #4(Column stage ↔ Ticket status 정합)는 v2 stage 모델(`status`는 저장하지 않는 파생값)로 대체되었다.
+
+### 데이터베이스 스키마 (Alembic)
+
+- 스키마는 Alembic으로 관리한다. 새 DB는 baseline(`0001_baseline`)에서 시작하고, 이후 변경은 revision으로만 적용된다.
+- Alembic 도입 전에 만들어진 SQLite 파일은 서버가 처음 시작할 때 기존 변환을 한 번 적용한 뒤 baseline으로 표시(stamp)한다. 데이터는 그대로다.
+- `ak5 db current` — 현재 revision과 최신 revision. `ak5 db upgrade` — 수동 적용 (`AK5_AUTO_MIGRATE=0` 환경에서 사용).
+- `ak5 db export <파일>` / `ak5 db import <파일> --to <DATABASE_URL>` — 전체 데이터를 JSON Lines로 내보내고, **빈** DB(SQLite 또는 Postgres)로 한 번에 옮긴다. 온라인 이행은 지원하지 않으며, 내보낸 버전과 같은 스키마 revision이어야 한다.
 
 ---
 

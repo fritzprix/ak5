@@ -7,6 +7,7 @@ from ak5.cli.commands.agents import agents_command
 from ak5.cli.commands.board import board_command
 from ak5.cli.commands.boards import boards_command, claim_board_command, create_board_command
 from ak5.cli.commands.daemon import daemon_command
+from ak5.cli.commands.db import db_group
 from ak5.cli.commands.delegate import delegate_command
 from ak5.cli.commands.demo import demo_command
 from ak5.cli.commands.events import events_command, watch_command
@@ -98,6 +99,7 @@ cli.add_command(daemon_command)
 cli.add_command(profile_command)
 cli.add_command(template_group)
 cli.add_command(reset_command)
+cli.add_command(db_group)
 
 
 if __name__ == "__main__":
