@@ -509,6 +509,7 @@ v2 서버는 시작할 때 v1 DB를 자동으로 변환한다.
 - Alembic 도입 전에 만들어진 SQLite 파일은 서버가 처음 시작할 때 기존 변환을 한 번 적용한 뒤 baseline으로 표시(stamp)한다. 데이터는 그대로다.
 - `ak5 db current` — 현재 revision과 최신 revision. `ak5 db upgrade` — 수동 적용 (`AK5_AUTO_MIGRATE=0` 환경에서 사용).
 - `ak5 db export <파일>` / `ak5 db import <파일> --to <DATABASE_URL>` — 전체 데이터를 JSON Lines로 내보내고, **빈** DB(SQLite 또는 Postgres)로 한 번에 옮긴다. 온라인 이행은 지원하지 않으며, 내보낸 버전과 같은 스키마 revision이어야 한다.
+- 백업·복구 운영 절차(RPO ≤ 5분 / RTO ≤ 1시간, Postgres PITR, blob·비밀 분리, 복구 후 `ATTACHMENT_MISSING` / `CURSOR_EXPIRED`): [ops/backup-restore.md](ops/backup-restore.md). 리허설: `uv run --directory backend --extra server python ../scripts/recovery_rehearsal.py`.
 
 ---
 

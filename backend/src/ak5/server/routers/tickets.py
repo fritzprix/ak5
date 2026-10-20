@@ -1114,9 +1114,18 @@ async def download_attachment(
 
     store = get_blob_store()
     if not await store.exists(attachment.storage_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Attachment file not found on storage",
+        # operations.md §5 / #119 — DB↔blob restore skew must not crash the ticket
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.ATTACHMENT_MISSING],
+            content=error_body(
+                ErrorCode.ATTACHMENT_MISSING,
+                "Attachment metadata exists but the blob is missing (restore skew)",
+                details={
+                    "ticket_id": ticket_id,
+                    "attachment_id": attachment_id,
+                    "storage_path": attachment.storage_path,
+                },
+            ),
         )
 
     local = store.local_path(attachment.storage_path)

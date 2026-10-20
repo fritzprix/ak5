@@ -176,7 +176,7 @@ IP 신뢰는 둘 중 하나다.
 - **DB와 blob의 시점 불일치**를 허용한다: DB에 있는데 blob이 없는 첨부는 다운로드 시 `404 ATTACHMENT_MISSING`로 처리하고 상태를 깨뜨리지 않는다. blob만 있고 DB에 없는 객체는 `blob_gc`가 정리한다(deployment.md §2).
 - 이벤트 로그가 과거로 되돌아가면 daemon의 `ack_cursor`가 서버 `seq`보다 커질 수 있다. 서버는 이를 `410 CURSOR_EXPIRED`로 취급해 daemon이 `WORK_AVAILABLE`로 **재동기화**하게 한다(events.md §5와 동일 경로).
 - 활성 claim의 lease는 복구 후 만료로 간주되어 정상 경로(T8)로 회수된다.
-- 복구 절차는 runbook(`docs/`)에 단계별로 문서화하고, **복구 리허설**(빈 DB에 복원 후 `readyz` + 스모크)을 릴리스 체크리스트(#36)에 넣는다.
+- 복구 절차는 runbook([`docs/ops/backup-restore.md`](../ops/backup-restore.md))에 단계별로 문서화하고, **복구 리허설**(빈 DB에 복원 후 `readyz` + 스모크, `scripts/recovery_rehearsal.py`)을 릴리스 체크리스트(#36)에 넣는다.
 - RPO/RTO 목표는 서비스 수준 결정이므로 §9-5.
 
 ## 6. 악용 방지
