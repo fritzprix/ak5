@@ -6,7 +6,6 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base
-from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 
 class AuditLog(Base):
@@ -14,7 +13,7 @@ class AuditLog(Base):
 
     log_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+        String(128), nullable=False, index=True
     )
     actor_id: Mapped[str] = mapped_column(String(128), ForeignKey("actors.actor_id"), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)  # CREATED, MOVED, DELEGATED, STATUS_CHANGE
