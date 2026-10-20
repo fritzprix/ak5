@@ -71,3 +71,22 @@ def detect_tailscale(port: int = 8000) -> TailscaleInfo:
         https_active=https_active,
         https_url=https_url,
     )
+
+
+def enable_tailscale_serve(port: int) -> tuple[bool, str]:
+    """Enable ``tailscale serve --bg <port>``.
+
+    Returns ``(ok, message)`` where ``message`` is stdout/stderr for display.
+    """
+    if shutil.which("tailscale") is None:
+        return False, "tailscale CLI not found on PATH"
+    completed = subprocess.run(
+        ["tailscale", "serve", "--bg", str(port)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    msg = (completed.stderr or completed.stdout or "").strip()
+    if completed.returncode != 0:
+        return False, msg or f"tailscale serve exited {completed.returncode}"
+    return True, msg or "ok"

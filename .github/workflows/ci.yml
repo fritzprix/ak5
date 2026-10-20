@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ master, main, feat/workflow-v2 ]
   pull_request:
-    branches: [ master, main ]
+    branches: [ master, main, feat/workflow-v2 ]
 
 jobs:
   backend-ci:
@@ -35,11 +35,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync --all-packages
+          uv sync --all-packages --all-extras
 
-      - name: Run Pytest
+      - name: Run Pytest (exclude live_server)
         run: |
-          uv run pytest
+          uv run pytest -m "not live_server"
+
+      - name: Import boundary contracts (contracts/client/daemon ↛ server)
+        run: |
+          uv run pytest backend/tests/test_import_boundaries.py -v
 
       - name: Run Ruff Lint
         run: |
@@ -50,6 +54,40 @@ jobs:
           rm -rf dist
           uv build backend --out-dir dist
           ./scripts/smoke_uvx_wheel.sh
+
+  live-server-ci:
+    name: Live Server Contracts (CLI + SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
+        run: uv sync --all-packages --all-extras
+
+      - name: Build SDK
+        working-directory: ./packages/sdk
+        run: |
+          npm ci
+          npm run build
+
+      - name: Regression + live_server gates
+        run: |
+          uv run pytest backend/tests/regression -m live_server -v
 
   frontend-sdk-ci:
     name: Frontend & SDK Build & Lint
@@ -62,19 +100,61 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Build SDK (@ak5/sdk)
+      - name: Build & Test SDK (@ak5/sdk)
         working-directory: ./packages/sdk
         run: |
           npm ci
-          npm run build
+          npm test
 
-      - name: Build & Lint Frontend Dashboard
+      - name: Build, Lint & Test Frontend Dashboard
         working-directory: ./frontend
         run: |
           npm ci
           npm run lint
+          npm test
           export AK5_STATIC_EXPORT=1
           export NEXT_PUBLIC_API_URL=/api/v1
           if [ -f src/middleware.ts ]; then mv src/middleware.ts src/middleware.ts.ci_bak; fi
           trap 'if [ -f src/middleware.ts.ci_bak ]; then mv src/middleware.ts.ci_bak src/middleware.ts; fi' EXIT
           npm run build
+
+  postgres-ci:
+    name: PostgreSQL Dialect, Migrations & RLS Gates
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ak5
+          POSTGRES_PASSWORD: ak5password
+          POSTGRES_DB: ak5_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          uv sync --all-packages --all-extras
+
+      - name: Run PostgreSQL dialect, migrations & RLS tests
+        env:
+          AK5_TEST_POSTGRES_URL: postgresql+asyncpg://ak5:ak5password@localhost:5432/ak5_test
+        run: |
+          uv run pytest backend/tests/test_dialect_compatibility.py backend/tests/test_postgres_support.py -v
+

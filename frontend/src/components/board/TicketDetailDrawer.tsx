@@ -1,20 +1,39 @@
 "use client";
 
 import React, { useEffect, useId, useRef, useState } from "react";
-import { AlertOctagon, Check, Download, Loader2, Paperclip, RotateCcw, Save, Send, Trash2, X } from "lucide-react";
+import {
+  AlertOctagon,
+  Check,
+  Download,
+  History,
+  Loader2,
+  Paperclip,
+  RotateCcw,
+  Save,
+  Send,
+  Trash2,
+  Unlock,
+  X,
+} from "lucide-react";
 import {
   addComment,
   deleteAttachment,
+  fetchBoards,
   fetchTicket,
-  getAttachmentDownloadUrl,
-  moveTicket,
+  fetchTicketHistory,
+  downloadAttachment,
+  reopenTicket,
+  routeTicket,
+  submitVerdict,
+  unblockTicket,
   updateTicket,
   uploadAttachment,
 } from "@/lib/api";
 import {
-  buildReviewDecisionComment,
-  columnStageForTicket,
-  resolveReviewTargetColumnId,
+  isDoneStage,
+  isHumanReviewStage,
+  reopenRequiresReason,
+  resolveTicketStage,
   reviewDecisionRequiresNote,
   type ReviewDecision,
 } from "@/lib/reviewDecision";
@@ -24,7 +43,13 @@ import {
   ticketToEditFields,
   type TicketEditFields,
 } from "@/lib/ticketEdit";
-import { Actor, Column, Ticket, TicketAttachment, TicketComment, TicketPriority } from "@/lib/types";
+import {
+  buildHistoryTimeline,
+  formatTimelineWhen,
+  unblockRequiresResolution,
+  type TimelineEntry,
+} from "@/lib/ticketHistory";
+import { Actor, BoardSummary, Column, Ticket, TicketComment, TicketPriority } from "@/lib/types";
 import { preferReaderFocus, trapTabKey } from "@/lib/focusTrap";
 import { ActorBadge } from "../actor/ActorBadge";
 
@@ -65,17 +90,30 @@ export function TicketDetailDrawer({
   const [editError, setEditError] = useState<string | null>(null);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [unblockResolution, setUnblockResolution] = useState("");
+  const [unblocking, setUnblocking] = useState(false);
+  const [boards, setBoards] = useState<BoardSummary[]>([]);
+  const [selectedBoardId, setSelectedBoardId] = useState("");
+  const [routing, setRouting] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const commentFieldId = useId();
   const titleFieldId = useId();
   const descFieldId = useId();
   const priorityFieldId = useId();
-  const assigneeFieldId = useId();
   const blockedFieldId = useId();
   const blockedByFieldId = useId();
   const panelRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  useEffect(() => {
+    fetchBoards()
+      .then(setBoards)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!ticketId) {
@@ -93,8 +131,11 @@ export function TicketDetailDrawer({
     setCommentError(null);
     setEditError(null);
     setAttachmentError(null);
+    setTimeline([]);
+    setUnblockResolution("");
     let cancelled = false;
     setLoading(true);
+    setHistoryLoading(true);
     fetchTicket(ticketId)
       .then((full) => {
         if (!cancelled) {
@@ -110,6 +151,16 @@ export function TicketDetailDrawer({
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+    fetchTicketHistory(ticketId)
+      .then((hist) => {
+        if (!cancelled) setTimeline(buildHistoryTimeline(hist));
+      })
+      .catch(() => {
+        if (!cancelled) setTimeline([]);
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
       });
     return () => {
       cancelled = true;
@@ -169,8 +220,8 @@ export function TicketDetailDrawer({
       setEditError("Title is required.");
       return;
     }
-    const stage = columnStageForTicket(columns, detail.column_id);
-    const payload = buildTicketUpdatePayload(detail, edit, stage);
+    const editStage = resolveTicketStage(columns, detail);
+    const payload = buildTicketUpdatePayload(detail, edit, editStage);
     if (!payload) return;
 
     setSaving(true);
@@ -217,33 +268,14 @@ export function TicketDetailDrawer({
   const handleReviewDecision = async (decision: ReviewDecision) => {
     if (!ticketId || !detail || submitting || saving) return;
     if (reviewDecisionRequiresNote(decision, draft)) {
-      setCommentError(
-        decision === "approve"
-          ? "Add an approval note before marking Done."
-          : "Add a reason before sending this back."
-      );
-      return;
-    }
-    const targetColumnId = resolveReviewTargetColumnId(columns, decision);
-    if (!targetColumnId) {
-      setCommentError(
-        decision === "approve"
-          ? "No Done column found on this board."
-          : "No In Progress column found on this board."
-      );
+      setCommentError("Rejection requires a reason (workflow T16).");
       return;
     }
 
     setSubmitting(true);
     setCommentError(null);
     try {
-      const created = await addComment(
-        ticketId,
-        buildReviewDecisionComment(decision, draft),
-        false
-      );
-      appendCommentLocally(created);
-      await moveTicket(ticketId, targetColumnId);
+      await submitVerdict(ticketId, decision, draft);
       setDraft("");
       onCommented?.();
       onReviewDecision?.();
@@ -252,6 +284,51 @@ export function TicketDetailDrawer({
       setCommentError(err instanceof Error ? err.message : "Review decision failed");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleReopen = async () => {
+    if (!ticketId || !detail || submitting || saving) return;
+    if (reopenRequiresReason(draft)) {
+      setCommentError("Reopen requires a reason (workflow T17).");
+      return;
+    }
+    setSubmitting(true);
+    setCommentError(null);
+    try {
+      await reopenTicket(ticketId, draft);
+      setDraft("");
+      onReviewDecision?.();
+      onClose();
+    } catch (err) {
+      setCommentError(err instanceof Error ? err.message : "Reopen failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleUnblock = async () => {
+    if (!ticketId || !detail || unblocking) return;
+    const kind = detail.blocked_kind;
+    if (unblockRequiresResolution(kind) && !unblockResolution.trim()) {
+      setEditError("Resolution is required to unblock needs_human / escalation.");
+      return;
+    }
+    setUnblocking(true);
+    setEditError(null);
+    try {
+      const updated = await unblockTicket(
+        ticketId,
+        unblockRequiresResolution(kind) ? unblockResolution.trim() : undefined
+      );
+      setDetail((prev) => (prev ? { ...prev, ...updated, comments: prev.comments } : updated));
+      setEdit(ticketToEditFields(updated));
+      setUnblockResolution("");
+      onUpdated?.();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Unblock failed");
+    } finally {
+      setUnblocking(false);
     }
   };
 
@@ -282,6 +359,16 @@ export function TicketDetailDrawer({
     }
   };
 
+  const handleDownloadAttachment = async (attachmentId: string, filename: string) => {
+    if (!ticketId) return;
+    setAttachmentError(null);
+    try {
+      await downloadAttachment(ticketId, attachmentId, filename);
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : "Failed to download file");
+    }
+  };
+
   const handleDeleteAttachment = async (attachmentId: string) => {
     if (!ticketId) return;
     setAttachmentError(null);
@@ -303,10 +390,41 @@ export function TicketDetailDrawer({
     }
   };
 
+  const handleRoute = async () => {
+    if (!ticketId || !selectedBoardId || routing || saving) return;
+    setRouting(true);
+    setRouteError(null);
+    try {
+      await routeTicket(ticketId, {
+        target: { board_id: selectedBoardId },
+        refined_title: edit?.title?.trim() || undefined,
+        refined_spec: edit?.description?.trim() || undefined,
+      });
+      onUpdated?.();
+      onReviewDecision?.();
+      onClose();
+    } catch (err) {
+      setRouteError(err instanceof Error ? err.message : "Routing failed");
+    } finally {
+      setRouting(false);
+    }
+  };
+
   if (!ticketId || !detail || !edit) return null;
 
-  const stage = columnStageForTicket(columns, detail.column_id);
-  const isReview = stage === "review";
+  const stage = resolveTicketStage(columns, detail);
+  const isReview = isHumanReviewStage(stage);
+  const isDone = isDoneStage(stage);
+  const isUnclassified =
+    stage === "unclassified" ||
+    detail.stage === "unclassified" ||
+    detail.board_id === "inbox";
+  const destinationBoards = boards.filter(
+    (b) => b.kind !== "inbox" && b.board_id !== "inbox"
+  );
+  const isHumanBlocked =
+    detail.status === "blocked" &&
+    unblockRequiresResolution(detail.blocked_kind ?? null);
   const dirty = isTicketEditDirty(detail, edit);
 
   const progress =
@@ -385,9 +503,87 @@ export function TicketDetailDrawer({
 
           {isReview ? (
             <p className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent-muted)] px-3 py-2 text-xs text-[var(--foreground)]">
-              Review gate — leave a note, then <strong>Approve</strong> (Done) or{" "}
-              <strong>Request changes</strong> (back to In Progress). Drag still works on the board.
+              Human review (T15/T16) — <strong>Approve</strong> → done, or <strong>Reject</strong> →
+              postmortem (reason required). Stage-changing drops on the board must map to the same
+              commands.
             </p>
+          ) : null}
+
+          {isDone ? (
+            <p className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)]">
+              Done — reopen with a reason to send back to postmortem (T17).
+            </p>
+          ) : null}
+
+          {isUnclassified ? (
+            <div className="space-y-2.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-muted)] p-3.5">
+              <div className="flex items-center gap-2">
+                <Send className="h-4 w-4 text-[var(--accent)]" />
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--accent)]">
+                  Route to Board
+                </h3>
+              </div>
+              <p className="text-xs text-[var(--muted)]">
+                Directly route this unclassified inbox ticket to a project board. You can also edit the title and description below before routing.
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <label htmlFor="route-board-select" className="sr-only">
+                  Target Board
+                </label>
+                <select
+                  id="route-board-select"
+                  className="ak-input flex-1 py-1.5 text-xs"
+                  value={selectedBoardId}
+                  onChange={(e) => setSelectedBoardId(e.target.value)}
+                  disabled={routing || saving}
+                >
+                  <option value="">Select target board…</option>
+                  {destinationBoards.map((b) => (
+                    <option key={b.board_id} value={b.board_id}>
+                      {b.name} ({b.board_id})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="ak-btn-primary shrink-0 py-1.5 px-3 text-xs"
+                  disabled={routing || saving || !selectedBoardId}
+                  onClick={() => void handleRoute()}
+                >
+                  {routing ? "Routing…" : "Route to Board"}
+                </button>
+              </div>
+              {routeError ? <p className="text-xs text-[var(--danger)]">{routeError}</p> : null}
+            </div>
+          ) : null}
+
+          {isHumanBlocked ? (
+            <div className="space-y-2 rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/5 px-3 py-2.5">
+              <p className="text-xs text-[var(--foreground)]">
+                Blocked · <span className="font-mono">{detail.blocked_kind}</span>
+                {detail.blocked_by ? ` — ${detail.blocked_by}` : ""}
+              </p>
+              <label className="mb-1 block text-[11px] font-semibold uppercase text-[var(--muted)]">
+                Resolution (required)
+              </label>
+              <textarea
+                className="ak-input min-h-[3rem] text-xs"
+                rows={2}
+                value={unblockResolution}
+                onChange={(e) => setUnblockResolution(e.target.value)}
+                placeholder="What did you decide / provide?"
+                disabled={unblocking}
+              />
+              <button
+                type="button"
+                className="ak-btn-secondary text-xs"
+                disabled={unblocking || !unblockResolution.trim()}
+                onClick={() => void handleUnblock()}
+              >
+                <Unlock className="h-3.5 w-3.5" />
+                {unblocking ? "Unblocking…" : "Unblock"}
+              </button>
+            </div>
           ) : null}
 
           <form id="ticket-edit-form" onSubmit={handleSaveEdits} className="space-y-4">
@@ -414,29 +610,16 @@ export function TicketDetailDrawer({
                 </select>
               </div>
               <div>
-                <label
-                  htmlFor={assigneeFieldId}
-                  className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
-                >
-                  Assignee
-                </label>
-                <select
-                  id={assigneeFieldId}
-                  className="ak-input"
-                  value={edit.assigned_to}
-                  onChange={(e) => patchEdit("assigned_to", e.target.value)}
-                  disabled={saving}
-                >
-                  <option value="">Unassigned</option>
-                  {edit.assigned_to && !actors.some((a) => a.actor_id === edit.assigned_to) ? (
-                    <option value={edit.assigned_to}>@{edit.assigned_to}</option>
-                  ) : null}
-                  {actors.map((a) => (
-                    <option key={a.actor_id} value={a.actor_id}>
-                      {a.name} ({a.role})
-                    </option>
-                  ))}
-                </select>
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                  Assignee (claim holder)
+                </span>
+                <p className="ak-input flex items-center bg-[var(--background)] text-[var(--muted)]">
+                  {detail.assigned_to ? (
+                    <ActorBadge actorId={detail.assigned_to} />
+                  ) : (
+                    <span>Unassigned — set by claim</span>
+                  )}
+                </p>
               </div>
             </div>
 
@@ -523,15 +706,25 @@ export function TicketDetailDrawer({
               </div>
               {detail.subtasks && detail.subtasks.length > 0 ? (
                 <ul className="mt-3 space-y-1.5">
-                  {detail.subtasks.map((st) => (
-                    <li
-                      key={st.ticket_id}
-                      className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-xs"
-                    >
-                      <span className="truncate">{st.title}</span>
-                      <span className="shrink-0 font-mono text-[var(--muted)]">{st.status}</span>
-                    </li>
-                  ))}
+                  {detail.subtasks.map((st) => {
+                    let statusLabel = st.stage ?? "—";
+                    if ("status" in st && st.status) {
+                      statusLabel = st.status;
+                    } else if ("blocked" in st && st.blocked) {
+                      statusLabel = "blocked";
+                    } else if ("claimed" in st && st.claimed) {
+                      statusLabel = "claimed";
+                    }
+                    return (
+                      <li
+                        key={st.ticket_id}
+                        className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-xs"
+                      >
+                        <span className="truncate">{st.title}</span>
+                        <span className="shrink-0 font-mono text-[var(--muted)]">{statusLabel}</span>
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : null}
             </section>
@@ -587,8 +780,6 @@ export function TicketDetailDrawer({
                       : att.file_size >= 1024
                       ? `${(att.file_size / 1024).toFixed(1)} KB`
                       : `${att.file_size} B`;
-                  const downloadUrl = getAttachmentDownloadUrl(ticketId, att.attachment_id);
-
                   return (
                     <li
                       key={att.attachment_id}
@@ -606,16 +797,14 @@ export function TicketDetailDrawer({
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <a
-                          href={downloadUrl}
-                          download={att.filename}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          type="button"
                           className="ak-btn-ghost p-1 text-[var(--accent)] hover:text-[var(--accent-hover)]"
+                          onClick={() => handleDownloadAttachment(att.attachment_id, att.filename)}
                           title="Download file"
                         >
                           <Download className="h-3.5 w-3.5" />
-                        </a>
+                        </button>
                         <button
                           type="button"
                           className="ak-btn-ghost p-1 text-[var(--danger)] hover:bg-[var(--danger)]/10"
@@ -629,6 +818,40 @@ export function TicketDetailDrawer({
                   );
                 })}
               </ul>
+            )}
+          </section>
+
+          <section>
+            <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              <History className="h-3.5 w-3.5" />
+              History · revisions · reviews · postmortems
+            </h3>
+            {historyLoading ? (
+              <p className="text-xs text-[var(--muted)]">Loading history…</p>
+            ) : timeline.length === 0 ? (
+              <p className="text-xs text-[var(--muted)]">No revisions, reviews, or postmortems yet.</p>
+            ) : (
+              <ol className="space-y-2 border-l border-[var(--border)] pl-3">
+                {timeline.map((entry) => (
+                  <li key={entry.id} className="relative text-xs">
+                    <span
+                      className={`absolute -left-[0.97rem] top-1.5 h-2 w-2 rounded-full ${
+                        entry.kind === "review"
+                          ? "bg-[var(--accent)]"
+                          : entry.kind === "postmortem"
+                            ? "bg-[var(--warning)]"
+                            : "bg-[var(--muted)]"
+                      }`}
+                      aria-hidden
+                    />
+                    <p className="font-medium text-[var(--foreground)]">{entry.title}</p>
+                    <p className="mt-0.5 text-[var(--muted)]">{entry.summary}</p>
+                    <p className="mt-0.5 font-mono text-[10px] text-[var(--muted)]">
+                      @{entry.actor} · {formatTimelineWhen(entry.at)}
+                    </p>
+                  </li>
+                ))}
+              </ol>
             )}
           </section>
 
@@ -665,7 +888,7 @@ export function TicketDetailDrawer({
               htmlFor={commentFieldId}
               className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]"
             >
-              {isReview ? "Review note" : "Add comment"}
+              {isReview ? "Verdict reason / note" : isDone ? "Reopen reason" : "Add comment"}
             </label>
             <textarea
               id={commentFieldId}
@@ -675,8 +898,10 @@ export function TicketDetailDrawer({
               onChange={(e) => setDraft(e.target.value)}
               placeholder={
                 isReview
-                  ? "What looks good, or what should change…"
-                  : "Notes, questions, or progress…"
+                  ? "Optional for approve; required for reject…"
+                  : isDone
+                    ? "Why reopen this ticket?"
+                    : "Notes, questions, or progress…"
               }
               disabled={submitting || saving}
             />
@@ -689,10 +914,10 @@ export function TicketDetailDrawer({
                     type="button"
                     className="ak-btn-secondary w-full"
                     disabled={submitting || saving}
-                    onClick={() => void handleReviewDecision("request_changes")}
+                    onClick={() => void handleReviewDecision("reject")}
                   >
                     <RotateCcw className="h-4 w-4" />
-                    Request changes
+                    Reject
                   </button>
                   <button
                     type="button"
@@ -718,6 +943,21 @@ export function TicketDetailDrawer({
                     Comment only
                   </button>
                 </div>
+              </div>
+            ) : isDone ? (
+              <div className="flex items-center justify-between gap-2">
+                <button type="button" className="ak-btn-ghost" onClick={onClose}>
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="ak-btn-secondary"
+                  disabled={submitting || saving || !draft.trim()}
+                  onClick={() => void handleReopen()}
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {submitting ? "Reopening…" : "Reopen"}
+                </button>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-2">

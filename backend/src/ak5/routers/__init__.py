@@ -1,16 +1,17 @@
-from ak5.routers.actors import router as actors_router
-from ak5.routers.auth import router as auth_router
-from ak5.routers.boards import router as boards_router
-from ak5.routers.events import router as events_router
-from ak5.routers.subscriptions import router as subscriptions_router
-from ak5.routers.tickets import router as tickets_router
+"""Lazy compatibility shim — prefer ``ak5.server.routers``."""
 
-__all__ = [
-    "actors_router",
-    "auth_router",
-    "boards_router",
-    "events_router",
-    "subscriptions_router",
-    "tickets_router",
-]
+from __future__ import annotations
 
+import importlib
+from typing import Any
+
+from ak5._lazy_shim import install_submodule_shim
+
+install_submodule_shim(alias_prefix="ak5.routers", target_prefix="ak5.server.routers")
+
+
+def __getattr__(name: str) -> Any:
+    if name.startswith("_"):
+        raise AttributeError(name)
+    mod = importlib.import_module("ak5.server.routers")
+    return getattr(mod, name)

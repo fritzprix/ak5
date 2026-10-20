@@ -1,0 +1,39 @@
+# Example: AK5 API + Postgres (local / ECS-like). See docs/deploy/vercel-neon.md for hosted.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ak5
+      POSTGRES_PASSWORD: ak5
+      POSTGRES_DB: ak5
+    ports:
+      # Loopback only — example credentials must not bind all interfaces.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ak5 -d ak5"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      AK5_DEPLOY_PROFILE: local
+      DATABASE_URL: postgresql+asyncpg://ak5:ak5@db:5432/ak5
+      AK5_AUTO_MIGRATE: "1"
+      AK5_BLOB_BACKEND: fs
+      AK5_DATA_DIR: /app/data
+      AK5_NOTIFY: poll
+    volumes:
+      - ak5_pg_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  ak5_pg_data:

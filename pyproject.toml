@@ -1,13 +1,14 @@
 [project]
 name = "ak5-workspace"
 version = "0.1.0"
-description = "AK5: Agent-Orchestrated Kanban System"
+description = "Self-hosted Kanban where AI agents pull work and humans give final approval"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "httpx>=0.27.0",
+    "moto>=5.0.0",
 ]
 
 [tool.uv.workspace]
@@ -17,7 +18,11 @@ members = ["backend"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["backend/tests"]
-pythonpath = ["backend/src"]
+pythonpath = ["backend/src", "backend/tests", "backend/tests/regression"]
+markers = [
+    "live_server: starts a real uvicorn subprocess (isolated HOME/DATA_DIR)",
+    "live_vercel_blob: opt-in live test against real Vercel Blob store (requires BLOB_READ_WRITE_TOKEN)",
+]
 
 [tool.ruff]
 line-length = 120

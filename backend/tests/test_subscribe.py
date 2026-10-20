@@ -178,6 +178,7 @@ async def test_execute_subscriber_command_passes_stdin(tmp_path):
     assert '"TICKET_CREATED"' in output_file.read_text()
 
 
+@pytest.mark.skip(reason="rewritten in #13")
 def test_cli_subscribe_dry_run_help():
     runner = CliRunner()
     result = runner.invoke(cli, ["subscribe", "create", "--help"])
@@ -188,6 +189,7 @@ def test_cli_subscribe_dry_run_help():
     assert "placeholder" in result.output.lower() or "$AK5_" in result.output or "stdin" in result.output.lower()
 
 
+@pytest.mark.skip(reason="rewritten in #13")
 def test_cli_subscribe_dry_run_warns_on_legacy_placeholders():
     runner = CliRunner()
     result = runner.invoke(
@@ -199,6 +201,7 @@ def test_cli_subscribe_dry_run_warns_on_legacy_placeholders():
     assert "Dry-run mode: Subscription was not registered." in result.output
 
 
+@pytest.mark.skip(reason="rewritten in #13")
 @pytest.mark.asyncio
 async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch):
     import sys
@@ -267,6 +270,7 @@ async def test_subscription_loop_processes_matching_event(tmp_path, monkeypatch)
     assert output_file.read_text().strip() == "[TICKET_CREATED] TK-777:Auto Trigger"
 
 
+@pytest.mark.skip(reason="rewritten in #13")
 @pytest.mark.asyncio
 async def test_subscription_loop_skips_unmatched_or_missing_board(tmp_path, monkeypatch):
     output_file = tmp_path / "handled_unmatched.txt"
@@ -327,6 +331,7 @@ async def test_subscription_loop_skips_unmatched_or_missing_board(tmp_path, monk
     assert not output_file.exists()
 
 
+@pytest.mark.skip(reason="rewritten in #13")
 def test_subscribe_architecture_requirement():
     """Register & Return: dry-run exits immediately without blocking."""
     runner = CliRunner()
@@ -394,6 +399,7 @@ def test_smart_event_and_agent_normalization():
     assert matches_event_filter("TICKET", "CONNECTED") is False
 
 
+@pytest.mark.skip(reason="rewritten in #13")
 def test_subscribe_help_guidance():
     """Verify that subscribe --help and create --help contain clear agent guidance."""
     runner = CliRunner()

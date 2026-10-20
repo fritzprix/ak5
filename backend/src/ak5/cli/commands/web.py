@@ -1,121 +1,41 @@
-"""Pure-Python launcher for the embedded Kanban web dashboard (single port)."""
+"""Deprecated alias: ``ak5 web`` → ``ak5 serve --ui`` (cli.md §4.1 / §5)."""
 
 from __future__ import annotations
 
-import contextlib
-import os
-import threading
-import time
-import webbrowser
-from pathlib import Path
-
 import click
-import uvicorn
-from ak5.cli.tailscale import detect_tailscale
-from ak5.security import get_identify_secret
-from ak5.web_auth import get_web_auth_config
-from ak5.web_ui_static import web_ui_available
 from rich.console import Console
-from rich.panel import Panel
 
 console = Console()
 
 
-def _load_dotenv_files() -> None:
-    """Best-effort .env load for AK5_AUTH_* without adding python-dotenv."""
-    candidates = [
-        Path.cwd() / ".env",
-        Path.cwd() / "frontend" / ".env",
-    ]
-    # Editable install: .../backend/src/ak5/cli/commands/web.py → repo root parents[5]
-    here = Path(__file__).resolve()
-    if len(here.parents) >= 6:
-        candidates.append(here.parents[5] / ".env")
-
-    for path in candidates:
-        if not path.is_file():
-            continue
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#") or "=" not in stripped:
-                    continue
-                key, _, value = stripped.partition("=")
-                key = key.strip()
-                value = value.strip().strip("'").strip('"')
-                if key and key not in os.environ:
-                    os.environ[key] = value
-        except OSError:
-            continue
-        break
-
-
-def _print_ready_banner(host: str, port: int, is_ssl: bool = False) -> None:
-    ts = detect_tailscale(port=port)
-    cfg = get_web_auth_config()
-    scheme = "https" if is_ssl else "http"
-    from ak5.config import settings
-
-    local = f"{scheme}://127.0.0.1:{port}"
-    lines = [
-        f"[bold]Local:[/bold]              [cyan]{local}[/cyan]",
-        f"[bold]API Docs:[/bold]           [cyan]{local}/docs[/cyan]",
-        f"[bold]Database:[/bold]           [cyan]{settings.DATABASE_URL}[/cyan]",
-    ]
-    if ts.https_active and ts.https_url:
-        lines.append(f"[bold]Tailscale HTTPS:[/bold]   [green]{ts.https_url}[/green] (secure port 443)")
-    elif ts.dns_name:
-        lines.append(f"[bold]Tailscale Domain:[/bold]  [cyan]{scheme}://{ts.dns_name}:{port}[/cyan]")
-    if ts.ipv4:
-        lines.append(f"[bold]Tailscale IP:[/bold]      [cyan]{scheme}://{ts.ipv4}:{port}[/cyan]")
-    if host not in {"127.0.0.1", "localhost"}:
-        lines.append(f"[bold]Bind:[/bold]               [cyan]{scheme}://{host}:{port}[/cyan]")
-
-    if cfg.enabled:
-        lines.append(f"[bold]Web Auth:[/bold]           [green]ENABLED[/green] (user: {cfg.username})")
-        lines.append("[bold]Brute-force Shield:[/bold] [green]ACTIVE[/green] (5 / 5m, 10m lockout)")
-    else:
-        lines.append("[bold]Web Auth:[/bold]           [yellow]DISABLED[/yellow] (set AK5_AUTH_PASSWORD)")
-
-    if get_identify_secret():
-        lines.append("[bold]Identify Gate:[/bold]       [green]ENABLED[/green] (AK5_IDENTIFY_SECRET)")
-        if not cfg.enabled:
-            lines.append(
-                "[bold]Note:[/bold]                Dashboard writes need web auth cookie "
-                "or agents must share AK5_IDENTIFY_SECRET"
-            )
-    else:
-        lines.append(
-            "[bold]Identify Gate:[/bold]       [yellow]OPEN[/yellow] "
-            "(set AK5_IDENTIFY_SECRET when exposing the API)"
-        )
-
-    console.print(
-        Panel(
-            "\n".join(lines),
-            title="AK5 Kanban Web Dashboard",
-            border_style="green",
-        )
-    )
-
-
-def _open_browser_later(url: str, delay: float = 1.2) -> None:
-    def _open() -> None:
-        time.sleep(delay)
-        with contextlib.suppress(Exception):
-            webbrowser.open(url)
-
-    threading.Thread(target=_open, daemon=True).start()
-
-
-@click.command("web")
-@click.option("--host", default="0.0.0.0", show_default=True, help="Bind address (0.0.0.0 for Tailscale/LAN)")
+@click.command("web", deprecated=True)
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address")
 @click.option("--port", default=8000, show_default=True, type=int, help="Single port for API + dashboard")
-@click.option("--ssl-keyfile", default=None, type=click.Path(exists=True), help="SSL private key file for direct HTTPS")
-@click.option("--ssl-certfile", default=None, type=click.Path(exists=True), help="SSL certificate file for direct HTTPS")
+@click.option(
+    "--ssl-keyfile",
+    default=None,
+    type=click.Path(exists=True),
+    help="SSL private key file for direct HTTPS",
+)
+@click.option(
+    "--ssl-certfile",
+    default=None,
+    type=click.Path(exists=True),
+    help="SSL certificate file for direct HTTPS",
+)
 @click.option("--tailscale-serve", is_flag=True, help="Proxy via Tailscale Serve (HTTPS on port 443)")
 @click.option("--no-browser", is_flag=True, help="Do not open a browser tab")
 @click.option("--reload", is_flag=True, help="Auto-reload (development)")
+@click.option(
+    "--insecure",
+    is_flag=True,
+    help="Allow non-loopback bind without auth (dangerous; not recommended)",
+)
+@click.option(
+    "--daemon",
+    is_flag=True,
+    help="Also start `ak5 daemon run` as a sibling process (cleaned up on exit)",
+)
 def web_command(
     host: str,
     port: int,
@@ -124,70 +44,30 @@ def web_command(
     tailscale_serve: bool,
     no_browser: bool,
     reload: bool,
+    insecure: bool,
+    daemon: bool,
 ) -> None:
-    """Start AK5 with the embedded Kanban Web Dashboard on one port.
+    """Deprecated alias for ``ak5 serve --ui``.
 
-    Serves the packaged static UI (when present) plus REST/SSE/MCP.
-    Detects Tailscale IP / MagicDNS automatically when the Tailscale CLI exists.
-    Optional login gate via AK5_AUTH_PASSWORD (see .env.example).
+    Starts AK5 with the embedded Kanban Web Dashboard on one port.
+    Prefer ``ak5 serve --ui`` going forward.
     """
-    _load_dotenv_files()
+    console.print(
+        "[yellow]Deprecated:[/yellow] ``ak5 web`` is an alias for "
+        "[bold cyan]ak5 serve --ui[/bold cyan]. Prefer the latter.\n"
+    )
+    from ak5.cli.commands.serve import run_serve
 
-    from ak5.config import settings
-    from ak5.paths import DatabaseConflictError, check_legacy_cwd_db
-    from ak5.services.db_safety import DatabaseWipeError, prepare_database_for_use
-
-    try:
-        prepare_database_for_use(settings.DATABASE_URL)
-    except (DatabaseConflictError, DatabaseWipeError) as exc:
-        console.print(f"[bold red]✗ Database conflict[/bold red]\n{exc}")
-        raise SystemExit(1) from exc
-    if check_legacy_cwd_db():
-        console.print(
-            "[bold red]✗ Local ./ak5.db still present after reconcile.[/bold red] "
-            "Run [cyan]ak5 migrate-legacy --force[/cyan] or delete ./ak5.db."
-        )
-        raise SystemExit(1)
-
-    if not web_ui_available():
-        console.print(
-            "[bold yellow]Warning:[/bold yellow] Embedded web UI assets not found "
-            "([cyan]ak5/web_ui/index.html[/cyan])."
-        )
-        console.print(
-            "Build them with [bold cyan]scripts/build_web_ui.sh[/bold cyan] "
-            "(CI/release does this automatically), then reinstall the package."
-        )
-        console.print("API-only mode will still start; open [cyan]/docs[/cyan] for Swagger.\n")
-
-    if tailscale_serve:
-        import shutil
-        import subprocess
-
-        if shutil.which("tailscale"):
-            console.print(f"[cyan]▶ Setting up Tailscale HTTPS proxy (tailscale serve --bg {port})...[/cyan]")
-            res = subprocess.run(["tailscale", "serve", "--bg", str(port)], capture_output=True, text=True, check=False)
-            if res.returncode != 0:
-                err_msg = res.stderr.strip() or res.stdout.strip()
-                console.print(f"[yellow]⚠️ Tailscale serve returned:[/yellow] {err_msg}")
-            else:
-                console.print("[green]✓ Tailscale HTTPS serve active on port 443[/green]")
-
-    is_ssl = bool(ssl_keyfile and ssl_certfile)
-    _print_ready_banner(host, port, is_ssl=is_ssl)
-
-    if not no_browser:
-        scheme = "https" if is_ssl else "http"
-        _open_browser_later(f"{scheme}://127.0.0.1:{port}/")
-
-    console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
-    uvicorn.run(
-        "ak5.main:app",
+    run_serve(
         host=host,
         port=port,
-        reload=reload,
-        proxy_headers=True,
-        forwarded_allow_ips="*",
+        ui=True,
+        daemon=daemon,
+        tailscale_serve=tailscale_serve,
         ssl_keyfile=ssl_keyfile,
         ssl_certfile=ssl_certfile,
+        reload=reload,
+        insecure=insecure,
+        no_browser=no_browser,
+        dev_insecure_identify=False,
     )

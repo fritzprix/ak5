@@ -92,16 +92,16 @@ def test_reset_nontty_yes_allowed_with_env(monkeypatch):
     monkeypatch.setenv("AK5_ALLOW_DESTRUCTIVE_RESET", "1")
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr(
-        "ak5.cli.commands.reset.reset_kanban_data",
+        "ak5.server.seed.reset_kanban_data",
         lambda **_kwargs: _async_counts(),
     )
     # Avoid dual-DB / wipe surprises in the isolated temp store.
     monkeypatch.setattr(
-        "ak5.services.db_safety.prepare_database_for_use",
+        "ak5.server.services.db_safety.prepare_database_for_use",
         lambda *_a, **_k: None,
     )
     monkeypatch.setattr(
-        "ak5.services.db_safety.snapshot_live_database",
+        "ak5.server.services.db_safety.snapshot_live_database",
         lambda *_a, **_k: None,
     )
     runner = CliRunner()
@@ -172,25 +172,26 @@ async def test_reset_writes_skip_marker_and_snapshot_message():
     from ak5.config import settings
     from ak5.models.ticket import Ticket
     from ak5.seed import seed_initial_data
+    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
     from ak5.services.db_safety import skip_auto_restore_marker
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await seed_initial_data()
 
-    todo_col = f"{settings.DEFAULT_BOARD_ID}_todo"
+    backlog_col = f"{settings.DEFAULT_BOARD_ID}_backlog"
     async with AsyncSessionLocal() as db:
         db.add(
             Ticket(
                 ticket_id="TK-RESET-SNAP",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id=settings.DEFAULT_BOARD_ID,
-                column_id=todo_col,
+                column_id=backlog_col,
                 title="Snap me",
                 priority="medium",
                 rank="a",
                 labels="[]",
                 created_by="user_pm",
-                status="open",
             )
         )
         await db.commit()

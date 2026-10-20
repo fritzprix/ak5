@@ -20,7 +20,7 @@ class DatabaseConflictError(RuntimeError):
     """Raised when cwd ./ak5.db and the global store both hold divergent real data."""
 
 
-def get_app_data_dir(app_name: str = "ak5") -> Path:
+def get_app_data_dir(app_name: str = "ak5", *, create: bool = True) -> Path:
     """Return OS-specific application data directory (cross-platform).
 
     Priority:
@@ -28,11 +28,16 @@ def get_app_data_dir(app_name: str = "ak5") -> Path:
     2. Windows: %LOCALAPPDATA%/ak5 (fallback: ~/.AppData/Local/ak5)
     3. macOS: ~/Library/Application Support/ak5
     4. Linux/Unix: $XDG_DATA_HOME/ak5 (fallback: ~/.local/share/ak5)
+
+    ``create=False`` keeps import/settings path resolution side-effect free
+    (deployment.md §4 / #110). Lifespan / ``prepare_database_for_use`` pass
+    ``create=True``.
     """
     override = os.environ.get("AK5_DATA_DIR", "").strip()
     if override:
         path = Path(override).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
         return path
 
     if sys.platform == "win32":
@@ -45,7 +50,8 @@ def get_app_data_dir(app_name: str = "ak5") -> Path:
         base = Path(xdg_data) if xdg_data else Path.home() / ".local" / "share"
 
     app_dir = (base / app_name).expanduser().resolve()
-    app_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir
 
 
@@ -225,16 +231,24 @@ def _remove_cwd_db_files(local_db: Path) -> None:
 def get_canonical_db_path() -> Path:
     """Return the single on-disk SQLite path for this process (``AK5_DATA_DIR/ak5.db``).
 
-    Pure path helper — no migrate / promote / delete side effects.
+    Pure path helper — no migrate / promote / delete / mkdir side effects.
     """
-    return get_app_data_dir() / "ak5.db"
+    return get_app_data_dir(create=False) / "ak5.db"
 
 
 def sqlite_file_from_database_url(database_url: str) -> Path | None:
-    """Return the SQLite file path for a SQLAlchemy URL, or ``None`` for ``:memory:``."""
+    """Return the SQLite file path for a SQLAlchemy URL, or ``None`` for non-SQLite / ``:memory:``.
+
+    PostgreSQL URLs must not be treated as filesystem paths: ``make_url`` puts the
+    database *name* in ``url.database`` (e.g. ``ak5``), which would otherwise resolve
+    to ``./ak5`` and trip the canonical-store gate (#106 / #155).
+    """
     from sqlalchemy.engine import make_url
 
     url = make_url(database_url)
+    driver = (url.drivername or "").lower()
+    if "sqlite" not in driver:
+        return None
     if not url.database or url.database == ":memory:":
         return None
     return Path(url.database).expanduser().resolve()
@@ -467,7 +481,5 @@ def get_default_database_url() -> str:
 
 
 def get_default_attachments_dir() -> Path:
-    """Return default attachments directory in app local storage."""
-    attachments = get_app_data_dir() / "attachments"
-    attachments.mkdir(parents=True, exist_ok=True)
-    return attachments
+    """Return default attachments directory in app local storage (no mkdir on import)."""
+    return get_app_data_dir(create=False) / "attachments"

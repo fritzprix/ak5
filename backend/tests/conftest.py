@@ -17,18 +17,24 @@ _TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="ak5_pytest_data_"))
 os.environ["AK5_DATA_DIR"] = str(_TEST_DATA_DIR)
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(_TEST_DATA_DIR / 'ak5.db').as_posix()}"
 os.environ.setdefault("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
+# Prevent ``ak5 serve`` from permanently writing checkout ``.env`` into os.environ.
+os.environ["AK5_SKIP_DOTENV"] = "1"
 os.environ.pop("AK5_IDENTIFY_SECRET", None)
 os.environ.pop("IDENTIFY_SECRET", None)
+os.environ.pop("AK5_AUTH_PASSWORD", None)
+os.environ.pop("AK5_WEB_PASSWORD", None)
+os.environ.pop("AK5_AUTH_USERNAME", None)
 
-import ak5.models  # noqa: E402, F401
+import ak5.server.models  # noqa: E402, F401  # register SQLAlchemy metadata
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
-from ak5.config import settings  # noqa: E402
-from ak5.database import get_db  # noqa: E402
-from ak5.main import app  # noqa: E402
-from ak5.models.base import Base  # noqa: E402
-from ak5.routers.auth import create_access_token  # noqa: E402
-from ak5.security import reset_secret_caches  # noqa: E402
+from ak5.server.config import settings  # noqa: E402
+from ak5.server.database import get_db  # noqa: E402
+from ak5.server.main import app  # noqa: E402
+from ak5.server.models.base import Base  # noqa: E402
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID  # noqa: E402
+from ak5.server.routers.auth import create_access_token  # noqa: E402
+from ak5.server.security import reset_secret_caches  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import event  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
@@ -73,9 +79,15 @@ TestAsyncSessionLocal = async_sessionmaker(
 def _isolate_runtime_secrets(monkeypatch):
     """Stable JWT for tests; identify gate off unless a test enables it."""
     monkeypatch.setenv("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
+    monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
+    # identity.md §2 — insecure identify allowed for TestClient (loopback/testclient).
+    monkeypatch.setenv("AK5_DEV_INSECURE_IDENTIFY", "1")
     monkeypatch.delenv("AK5_IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("IDENTIFY_SECRET", raising=False)
     monkeypatch.delenv("AK5_JWT_SECRET_FILE", raising=False)
+    monkeypatch.delenv("AK5_AUTH_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_WEB_PASSWORD", raising=False)
+    monkeypatch.delenv("AK5_AUTH_USERNAME", raising=False)
     # Keep AK5_DATA_DIR / DATABASE_URL on the isolated temp dir for the whole session.
     monkeypatch.setenv("AK5_DATA_DIR", str(_TEST_DATA_DIR))
     monkeypatch.setenv("DATABASE_URL", os.environ["DATABASE_URL"])
@@ -95,6 +107,18 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    # Web-auth gate middleware reads sessions via this factory (not only get_db).
+    app.state.session_factory = TestAsyncSessionLocal
+
+    # Long-poll / SSE re-open sessions via the service factory (same in-memory engine).
+    from ak5.services.subscription_service import (
+        reset_purge_throttle_for_tests,
+        subscription_service,
+    )
+
+    subscription_service.session_factory = TestAsyncSessionLocal
+    subscription_service.admin_session_factory = TestAsyncSessionLocal
+    reset_purge_throttle_for_tests()
 
     # Seed initial test data
     async with TestAsyncSessionLocal() as session:
@@ -124,34 +148,128 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             capabilities=json.dumps(["image-resize", "webp"]),
             status="idle",
         )
-        session.add_all([pm, agent])
+        system = Actor(
+            actor_id="system",
+            actor_type="agent",
+            name="System",
+            role="system",
+            description="Automated system actions",
+            capabilities=json.dumps([]),
+            status="idle",
+        )
+        session.add_all([pm, agent, system])
 
         board = Board(
             board_id="proj-core-engine",
+            workspace_id=LOCAL_WORKSPACE_ID,
             name="Core Engine",
             description="Test board",
             created_by="user_pm",
+            kind="standard",
+            template="default",
+            auto_created=False,
         )
-        session.add(board)
+        inbox = Board(
+            board_id="inbox",
+            workspace_id=LOCAL_WORKSPACE_ID,
+            name="Global Inbox",
+            description="System inbox",
+            created_by="user_pm",
+            kind="inbox",
+            template="inbox",
+            auto_created=False,
+        )
+        session.add_all([board, inbox])
 
         members = [
-            BoardMember(board_id="proj-core-engine", actor_id="user_pm", role="admin"),
-            BoardMember(board_id="proj-core-engine", actor_id="agent_image_worker", role="agent"),
+            BoardMember(
+                board_id="proj-core-engine",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                actor_id="user_pm",
+                role="admin",
+            ),
+            BoardMember(
+                board_id="proj-core-engine",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                actor_id="agent_image_worker",
+                role="agent",
+            ),
+            BoardMember(
+                board_id="inbox",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                actor_id="user_pm",
+                role="admin",
+            ),
         ]
         session.add_all(members)
 
+        # Full default-template stage set (workflow.md §2.2). Keep legacy
+        # column_ids (col_todo / col_in_progress / col_review / col_done) for
+        # existing test compatibility.
         cols = [
-            Column(column_id="col_todo", board_id="proj-core-engine", name="To Do", stage="open", position=1, wip_limit=0),
+            Column(
+                column_id="col_todo",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                board_id="proj-core-engine",
+                name="Backlog",
+                stage="backlog",
+                position=1,
+                wip_limit=0,
+            ),
             Column(
                 column_id="col_in_progress",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="proj-core-engine",
                 name="In Progress",
                 stage="in_progress",
                 position=2,
                 wip_limit=3,
             ),
-            Column(column_id="col_review", board_id="proj-core-engine", name="Review", stage="review", position=3, wip_limit=3),
-            Column(column_id="col_done", board_id="proj-core-engine", name="Done", stage="done", position=4, wip_limit=0),
+            Column(
+                column_id="col_review",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                board_id="proj-core-engine",
+                name="Agent Review",
+                stage="agent_review",
+                position=3,
+                wip_limit=3,
+            ),
+            Column(
+                column_id="col_postmortem_pending",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                board_id="proj-core-engine",
+                name="Postmortem Pending",
+                stage="postmortem_pending",
+                position=4,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="col_human_review",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                board_id="proj-core-engine",
+                name="Human Review",
+                stage="human_review",
+                position=5,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="col_done",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                board_id="proj-core-engine",
+                name="Done",
+                stage="done",
+                position=6,
+                wip_limit=0,
+            ),
+            Column(
+                column_id="inbox_unclassified",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                board_id="inbox",
+                name="Unclassified",
+                stage="unclassified",
+                position=1,
+                wip_limit=0,
+            ),
         ]
         session.add_all(cols)
         await session.commit()
@@ -163,6 +281,8 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
         await conn.run_sync(Base.metadata.drop_all)
 
     app.dependency_overrides.clear()
+    if hasattr(app.state, "session_factory"):
+        del app.state.session_factory
 
 
 @pytest_asyncio.fixture(scope="function")

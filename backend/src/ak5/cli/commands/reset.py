@@ -6,7 +6,6 @@ from collections.abc import Coroutine
 from typing import Any
 
 import click
-from ak5.seed import reset_kanban_data
 from rich.console import Console
 from rich.panel import Panel
 
@@ -60,6 +59,10 @@ def reset_command(yes: bool, keep_boards: bool, clear_sessions: bool) -> None:
       Automated AI agents running in non-TTY environments cannot execute this command
       without explicit human interaction.
     """
+    from ak5.cli.server_extra import require_server_extra
+
+    require_server_extra()
+
     # 1. Non-interactive guard: require TTY if --yes not provided (protect against background agents)
     is_test = bool(os.environ.get("PYTEST_CURRENT_TEST"))
     is_tty = bool(sys.stdin.isatty())
@@ -70,9 +73,10 @@ def reset_command(yes: bool, keep_boards: bool, clear_sessions: bool) -> None:
         )
         raise SystemExit(1)
 
-    from ak5.config import settings
     from ak5.paths import DatabaseConflictError
-    from ak5.services.db_safety import (
+    from ak5.server.config import settings
+    from ak5.server.seed import reset_kanban_data
+    from ak5.server.services.db_safety import (
         DatabaseWipeError,
         destructive_reset_allowed,
         mark_skip_auto_restore,

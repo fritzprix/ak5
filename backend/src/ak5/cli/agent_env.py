@@ -57,7 +57,8 @@ def refuse_blocking_watch_for_agents() -> None:
     console.print(
         "[bold red]✗ Blocking event watch is not allowed in agent/harness runtimes.[/bold red]\n"
         "[yellow]Agents must Register & Return:[/yellow]\n"
-        '  [cyan]ak5 subscribe create <BOARD_ID> --exec \'…\' --for-agent "$AK5_ACTOR_ID"[/cyan]\n'
+        "  [cyan]ak5 subscribe add <BOARD_ID> --events WORK_AVAILABLE --exec '…'[/cyan]\n"
+        "[dim]Or block until work exists:[/dim] [cyan]ak5 next --wait 25[/cyan]\n"
         "[dim]Verify with:[/dim] [cyan]ak5 subscribe ls[/cyan]\n"
         "[dim]Human terminals only:[/dim] [cyan]ak5 events watch <BOARD_ID> --exec '…'[/cyan]\n"
         "[dim]Override (tests only):[/dim] [cyan]AK5_ALLOW_WATCH=1[/cyan]"

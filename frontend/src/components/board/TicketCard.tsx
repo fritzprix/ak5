@@ -1,10 +1,10 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { AlertOctagon, GitBranch, GripVertical } from "lucide-react";
-import { Ticket } from "@/lib/types";
+import { AlertOctagon, ChevronDown, ChevronRight, GitBranch, GripVertical } from "lucide-react";
+import { SubtaskSummary, Ticket } from "@/lib/types";
 import { ActorBadge } from "../actor/ActorBadge";
 
 interface TicketCardProps {
@@ -21,12 +21,33 @@ const priorityClass: Record<string, string> = {
   low: "border-[var(--border)] text-[var(--muted)]",
 };
 
+function isSubtaskSummary(item: SubtaskSummary | Ticket): item is SubtaskSummary {
+  // Board summaries omit Ticket.status/rank; detail payloads include them.
+  return !("status" in item) || !("rank" in item);
+}
+
+function subtaskRows(ticket: Ticket): SubtaskSummary[] {
+  if (!ticket.subtasks?.length) return [];
+  return ticket.subtasks.map((st) => {
+    if (isSubtaskSummary(st)) return st;
+    return {
+      ticket_id: st.ticket_id,
+      title: st.title,
+      stage: st.stage ?? null,
+      board_id: st.board_id,
+      blocked: st.status === "blocked" || Boolean(st.blocked_kind),
+      claimed: Boolean(st.claimed_by),
+    };
+  });
+}
+
 export const TicketCard: React.FC<TicketCardProps> = ({
   ticket,
   onOpen,
   onDelegateClick,
   compact = false,
 }) => {
+  const [expanded, setExpanded] = useState(false);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: ticket.ticket_id,
     data: { type: "Ticket", ticket },
@@ -38,11 +59,23 @@ export const TicketCard: React.FC<TicketCardProps> = ({
     opacity: isDragging ? 0.45 : 1,
   };
 
-  const isBlocked = ticket.status === "blocked";
-  const hasSubtasks = ticket.subtask_count > 0;
+  const isBlocked = ticket.status === "blocked" || Boolean(ticket.blocked_kind);
+  const blockedLabel =
+    ticket.blocked_kind === "needs_human"
+      ? "Needs human"
+      : ticket.blocked_kind === "escalation"
+        ? "Escalated"
+        : ticket.blocked_kind === "dependency"
+          ? "Dependency"
+          : ticket.blocked_kind === "external"
+            ? "External"
+            : "Blocked";
+  const summaries = subtaskRows(ticket);
+  const hasSubtasks = ticket.subtask_count > 0 || summaries.length > 0;
+  const isClaimed = Boolean(ticket.claimed_by);
   const isAgentActive =
-    ticket.status === "in_progress" &&
-    Boolean(ticket.assigned_to?.startsWith("agent"));
+    (ticket.status === "in_progress" || isClaimed) &&
+    Boolean(ticket.assigned_to?.startsWith("agent") || ticket.claimed_by?.startsWith("agent"));
 
   return (
     <div
@@ -90,16 +123,42 @@ export const TicketCard: React.FC<TicketCardProps> = ({
         {isBlocked ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[var(--danger)]">
             <AlertOctagon className="h-3 w-3" />
-            Blocked
+            {blockedLabel}
           </span>
         ) : null}
       </div>
 
       {!compact && hasSubtasks ? (
-        <p className="mb-2 inline-flex items-center gap-1 pl-5 text-[10px] text-[var(--muted)]">
-          <GitBranch className="h-3 w-3" />
-          {ticket.subtask_done_count}/{ticket.subtask_count} subtasks
-        </p>
+        <div className="mb-2 pl-5">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-[10px] text-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <GitBranch className="h-3 w-3" />
+            {ticket.subtask_done_count}/{ticket.subtask_count} subtasks
+          </button>
+          {expanded && summaries.length > 0 ? (
+            <ul className="mt-1.5 space-y-1 border-l border-[var(--border)] pl-2">
+              {summaries.map((st) => (
+                <li
+                  key={st.ticket_id}
+                  className="flex items-center justify-between gap-2 text-[10px] text-[var(--muted)]"
+                >
+                  <span className="min-w-0 truncate text-[var(--foreground)]">{st.title}</span>
+                  <span className="shrink-0 font-mono">
+                    {st.stage ?? "—"}
+                    {st.board_id !== ticket.board_id ? ` · ${st.board_id}` : ""}
+                    {st.blocked ? " · blocked" : ""}
+                    {st.claimed ? " · claimed" : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] pt-2">

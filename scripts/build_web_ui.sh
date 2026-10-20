@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build the Next.js dashboard into backend/src/ak5/web_ui for PyPI packaging.
+# Build the Next.js dashboard into backend/src/ak5/server/web_ui for PyPI packaging.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND="$ROOT/frontend"
-TARGET="$ROOT/backend/src/ak5/web_ui"
+TARGET="$ROOT/backend/src/ak5/server/web_ui"
 MIDDLEWARE="$FRONTEND/src/middleware.ts"
 MIDDLEWARE_BAK="$FRONTEND/src/middleware.ts.embed_bak"
 

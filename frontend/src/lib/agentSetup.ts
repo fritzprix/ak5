@@ -14,9 +14,10 @@ export function buildAgentSetupMarkdown(board: Board, actors: Actor[]): string {
   const healthUrl = getHealthUrl();
   const eventsUrl = getEventsStreamUrl();
 
-  const openColId = columnIdOrFallback(board, "open", "todo");
+  const backlogColId = columnIdOrFallback(board, "backlog", "backlog");
   const inProgressColId = columnIdOrFallback(board, "in_progress", "in_progress");
-  const reviewColId = columnIdOrFallback(board, "review", "review");
+  const agentReviewColId = columnIdOrFallback(board, "agent_review", "agent_review");
+  const humanReviewColId = columnIdOrFallback(board, "human_review", "human_review");
   const doneColId = columnIdOrFallback(board, "done", "done");
 
   const agentsList = actors
@@ -31,7 +32,7 @@ If a command fails, run \`ak5 <command> --help\` — do **not** explore source c
 
 ## Success criteria (stop when done)
 1. \`ak5 whoami\` shows **your** actor (plain id, no leading \`@\`)
-2. \`ak5 subscribe ls\` shows a row for board \`${boardId}\`
+2. \`ak5 subscribe list\` shows a row for board \`${boardId}\`
 3. Idle — wait to be woken by the hook. Do **not** write a poll/cron script.
 
 ## 1. Gateway Verification
@@ -44,10 +45,11 @@ curl -s ${healthUrl}
 - **API Base URL** (absolute — use this in curl): \`${apiBase}\`
 - **SSE** (humans only): \`${eventsUrl}\`
 - **Board**: \`${boardId}\` (${boardName})
-- **Columns**:
-  - open: \`${openColId}\`
+- **Columns** (7-stage workflow):
+  - backlog: \`${backlogColId}\`
   - in_progress: \`${inProgressColId}\`
-  - review: \`${reviewColId}\`
+  - agent_review: \`${agentReviewColId}\`
+  - human_review: \`${humanReviewColId}\`
   - done: \`${doneColId}\`
 
 ## 2. Identity (whoami first)
@@ -66,7 +68,7 @@ ak5 whoami
 export AK5_ACTOR_ID="<YOUR_AGENT_ID>"   # plain id, NO leading @
 ak5 login \\
   --id "$AK5_ACTOR_ID" \\
-  --role "<YOUR_ROLE>" \\
+  --role worker \\
   --caps "<comma-separated,capabilities>" \\
   --type agent \\
   --board ${boardId}
@@ -80,56 +82,39 @@ ${agentsList || "  (No agents registered yet)"}
 
 ## 4. Register hook once (required)
 
-**\`--exec\`** must **wake your agent runtime** (Cursor \`agent\`, LibrAgent webhook, custom script, …).
-Claim / move / work / comment happen **in the woken session**, not inside \`--exec\`.
-
-Anti-patterns: \`echo …\`, ticket-view-only, move-only curl, background \`watch\`/SSE, **any 60–120s poll script**.
-
 \`\`\`bash
-# Exits immediately. Success = row in subscribe ls (no local watcher process).
-ak5 subscribe create ${boardId} \\
-  --for-agent "$AK5_ACTOR_ID" \\
-  --exec '<YOUR_HARNESS_WAKE_CMD>'
-# Examples (pick one that wakes YOUR harness):
-#   --exec 'agent -p "$AK5_SUMMARY"'
-#   --exec 'curl -X POST https://YOUR_HARNESS/hook -H "Content-Type: application/json" -d @-'
-#   --exec './scripts/on_board_event.sh'
-
-ak5 subscribe ls
+ak5 subscribe add ${boardId} \\
+  --events WORK_AVAILABLE \\
+  --hook-exec '<YOUR_HARNESS_WAKE_CMD>'
+# Examples:
+#   --hook-exec 'agent -p "$AK5_SUMMARY"'
+ak5 subscribe list
+ak5 daemon start
 \`\`\`
 
-Omit \`--events\` unless you have a strong reason (default = full core lifecycle).
-
-## 5. When woken
-On \`TICKET_CREATED\` / \`TICKET_DELEGATED\` / \`TICKET_MOVED\` / \`TICKET_UPDATED\`:
-1. If assigned to you and still open → claim
-2. Move to in_progress (\`${inProgressColId}\`)
-3. Work; comment progress/artifacts
-4. Move to review (\`${reviewColId}\`) or done (\`${doneColId}\`)
-5. If blocked: \`ak5 ticket block <ID> --reason "…" --mention user_pm\`
+## 5. When woken (pull model)
+1. \`ak5 next --board ${boardId} --json\` (exit 6 = nothing)
+2. \`ak5 ticket claim <ID>\`
+3. Work; \`ak5 ticket heartbeat <ID>\` while holding the lease
+4. \`ak5 ticket submit <ID> --deliverable @file.json\` → agent_review (\`${agentReviewColId}\`)
+5. Humans approve at human_review (\`${humanReviewColId}\`); do **not** drag across stages unless the drop maps to a human command
 
 ## 6. Quick CLI (prefer over raw REST)
 \`\`\`bash
-ak5 board --board-id ${boardId}
-ak5 agents --cap "<capability>"
-ak5 delegate <TICKET_ID> --to <AGENT_ID> --title "<Title>" --desc "<Description>" --priority high
-ak5 ticket move <TICKET_ID> "In Progress"
+ak5 board ${boardId}
+ak5 ticket view <TICKET_ID>
 ak5 ticket comment <TICKET_ID> "progress note"
+ak5 ticket block <ID> --kind needs_human --reason "…"
 \`\`\`
 
 ## 7. REST only if CLI unavailable (absolute URLs)
 \`\`\`bash
 TOKEN=$(jq -r .token .ak5/sessions/$AK5_ACTOR_ID.json)
 curl -s -H "Authorization: Bearer $TOKEN" ${apiBase}/boards/${boardId}
-curl -s -X PATCH ${apiBase}/tickets/<TICKET_ID>/move \\
+curl -s -X POST ${apiBase}/tickets/<TICKET_ID>/claim \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer $TOKEN" \\
-  -d '{"target_column_id": "${inProgressColId}"}'
+  -d '{}'
 \`\`\`
-
-## 8. Periodic pull — last resort only
-Use **only** when \`subscribe create\` is rejected or the gateway cannot run hooks.
-Do **not** create a poll script just because this setup was pasted.
-When falling back, periodically run \`ak5 board --board-id ${boardId}\` in your **existing** agent session (no new cron process), claim at most one open ticket assigned to you, then idle.
 `;
 }

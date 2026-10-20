@@ -6,7 +6,7 @@ interface BoardPageProps {
 
 /** Pre-render shells for static export; unknown IDs fall back via FastAPI SPA. */
 export function generateStaticParams() {
-  return [{ boardId: "proj-core-engine" }, { boardId: "_" }];
+  return [{ boardId: "inbox" }, { boardId: "proj-core-engine" }, { boardId: "_" }];
 }
 
 export default async function BoardPage({ params }: BoardPageProps) {

@@ -1,0 +1,396 @@
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Any
+from urllib.parse import quote
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.contracts.version import API_VERSION, MIN_CLIENT_VERSION
+from ak5.server.auth.oidc_config import oidc_providers_configured
+from ak5.server.auth.sessions import SESSION_COOKIE, resolve_web_session
+from ak5.server.auth.users import local_owner_configured
+from ak5.server.config import settings
+from ak5.server.connection_limit import connection_limiter
+from ak5.server.database import AsyncSessionLocal, engine, ensure_database_schema, get_db
+from ak5.server.metrics import (
+    active_connections,
+    check_metrics_auth,
+    db_pool_in_use,
+    event_log_lag_seconds,
+    metrics_enabled,
+    registry,
+    safe_set,
+)
+from ak5.server.observability import (
+    RequestContextMiddleware,
+    configure_logging,
+    install_audit_hook,
+    readiness_failures,
+)
+from ak5.server.quota import QuotaExceeded
+from ak5.server.ratelimit import RateLimitMiddleware
+from ak5.server.routers.actors import router as actors_router
+from ak5.server.routers.auth import router as auth_router
+from ak5.server.routers.boards import router as boards_router
+from ak5.server.routers.events import router as events_router
+from ak5.server.routers.oauth import router as oauth_router
+from ak5.server.routers.oidc_auth import router as oidc_auth_router
+from ak5.server.routers.passkeys import router as passkeys_router
+from ak5.server.routers.subscriptions import router as subscriptions_router
+from ak5.server.routers.templates import router as templates_router
+from ak5.server.routers.tickets import router as tickets_router
+from ak5.server.routers.web_auth import router as web_auth_router
+from ak5.server.routers.workspaces import router as workspaces_router
+from ak5.server.seed import seed_initial_data
+from ak5.server.services.workflow import WorkflowError
+from ak5.server.web_auth import get_web_auth_config
+from ak5.server.web_ui_static import (
+    PUBLIC_STATIC_ASSET_EXTENSIONS,
+    mount_web_ui,
+    web_ui_assets_built,
+    web_ui_available,
+)
+
+logger = logging.getLogger(__name__)
+
+# CORS: local + Tailscale CGNAT / MagicDNS only (not open wildcard)
+TAILSCALE_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1|100\.\d{1,3}\.\d{1,3}\.\d{1,3}|.*\.ts\.net)(:\d+)?"
+
+_AUTH_PUBLIC_PREFIXES = (
+    "/api/auth",
+    "/auth",
+    "/oauth",
+    "/device",
+    "/api/v1",
+    "/health",
+    "/healthz",
+    "/readyz",
+    "/meta",
+    "/mcp",
+    "/metrics",
+    "/_next",
+    "/login",
+)
+
+# OpenAPI / Swagger — public only when ``AK5_PUBLIC_DOCS`` is set (#64).
+_DOCS_PUBLIC_PREFIXES = (
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    configure_logging()
+    # Fail-closed on unknown AK5_DEPLOY_PROFILE before any DB/network work
+    # (covers raw `uvicorn ak5.server.app:app` which skips `ak5 serve` gates).
+    from ak5.server.config import get_deploy_profile
+
+    get_deploy_profile()
+    from ak5.server.config import validate_notify_config
+    from ak5.server.security import validate_hosted_jwt_secret_config
+    from ak5.server.web_auth import validate_hosted_client_ip_config
+
+    validate_notify_config()
+    # Hosted client-IP trust must be entry-point agnostic (#125): api/index.py /
+    # raw uvicorn skip ``ak5 serve``'s assert_safe_bind.
+    validate_hosted_client_ip_config()
+    # Hosted must not mint a per-instance JWT key on ephemeral FS (#165).
+    validate_hosted_jwt_secret_config()
+    # One source of truth before create_all/seed — covers raw `uvicorn ak5.server.app:app`
+    # (Docker/harness) which never passes through `ak5 serve` / `ak5 web` CLI gates.
+    # Daemon is never started here (events.md §4.5 / cli.md §4.1): use `ak5 serve --daemon`.
+    try:
+        from ak5.server.services.db_safety import prepare_database_for_use, snapshot_live_database
+
+        prepare_database_for_use(settings.DATABASE_URL)
+    except Exception:
+        logger.exception("Database safety preflight failed")
+        raise
+
+    # Alembic: new DB → baseline + upgrade head; pre-Alembic SQLite → legacy fixes + stamp.
+    await ensure_database_schema()
+    # Create the attachments root here, once — /readyz only checks it (no side effects on a probe).
+    try:
+        from ak5.server.blob import get_blob_store
+
+        prepare = getattr(get_blob_store(), "prepare", None)
+        if prepare is not None:
+            await prepare()
+    except Exception:
+        logger.exception("Could not prepare the blob store; /readyz will report it")
+    # Seed initial entities (never deletes existing boards/tickets)
+    await seed_initial_data()
+    # Keep a rolling backup whenever the live DB has real ticket data.
+    try:
+        snapshot_live_database(reason="startup")
+    except Exception:
+        logger.exception("Failed to snapshot live database on startup")
+    # Server no longer starts a background exec listener (events.md §0 / #11).
+    from ak5.server.services.notify import notify_lifespan
+
+    async with notify_lifespan():
+        yield
+    # Shutdown engine
+    await engine.dispose()
+
+
+def _web_gate_enabled() -> bool:
+    """Dashboard gate on when local password, OIDC, or legacy web auth is configured."""
+    return (
+        get_web_auth_config().enabled
+        or local_owner_configured()
+        or oidc_providers_configured()
+    )
+
+
+def _public_docs_enabled() -> bool:
+    """When true, ``/docs`` · ``/redoc`` · ``/openapi.json`` stay unauthenticated (#64)."""
+    return os.environ.get("AK5_PUBLIC_DOCS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _is_public_path(path: str) -> bool:
+    if path == "/" and not _web_gate_enabled():
+        return True
+    for prefix in _AUTH_PUBLIC_PREFIXES:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    if _public_docs_enabled():
+        for prefix in _DOCS_PUBLIC_PREFIXES:
+            if path == prefix or path.startswith(prefix + "/"):
+                return True
+    # Static asset extensions always public (JS/CSS needed on login page)
+    return path.lower().endswith(PUBLIC_STATIC_ASSET_EXTENSIONS)
+
+
+async def _request_has_web_session(request: Request) -> bool:
+    """Accept DB-backed ``ak5_session`` cookies (identity.md §3.2)."""
+    session_cookie = request.cookies.get(SESSION_COOKIE)
+    if not session_cookie:
+        return False
+    # Tests set ``app.state.session_factory`` to the in-memory test engine.
+    factory = getattr(request.app.state, "session_factory", None) or AsyncSessionLocal
+    async with factory() as db:
+        return await resolve_web_session(db, session_cookie) is not None
+
+
+def create_app() -> FastAPI:
+    """ASGI application factory (cli.md §1). Prefer this for remote/deploy entrypoints."""
+    application = FastAPI(
+        title=settings.PROJECT_NAME,
+        version=settings.VERSION,
+        description="AK5: Agent-Orchestrated Kanban System Gateway",
+        lifespan=lifespan,
+    )
+
+    @application.exception_handler(WorkflowError)
+    async def workflow_error_handler(_request: Request, exc: WorkflowError) -> JSONResponse:
+        """Map workflow state-machine errors to the contracts error envelope."""
+        return JSONResponse(
+            status_code=HTTP_STATUS[exc.code],
+            content=error_body(exc.code, exc.message, details=exc.details),
+        )
+
+    @application.exception_handler(QuotaExceeded)
+    async def quota_exceeded_handler(_request: Request, exc: QuotaExceeded) -> JSONResponse:
+        """Map quota exceeded errors to contracts error envelope (HTTP 403, operations.md §3)."""
+        return exc.response()
+
+    @application.exception_handler(HTTPException)
+    async def http_exception_envelope_handler(
+        _request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        """Pass through contracts error envelopes raised as ``HTTPException.detail``."""
+        if isinstance(exc.detail, dict) and "error" in exc.detail:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=exc.detail,
+                headers=dict(exc.headers) if exc.headers else None,
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=dict(exc.headers) if exc.headers else None,
+        )
+
+    @application.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Map FastAPI/Pydantic 422 into the contracts error envelope (cli.md §3)."""
+        # jsonable_encoder: pydantic validators may put Exception in ctx.error
+        errors: list[Any] = jsonable_encoder(list(exc.errors()))
+        return JSONResponse(
+            status_code=HTTP_STATUS[ErrorCode.PAYLOAD_INVALID],
+            content=error_body(
+                ErrorCode.PAYLOAD_INVALID,
+                "Request validation failed",
+                details={"errors": errors},
+            ),
+        )
+
+    # Per-IP limits for login / device grant / invite accept (off unless enabled, #114).
+    # Added before CORS so it sits inside it and a 429 still carries the CORS headers.
+    application.add_middleware(RateLimitMiddleware)
+
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_origin_regex=TAILSCALE_ORIGIN_REGEX,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Mount API Routers
+    application.include_router(auth_router, prefix=settings.API_V1_STR)
+    application.include_router(actors_router, prefix=settings.API_V1_STR)
+    application.include_router(boards_router, prefix=settings.API_V1_STR)
+    application.include_router(templates_router, prefix=settings.API_V1_STR)
+    application.include_router(tickets_router, prefix=settings.API_V1_STR)
+    application.include_router(events_router, prefix=settings.API_V1_STR)
+    application.include_router(subscriptions_router, prefix=settings.API_V1_STR)
+    application.include_router(workspaces_router, prefix=settings.API_V1_STR)
+    application.include_router(web_auth_router)
+    application.include_router(oidc_auth_router)
+    application.include_router(passkeys_router)
+    application.include_router(oauth_router)
+
+    # Optional MCP bridge: requires ak5[mcp] + AK5_ENABLE_MCP=1 (client.md §7)
+    if os.environ.get("AK5_ENABLE_MCP", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from ak5.mcp.tools import server as mcp_server
+
+            application.mount("/mcp", mcp_server.sse_app())
+            logger.info("Mounted /mcp (AK5_ENABLE_MCP=1)")
+        except ImportError:
+            logger.warning(
+                "AK5_ENABLE_MCP=1 but mcp extra is not installed; skip /mcp mount. "
+                "Install with: pip install 'ak5[mcp]'"
+            )
+
+    @application.get("/health", tags=["system"])
+    async def health_check():
+        return {"status": "ok", "project": settings.PROJECT_NAME, "version": settings.VERSION}
+
+    @application.get("/healthz", tags=["system"])
+    async def liveness():
+        """Process is up (no dependency checks) — for container/orchestrator liveness probes."""
+        return {"status": "ok"}
+
+    @application.get("/readyz", tags=["system"], response_model=None)
+    async def readiness(db: AsyncSession = Depends(get_db)):
+        """Database reachable, schema at head, blob store usable. 503 names failed checks only."""
+        failed = await readiness_failures(db)
+        if failed:
+            return JSONResponse(status_code=503, content={"status": "not_ready", "failed": failed})
+        return {"status": "ready"}
+
+    @application.get("/meta", tags=["system"])
+    async def meta():
+        """API version negotiation (cli.md §2). No authentication required."""
+        return {
+            "api_version": API_VERSION,
+            "min_client": MIN_CLIENT_VERSION,
+            "capabilities": ["long_poll"],
+        }
+
+    @application.get("/metrics", tags=["system"])
+    async def metrics_endpoint(request: Request) -> Response:
+        """Prometheus metrics endpoint (operations.md §4.3). Off by default.
+
+        Calculates dynamic in-process gauges on scrape. Event log lag computation
+        queries the database and explicitly catches exceptions to reset the gauge
+        to prevent stale lag reporting on db failure.
+        """
+        if not metrics_enabled():
+            return JSONResponse(status_code=404, content={"error": "Not Found"})
+        if not check_metrics_auth(request):
+            return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+        safe_set(active_connections, float(connection_limiter.active_connections), kind="all")
+        safe_set(active_connections, float(connection_limiter.count_for_kind("sse")), kind="sse")
+        safe_set(active_connections, float(connection_limiter.count_for_kind("longpoll")), kind="longpoll")
+        pool = getattr(engine.sync_engine, "pool", None)
+        if pool is not None and hasattr(pool, "checkedout"):
+            safe_set(db_pool_in_use, float(pool.checkedout()))
+        try:
+            from ak5.server.services.subscription_service import subscription_service
+
+            factory = getattr(request.app.state, "session_factory", None) or AsyncSessionLocal
+            async with factory() as session:
+                lag = await subscription_service.compute_event_log_lag_seconds(session)
+                safe_set(event_log_lag_seconds, lag)
+        except Exception:
+            logger.warning("Failed to record event_log_lag_seconds metric", exc_info=True)
+            event_log_lag_seconds.reset()
+        content = registry.collect_all()
+        return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+    @application.middleware("http")
+    async def web_dashboard_auth_gate(request: Request, call_next):
+        if not _web_gate_enabled():
+            return await call_next(request)
+
+        path = request.url.path
+        if _is_public_path(path):
+            return await call_next(request)
+
+        if await _request_has_web_session(request):
+            return await call_next(request)
+
+        accept = request.headers.get("accept", "")
+        wants_html = "text/html" in accept or path == "/" or path.startswith("/board")
+        if wants_html and request.method in {"GET", "HEAD"}:
+            dest = path
+            if request.url.query:
+                dest = f"{dest}?{request.url.query}"
+            return RedirectResponse(url=f"/login?from={quote(dest, safe='')}", status_code=303)
+
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    has_web_ui = mount_web_ui(application)
+
+    if not has_web_ui:
+
+        @application.get("/", tags=["system"])
+        async def root():
+            return {
+                "name": "AK5 Gateway API",
+                "docs": "/docs",
+                "version": settings.VERSION,
+                "web_ui": False,
+                "hint": "Run `scripts/build_web_ui.sh` then reinstall, or use `ak5 serve --ui`.",
+            }
+    else:
+
+        @application.get("/api/system/web-ui", tags=["system"], include_in_schema=False)
+        async def web_ui_status():
+            return {
+                "web_ui": True,
+                "available": web_ui_available(),
+                "assets_built": web_ui_assets_built(),
+            }
+
+    # Outermost: request id in/out + access log. Added last so it wraps every other middleware.
+    install_audit_hook()
+    application.add_middleware(RequestContextMiddleware)
+
+    return application
+
+
+# Module-level ASGI app for `uvicorn ak5.server.app:app` (shim: `ak5.main:app`).
+app = create_app()

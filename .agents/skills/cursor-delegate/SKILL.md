@@ -2,8 +2,8 @@
 name: cursor-delegate
 description: >-
   Delegate code reviews, refactoring, bug fixes, or implementation tasks to the Cursor Agent CLI (`cursor agent` / `agent`).
-  Use when delegating subtasks to @cursor-agent, executing headless/non-interactive code reviews or refactoring,
-  subscribing to AK5 board events to trigger automated Cursor Agent runs, or syncing Cursor review artifacts back to AK5 tickets.
+  Use when running Cursor as an AK5 worker (claim → run → submit), executing headless/non-interactive code
+  reviews or refactoring, waking Cursor from AK5 WORK_AVAILABLE events, or syncing Cursor output back to AK5 tickets.
 ---
 
 # Cursor Agent Delegation Skill
@@ -39,7 +39,7 @@ This skill bridges **Antigravity** (Lead Orchestrator), the **AK5 Kanban System*
 - **Second-Opinion Code Reviews**: Independent verification of newly implemented features or PRs.
 - **Security & Shell Injection Audits**: Specialized scrutiny of shell subprocess runners and API payloads.
 - **Isolated Refactoring**: Refactoring code in an isolated git worktree without disturbing current workspace files.
-- **Autonomous Subtask Execution**: Fulfilling AK5 subtasks assigned to `@cursor-agent`.
+- **Autonomous Ticket Execution**: Acting as an AK5 **worker** profile that pulls backlog tickets (`ak5 next` / `ak5 ticket claim`) and submits deliverables.
 
 ---
 
@@ -80,14 +80,12 @@ python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
   --title "Review uncommitted working tree changes" \
   --mode review
 
-# 2. Full AK5 Subtask Review (Review, post comment, attach report, and move to Review column)
-python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
+# 2. Full AK5 worker run (claim, review, comment, attach report, submit → agent_review)
+AK5_PROFILE=cursor-1 python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
   --ticket-id TK-025 \
   --title "Code Review for Feature" \
   --mode review \
-  --comment \
-  --attach \
-  --move-to col_review
+  --claim --comment --attach --submit
 
 # 3. Autonomous Fix in an Isolated Git Worktree (-w)
 python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
@@ -146,49 +144,53 @@ python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
 
 ---
 
-### Workflow B: Full AK5 Subtask Lifecycle (Step-by-Step)
+### Workflow B: Cursor as an AK5 worker (pull model)
 
-#### Step 1: Delegate Subtask on Board
+Cursor runs under its own **worker profile**. A human registers it once and approves the code in the browser:
+
 ```bash
-ak5 delegate TK-020 \
-  --title "Security and Injection Review for subscribe CLI" \
-  --agent cursor-agent \
-  --notes "Review backend/src/ak5/cli/commands/subscribe.py for command injection hazards."
-# Output returns subtask ID, e.g. TK-025
+ak5 login --agent cursor-1 --role worker --caps code-review,py
+export AK5_PROFILE=cursor-1
 ```
 
-#### Step 2: Mark Subtask as In-Progress
-```bash
-ak5 move TK-025 col_in_progress
-```
+Tickets reach the board backlog through triage (`ak5 ticket route`) or a direct create
+(`ak5 ticket create --board <BOARD> --spec … --criteria …`, or `ak5 delegate <PARENT> --title …` for a child ticket).
+There is no push assignment: Cursor pulls the work.
 
-#### Step 3: Run Cursor Agent & Automatically Sync
 ```bash
+# 1. Find work (exit 6 = nothing yet)
+TICKET=$(ak5 --json next --board proj-core-engine --caps code-review --wait 25 | jq -r .ticket_id)
+
+# 2. Claim, run Cursor, comment, attach the report, submit the deliverable
 python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py \
-  --ticket-id TK-025 \
-  --title "Security and Injection Review for subscribe CLI" \
+  --ticket-id "$TICKET" \
   --mode review \
-  --comment \
-  --attach \
-  --move-to col_review
+  --claim --comment --attach --submit
 ```
+
+- `--claim` stops with the CLI exit code if the ticket is taken (3), not claimable by a worker (4), or blocked (5).
+- `--submit` sends a deliverable (`summary` = first line of the Cursor output, `artifacts` = the attached report)
+  and moves the ticket to `agent_review`. A gatekeeper reviews it next; a human approves it last.
+- `--move-to` is gone: columns are not a workflow step in v2.
 
 ---
 
-### Workflow C: Automated Event-Driven Pipeline (`ak5 subscribe`)
+### Workflow C: Wake Cursor on new work (`ak5 subscribe add`)
 
-You can run an automated background observer that triggers Cursor Agent whenever a ticket is assigned to `@cursor-agent`:
+Register a **local daemon subscriber** once. The daemon runs `--exec` whenever the board has claimable work:
 
 ```bash
-# Register a non-blocking server-side hook (exits immediately)
-ak5 subscribe create proj-core-engine \
-  --events TICKET_DELEGATED \
-  --for-agent cursor-agent \
-  --exec 'python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py --ticket-id "$AK5_TICKET_ID" --title "$AK5_TITLE" --mode review --comment --attach --move-to col_review'
+ak5 subscribe add proj-core-engine \
+  --profile cursor-1 \
+  --events WORK_AVAILABLE \
+  --exec 'python3 .agents/skills/cursor-delegate/scripts/cursor_delegate.py --ticket-id "$AK5_TICKET_ID" --title "$AK5_TITLE" --mode review --claim --comment --attach --submit'
+ak5 subscribe ls
 ```
 
 > [!IMPORTANT]
-> **Hook contract**: `--exec` is run **literally**. Pass event data via **`$AK5_TICKET_ID`**, **`$AK5_TITLE`**, **`$AK5_SUMMARY`**, **`$AK5_BOARD_ID`**, or stdin JSON. Curly-brace tokens like `{title}` are **not** expanded.
+> **Hook contract**: `--exec` is run **literally** by the daemon. Event data arrives as **`$AK5_TICKET_ID`**, **`$AK5_TITLE`**, **`$AK5_SUMMARY`**, **`$AK5_BOARD_ID`**, or stdin JSON. Curly-brace tokens like `{title}` are **not** expanded. The daemon sets `AK5_PROFILE` to the subscriber's profile (`cursor-1` here), so the script's `ak5` calls act as that profile.
+>
+> `WORK_AVAILABLE` also fires for stages a worker cannot claim (for example `agent_review`); `--claim` then exits 4 and the run stops without calling Cursor.
 
 ---
 

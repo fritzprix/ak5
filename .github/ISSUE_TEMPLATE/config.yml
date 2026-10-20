@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: User manual (한국어)
+    url: https://github.com/fritzprix/ak5/blob/master/docs/MANUAL.md
+    about: Install, CLI, daemon, deployment, troubleshooting
+  - name: Security vulnerability
+    url: https://github.com/fritzprix/ak5/security/advisories/new
+    about: Private disclosure — do not file a public issue

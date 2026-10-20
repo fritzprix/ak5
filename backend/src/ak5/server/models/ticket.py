@@ -1,0 +1,254 @@
+import json
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ColumnElement,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    and_,
+    case,
+    func,
+    or_,
+    select,
+)
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from ak5.server.models.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from ak5.server.models.actor import Actor
+    from ak5.server.models.board import Board
+    from ak5.server.models.column import Column
+
+
+class Ticket(Base, TimestampMixin):
+    __tablename__ = "tickets"
+    __table_args__ = (
+        CheckConstraint(
+            "priority IN ('low', 'medium', 'high', 'urgent')",
+            name="check_ticket_priority",
+        ),
+        Index("idx_tickets_board", "board_id"),
+        Index("idx_tickets_column_rank", "column_id", "rank"),
+        Index("idx_tickets_assigned", "assigned_to"),
+        Index("idx_tickets_parent", "parent_ticket_id"),
+        Index("idx_tickets_archived", "is_archived"),
+    )
+
+    ticket_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, index=True
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("boards.board_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    column_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("columns.column_id"),
+        nullable=False,
+    )
+    parent_ticket_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tickets.ticket_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    rank: Mapped[str] = mapped_column(String(128), nullable=False)  # Lexorank string
+    labels: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON array
+    assigned_to: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("actors.actor_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("actors.actor_id"),
+        nullable=False,
+    )
+    # Free-text block reason (not a ticket FK). Reused as blocked_reason (workflow.md §9).
+    blocked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_context: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object
+    due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # workflow.md §9 ??claim / lease / blocked overlay / attempt tracking
+    original_request: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    claim_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lease_expirations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    submitted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    blocked_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    blocked_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Relationships
+    board: Mapped["Board"] = relationship("Board", back_populates="tickets")
+    # Eager: ``status`` is derived from the column stage (workflow.md §2).
+    column: Mapped["Column"] = relationship("Column", back_populates="tickets", lazy="joined")
+    creator: Mapped["Actor"] = relationship("Actor", foreign_keys=[created_by])
+    assignee: Mapped["Actor | None"] = relationship("Actor", foreign_keys=[assigned_to])
+
+    parent: Mapped["Ticket | None"] = relationship(
+        "Ticket",
+        remote_side=[ticket_id],
+        foreign_keys=[parent_ticket_id],
+        back_populates="subtasks",
+    )
+    subtasks: Mapped[list["Ticket"]] = relationship(
+        "Ticket",
+        foreign_keys=[parent_ticket_id],
+        back_populates="parent",
+    )
+
+    comments: Mapped[list["TicketComment"]] = relationship(
+        "TicketComment",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketComment.created_at",
+    )
+    attachments: Mapped[list["TicketAttachment"]] = relationship(
+        "TicketAttachment",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketAttachment.created_at",
+    )
+
+    @hybrid_property
+    def status(self) -> str:
+        """API ``status``, derived and never stored (workflow.md §2)."""
+        from ak5.server.services.ticket_status import derive_status
+
+        return derive_status(self)
+
+    @status.inplace.expression
+    @classmethod
+    def _status_expression(cls) -> ColumnElement[str]:
+        from ak5.server.models.column import Column
+
+        stage = select(Column.stage).where(Column.column_id == cls.column_id).scalar_subquery()
+        blocked = or_(
+            and_(cls.blocked_kind.is_not(None), cls.blocked_kind != ""),
+            and_(cls.blocked_by.is_not(None), cls.blocked_by != ""),
+        )
+        # Bound when the query is built (lease_expires_at is naive UTC). Build a
+        # fresh select per request; a cached/reused statement would keep a stale now.
+        now = datetime.now(UTC).replace(tzinfo=None)
+        claimed = and_(
+            cls.claim_token.is_not(None),
+            cls.claim_token != "",
+            or_(cls.lease_expires_at.is_(None), cls.lease_expires_at > now),
+        )
+        return case(
+            (stage == "done", "done"),
+            (blocked, "blocked"),
+            (claimed, "in_progress"),
+            else_="open",
+        )
+
+    @property
+    def label_list(self) -> list[str]:
+        try:
+            return json.loads(self.labels)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    @label_list.setter
+    def label_list(self, val: list[str]) -> None:
+        self.labels = json.dumps(val)
+
+    @property
+    def execution_context_dict(self) -> dict[str, Any] | None:
+        if not self.execution_context:
+            return None
+        try:
+            return json.loads(self.execution_context)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @execution_context_dict.setter
+    def execution_context_dict(self, val: dict[str, Any] | None) -> None:
+        self.execution_context = json.dumps(val) if val is not None else None
+
+
+class TicketComment(Base):
+    __tablename__ = "ticket_comments"
+
+    comment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, index=True
+    )
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.ticket_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    actor_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("actors.actor_id"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    is_internal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    ticket: Mapped["Ticket"] = relationship("Ticket", back_populates="comments")
+    author: Mapped["Actor"] = relationship("Actor", foreign_keys=[actor_id])
+
+
+class TicketAttachment(Base):
+    __tablename__ = "ticket_attachments"
+    __table_args__ = (Index("idx_attachments_ticket", "ticket_id"),)
+
+    attachment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, index=True
+    )
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.ticket_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    actor_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("actors.actor_id"),
+        nullable=False,
+    )
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        default="application/octet-stream",
+    )
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    ticket: Mapped["Ticket"] = relationship("Ticket", back_populates="attachments")
+    uploader: Mapped["Actor"] = relationship("Actor", foreign_keys=[actor_id])

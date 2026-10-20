@@ -209,8 +209,8 @@ def test_incomparable_conflict_blocks_web_cli(tmp_path, monkeypatch):
 
     runner = CliRunner()
     with (
-        patch("ak5.cli.commands.web._load_dotenv_files"),
-        patch("ak5.cli.commands.web.uvicorn.run") as run_mock,
+        patch("ak5.cli.commands.serve._load_dotenv_files"),
+        patch("ak5.cli.commands.serve.uvicorn.run") as run_mock,
     ):
         result = runner.invoke(cli, ["web", "--port", "18001", "--no-browser"])
 
@@ -258,9 +258,10 @@ def test_serve_source_forbids_soft_ignore_dual_db():
 
 def test_paths_default_path_is_pure_prepare_owns_side_effects():
     """Static guard: Settings/path URL helpers must not mutate DBs; prepare does."""
-    paths_src = Path(__file__).resolve().parents[1] / "src" / "ak5" / "paths.py"
-    safety_src = Path(__file__).resolve().parents[1] / "src" / "ak5" / "services" / "db_safety.py"
-    database_src = Path(__file__).resolve().parents[1] / "src" / "ak5" / "database.py"
+    ak5_src = Path(__file__).resolve().parents[1] / "src" / "ak5"
+    paths_src = ak5_src / "paths.py"
+    safety_src = ak5_src / "server" / "services" / "db_safety.py"
+    database_src = ak5_src / "server" / "database.py"
     paths_text = paths_src.read_text(encoding="utf-8")
     safety_text = safety_src.read_text(encoding="utf-8")
     database_text = database_src.read_text(encoding="utf-8")
@@ -278,9 +279,8 @@ def test_paths_default_path_is_pure_prepare_owns_side_effects():
     # Gate belongs in lifespan + serve/web/reset CLI, not module import.
     assert "prepare_database_for_use(settings.DATABASE_URL)" not in database_text
     assert "from ak5.services.db_safety import prepare_database_for_use" not in database_text
-    main_text = (
-        Path(__file__).resolve().parents[1] / "src" / "ak5" / "main.py"
-    ).read_text(encoding="utf-8")
+    assert "from ak5.server.services.db_safety import prepare_database_for_use" not in database_text
+    main_text = (ak5_src / "server" / "main.py").read_text(encoding="utf-8")
     assert "prepare_database_for_use" in main_text
     assert "def counts_dominate" in paths_text
     assert "counts_dominate(" in paths_text.split("def migrate_legacy_cwd_data", 1)[1]

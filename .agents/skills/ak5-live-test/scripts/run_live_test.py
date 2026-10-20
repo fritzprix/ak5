@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""AK5 Live Server Integration & E2E Functional Test Runner.
+"""AK5 v2 Live Server Integration & E2E Functional Test Runner.
 
 Spins up an isolated AK5 server instance in a temporary sandbox to verify:
-  1. Runtime security gates (AK5_IDENTIFY_SECRET, JWT secret persistence & 0600 permissions, web auth bypass)
-  2. Core REST API functionality (actors, boards, tickets, status transitions)
-  3. CLI multi-actor authentication and session binding
-  4. TypeScript SDK compatibility (when built)
+  1. Identity gates: identify disabled, loopback local-owner login, web session →
+     user JWT, OAuth device grant (user + agent), JWT secret 0600 (identity.md)
+  2. Workflow through the real CLI + client daemon: ``ak5 login`` per profile,
+     inbox → triage route → worker next/claim/submit → gatekeeper verdict →
+     human verdict → done, plus ``events wait`` / ``next --wait`` (client.md §4.4)
+  3. TypeScript SDK with a device-grant agent token (when built)
 
-Ensures zero side-effects on the host workspace by sandboxing databases and session files.
+Ensures zero side-effects on the host workspace by sandboxing HOME, the data
+directory, the JWT key, and the daemon socket.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -29,6 +34,10 @@ except ImportError:
     print("Error: 'httpx' is required. Run via 'uv run python ...'")
     sys.exit(1)
 
+CSRF_HEADER = "X-CSRF-Token"
+DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+USER_CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b")
+
 
 def find_free_port() -> int:
     """Find an available port on localhost."""
@@ -37,13 +46,13 @@ def find_free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def wait_until_ready(api_url: str, timeout: float = 12.0) -> bool:
-    """Poll the API until the server is responsive."""
+def wait_until_ready(base_url: str, timeout: float = 20.0) -> bool:
+    """Poll ``/meta`` until the server is responsive."""
     start = time.time()
     while time.time() - start < timeout:
         try:
-            r = httpx.get(f"{api_url}/boards", timeout=1.0)
-            if r.status_code in (200, 401, 403):
+            r = httpx.get(f"{base_url}/meta", timeout=1.0)
+            if r.status_code == 200:
                 return True
         except Exception:
             pass
@@ -58,15 +67,18 @@ class LiveTestRunner:
         self.api_url = f"{self.base_url}/api/v1"
         self.verbose = verbose
         self.keep_artifacts = keep_artifacts
-        self.sandbox_dir = Path(tempfile.mkdtemp(prefix="ak5_live_test_"))
+        # Short prefix: the daemon socket lives under this dir (AF_UNIX ~104 bytes).
+        self.sandbox_dir = Path(tempfile.mkdtemp(prefix="ak5lt_"))
         # Canonical store under AK5_DATA_DIR — never a divergent DATABASE_URL file.
         self.data_dir = self.sandbox_dir / "data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "ak5.db"
         self.jwt_secret_path = self.data_dir / "jwt_secret"
-        self.shared_secret = "test-identify-secret-live-2026"
-        self.web_user = "admin"
-        self.web_pass = "ak5livepass123"
+        self.home_dir = self.sandbox_dir / "h"
+        self.home_dir.mkdir()
+        self.runtime_dir = self.sandbox_dir / "r"
+        self.runtime_dir.mkdir(mode=0o700)
+        self.owner_password = "ak5livepass123"
 
         self.passed_tests = 0
         self.failed_tests = 0
@@ -87,6 +99,13 @@ class LiveTestRunner:
         self.failed_tests += 1
         self.log(f"{name}: {reason}", level="FAIL")
 
+    def check(self, name: str, ok: bool, reason: str = "") -> bool:
+        if ok:
+            self.report_pass(name)
+        else:
+            self.report_fail(name, reason or "assertion failed")
+        return ok
+
     def cleanup(self) -> None:
         if self.keep_artifacts:
             self.log(f"Sandbox preserved at {self.sandbox_dir}", level="INFO")
@@ -94,272 +113,316 @@ class LiveTestRunner:
         if self.sandbox_dir.exists():
             shutil.rmtree(self.sandbox_dir, ignore_errors=True)
 
-    def spawn_server(self, extra_env: dict[str, str], use_web: bool = True) -> subprocess.Popen[str]:
+    # -------------------------------------------------------------------------
+    # Process helpers
+    # -------------------------------------------------------------------------
+    def base_env(self) -> dict[str, str]:
         env = os.environ.copy()
+        for key in (
+            "AK5_TOKEN",
+            "AK5_ACTOR_TOKEN",
+            "AK5_ACTOR_ID",
+            "AK5_PROFILE",
+            "AK5_SESSION_FILE",
+            "AK5_DEV_INSECURE_IDENTIFY",
+            "AK5_IDENTIFY_SECRET",
+            "AK5_OIDC_PROVIDERS",
+        ):
+            env.pop(key, None)
+        env["AK5_SKIP_DOTENV"] = "1"
+        env["AK5_SKIP_VERSION_CHECK"] = "1"
         env["AK5_DATA_DIR"] = str(self.data_dir)
-        # Keep URL aligned with canonical path (or omit); never point at a second file.
         env["DATABASE_URL"] = f"sqlite+aiosqlite:///{self.db_path.as_posix()}"
         env["AK5_JWT_SECRET_FILE"] = str(self.jwt_secret_path)
-        env["HOME"] = str(self.sandbox_dir)  # Sandbox user home for CLI sessions
-        env.update(extra_env)
+        env["AK5_AUTH_PASSWORD"] = self.owner_password
+        env["HOME"] = str(self.home_dir)
+        env["AK5_HOME"] = str(self.home_dir / ".ak5")
+        env["XDG_RUNTIME_DIR"] = str(self.runtime_dir)
+        env["AK5_API_URL"] = self.api_url
+        return env
 
-        cmd = [
-            sys.executable,
-            "-m",
-            "ak5.cli.main",
-            "web" if use_web else "serve",
-            "--port",
-            str(self.port),
-        ]
-        if use_web:
-            cmd.append("--no-browser")
-
-        proc = subprocess.Popen(
+    def spawn_server(self, extra_env: dict[str, str] | None = None) -> subprocess.Popen[str]:
+        env = self.base_env()
+        env.update(extra_env or {})
+        cmd = [sys.executable, "-m", "ak5.cli.main", "serve", "--port", str(self.port)]
+        return subprocess.Popen(
             cmd,
             env=env,
             cwd=str(self.sandbox_dir),
-            stdout=subprocess.PIPE if not self.verbose else None,
+            stdout=subprocess.DEVNULL if not self.verbose else None,
             stderr=subprocess.STDOUT if not self.verbose else None,
             text=True,
         )
-        return proc
 
     def stop_server(self, proc: subprocess.Popen[str]) -> None:
         proc.terminate()
         try:
-            proc.wait(timeout=3)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
 
-    # -------------------------------------------------------------------------
-    # Test Suite 1: Security & Identity Gates
-    # -------------------------------------------------------------------------
-    def test_security_gates(self) -> None:
-        print("\n\033[1;34m[Suite 1/3] Security, Identify Gate & JWT Hardening\033[0m")
-        extra_env = {
-            "AK5_IDENTIFY_SECRET": self.shared_secret,
-            "AK5_AUTH_USERNAME": self.web_user,
-            "AK5_AUTH_PASSWORD": self.web_pass,
-        }
-        proc = self.spawn_server(extra_env, use_web=True)
+    def ak5(
+        self, *args: str, profile: str | None = None, timeout: float = 60.0
+    ) -> subprocess.CompletedProcess[str]:
+        env = self.base_env()
+        if profile:
+            env["AK5_PROFILE"] = profile
+        return subprocess.run(
+            [sys.executable, "-m", "ak5.cli.main", *args],
+            env=env,
+            cwd=str(self.sandbox_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+
+    def owner_client(self) -> tuple[httpx.Client, str]:
+        """Browser stand-in: loopback local-owner session + CSRF token."""
+        client = httpx.Client(base_url=self.base_url, timeout=30.0)
+        r = client.post("/auth/local/login", json={"password": self.owner_password})
+        r.raise_for_status()
+        return client, r.json()["csrf"]
+
+    def approve(self, user_code: str, **extra: object) -> int:
+        client, csrf = self.owner_client()
         try:
-            if not wait_until_ready(self.api_url):
-                self.report_fail("Server Startup", "Server did not respond within timeout")
+            body = {"user_code": user_code, "approved": True, **extra}
+            r = client.post("/oauth/device/approve", json=body, headers={CSRF_HEADER: csrf})
+            return r.status_code
+        finally:
+            client.close()
+
+    def cli_login(self, *args: str, approve_extra: dict[str, object] | None = None) -> subprocess.CompletedProcess[str]:
+        """Run ``ak5 login …`` and approve its user code over HTTP like a human would."""
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "ak5.cli.main", "login", "--url", self.api_url, *args],
+            env=self.base_env(),
+            cwd=str(self.sandbox_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert proc.stdout is not None
+        output: list[str] = []
+        deadline = time.time() + 30
+        code = None
+        while time.time() < deadline and code is None:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            output.append(line)
+            m = USER_CODE_RE.search(line)
+            if m:
+                code = m.group(0)
+        if code is not None:
+            self.approve(code, **(approve_extra or {}))
+        try:
+            rest, _ = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rest, _ = proc.communicate()
+        output.append(rest or "")
+        return subprocess.CompletedProcess(proc.args, proc.returncode, "".join(output), "")
+
+    def device_grant_token(self, *, principal: str, **request: object) -> dict:
+        """Full device grant over HTTP (no CLI); returns the token response."""
+        approve_extra: dict[str, object] = {}
+        if principal == "agent":
+            approve_extra = {"workflow_role": request.get("workflow_role", "worker"), "board_scope": []}
+        with httpx.Client(base_url=self.base_url, timeout=30.0) as client:
+            start = client.post(
+                "/oauth/device_authorization",
+                json={"client_id": "ak5-cli", "principal": principal, **request},
+            )
+            start.raise_for_status()
+            body = start.json()
+            status = self.approve(body["user_code"], **approve_extra)
+            if status != 200:
+                raise RuntimeError(f"approve returned {status}")
+            token = client.post(
+                "/oauth/token",
+                json={"grant_type": DEVICE_GRANT, "device_code": body["device_code"], "client_id": "ak5-cli"},
+            )
+            token.raise_for_status()
+            return token.json()
+
+    # -------------------------------------------------------------------------
+    # Suite 1: Identity gates (identity.md §2, §3, §8)
+    # -------------------------------------------------------------------------
+    def test_identity(self) -> None:
+        print("\n\033[1;34m[Suite 1/3] Identity: local owner, session token, device grant\033[0m")
+        proc = self.spawn_server()
+        try:
+            if not self.check("Server startup", wait_until_ready(self.base_url), "server did not become ready"):
                 return
-            self.report_pass("Server Startup (Protected Mode)")
 
-            # 1. POST /auth/identify without secret -> 401
+            meta = httpx.get(f"{self.base_url}/meta").json()
+            self.check("GET /meta api_version=2", str(meta.get("api_version")) == "2", f"meta={meta}")
+
             r = httpx.post(
                 f"{self.api_url}/auth/identify",
-                json={"actor_id": "intruder", "actor_type": "agent", "name": "Intruder", "role": "Hacker"},
+                json={"actor_id": "sneaky", "actor_type": "agent", "name": "x", "role": "worker"},
             )
-            if r.status_code == 401:
-                self.report_pass("Identify without secret rejected (401)")
-            else:
-                self.report_fail("Identify without secret rejected", f"Expected 401, got {r.status_code}")
-
-            # 2. POST /auth/identify with wrong secret -> 401
-            r = httpx.post(
-                f"{self.api_url}/auth/identify",
-                headers={"X-AK5-Identify-Secret": "invalid-secret"},
-                json={"actor_id": "intruder", "actor_type": "agent", "name": "Intruder", "role": "Hacker"},
+            self.check(
+                "Self-identify disabled without AK5_DEV_INSECURE_IDENTIFY",
+                r.status_code != 200,
+                f"got {r.status_code}",
             )
-            if r.status_code == 401:
-                self.report_pass("Identify with wrong secret rejected (401)")
-            else:
-                self.report_fail("Identify with wrong secret rejected", f"Expected 401, got {r.status_code}")
 
-            # 3. POST /auth/identify with header secret -> 200 & JWT
-            r = httpx.post(
-                f"{self.api_url}/auth/identify",
-                headers={"X-AK5-Identify-Secret": self.shared_secret},
-                json={"actor_id": "agent_alpha", "actor_type": "agent", "name": "Agent Alpha", "role": "Worker"},
+            r = httpx.post(f"{self.base_url}/auth/local/login", json={"password": "wrong"})
+            self.check("Local owner login rejects wrong password", r.status_code == 401, f"got {r.status_code}")
+
+            client, csrf = self.owner_client()
+            try:
+                self.report_pass("Local owner login (loopback)")
+                bad = client.post("/auth/session/token", json={}, headers={CSRF_HEADER: "nope"})
+                self.check("Session token exchange enforces CSRF", bad.status_code == 403, f"got {bad.status_code}")
+                good = client.post("/auth/session/token", json={}, headers={CSRF_HEADER: csrf})
+                ok = good.status_code == 200 and bool(good.json().get("access_token"))
+                self.check("Session token exchange → user JWT", ok, f"{good.status_code} {good.text[:200]}")
+            finally:
+                client.close()
+
+            user = self.device_grant_token(principal="user")
+            self.check("Device grant (user) → access token", bool(user.get("access_token")), str(user)[:200])
+
+            agent = self.device_grant_token(
+                principal="agent", name="lt-worker", workflow_role="worker", capabilities=["py"]
             )
-            if r.status_code == 200 and "access_token" in r.json():
-                self.report_pass("Identify with X-AK5-Identify-Secret header accepted (200 + JWT)")
-            else:
-                self.report_fail("Identify with header secret", f"Got status {r.status_code}")
+            opaque = str(agent.get("access_token") or "")
+            self.check("Device grant (agent) → opaque ak5_agt_ token", opaque.startswith("ak5_agt_"), opaque[:16])
 
-            # 4. Verify JWT Secret File Created with 0600 Permissions
-            if self.jwt_secret_path.is_file():
-                mode = stat.S_IMODE(os.stat(self.jwt_secret_path).st_mode)
-                if mode == 0o600:
-                    self.report_pass(f"JWT Secret file auto-persisted with 0600 permissions ({oct(mode)})")
-                else:
-                    self.report_fail("JWT Secret permissions", f"Expected 0o600, got {oct(mode)}")
-            else:
-                self.report_fail("JWT Secret persistence", f"File {self.jwt_secret_path} was not created")
+            r = httpx.get(f"{self.api_url}/boards", headers={"Authorization": f"Bearer {opaque}"})
+            self.check("Agent token authorizes API", r.status_code == 200, f"got {r.status_code}")
 
-            # 5. POST /auth/identify with body identify_secret -> 200
-            r = httpx.post(
-                f"{self.api_url}/auth/identify",
-                json={
-                    "actor_id": "agent_beta",
-                    "actor_type": "agent",
-                    "name": "Agent Beta",
-                    "role": "Worker",
-                    "identify_secret": self.shared_secret,
-                },
-            )
-            if r.status_code == 200:
-                self.report_pass("Identify with body identify_secret accepted (200)")
+            if self.jwt_secret_path.exists():
+                mode = stat.S_IMODE(self.jwt_secret_path.stat().st_mode)
+                self.check("JWT secret file is 0600", mode == 0o600, oct(mode))
             else:
-                self.report_fail("Identify with body secret", f"Got status {r.status_code}")
-
-            # 6. Web Dashboard Auth Cookie Bypass
-            client = httpx.Client()
-            login_resp = client.post(
-                f"{self.base_url}/api/auth/login",
-                json={"username": self.web_user, "password": self.web_pass},
-            )
-            if login_resp.status_code == 200 and "ak5_auth" in client.cookies:
-                self.report_pass("Web dashboard login succeeded and set ak5_auth cookie")
-            else:
-                self.report_fail("Web dashboard login", f"Status {login_resp.status_code}")
-
-            cookie_id_resp = client.post(
-                f"{self.api_url}/auth/identify",
-                json={"actor_id": "user_pm", "actor_type": "human", "name": "PM User", "role": "PM"},
-            )
-            if cookie_id_resp.status_code == 200:
-                self.report_pass("Web auth session cookie authorized identify without shared secret (200)")
-            else:
-                self.report_fail("Web cookie identify bypass", f"Status {cookie_id_resp.status_code}")
-
-            # 7. CLI login auto-propagating AK5_IDENTIFY_SECRET
-            cli_env = os.environ.copy()
-            cli_env["AK5_IDENTIFY_SECRET"] = self.shared_secret
-            cli_env["HOME"] = str(self.sandbox_dir)
-            cli_run = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "ak5.cli.main",
-                    "login",
-                    "--url",
-                    self.api_url,
-                    "--id",
-                    "cli_tester",
-                    "--role",
-                    "QA",
-                    "--caps",
-                    "e2e,smoke",
-                    "--type",
-                    "agent",
-                ],
-                env=cli_env,
-                cwd=str(self.sandbox_dir),
-                capture_output=True,
-                text=True,
-            )
-            if cli_run.returncode == 0 and "Authenticated as cli_tester" in cli_run.stdout:
-                self.report_pass("CLI 'ak5 login' auto-sent AK5_IDENTIFY_SECRET and authenticated")
-            else:
-                self.report_fail("CLI login with secret", f"Code {cli_run.returncode}, stdout: {cli_run.stdout}")
-
+                self.report_fail("JWT secret file is 0600", f"{self.jwt_secret_path} was not created")
+        except Exception as exc:  # noqa: BLE001
+            self.report_fail("Identity suite", repr(exc))
         finally:
             self.stop_server(proc)
 
     # -------------------------------------------------------------------------
-    # Test Suite 2: Core REST Operations (Open Mode)
+    # Suite 2: Workflow through CLI + daemon (workflow.md §3, client.md §3–4)
     # -------------------------------------------------------------------------
-    def test_core_operations(self) -> None:
-        print("\n\033[1;34m[Suite 2/3] Core REST API & Workflow Operations\033[0m")
-        proc = self.spawn_server({}, use_web=False)
+    def test_workflow(self) -> None:
+        print("\n\033[1;34m[Suite 2/3] Workflow: CLI + daemon pull loop to human approval\033[0m")
+        proc = self.spawn_server()
         try:
-            if not wait_until_ready(self.api_url):
-                self.report_fail("Server Startup", "Open server did not respond")
-                return
-            self.report_pass("Server Startup (Open Mode)")
-
-            # 1. Open Identify
-            r = httpx.post(
-                f"{self.api_url}/auth/identify",
-                json={"actor_id": "test_leader", "actor_type": "agent", "name": "Test Leader", "role": "Lead"},
-            )
-            if r.status_code != 200:
-                self.report_fail("Open identify", f"Got status {r.status_code}")
-                return
-            token = r.json()["access_token"]
-            headers = {"Authorization": f"Bearer {token}"}
-            self.report_pass("Open Mode accepted identify without secret (200)")
-
-            # 2. Boards API: List & Create
-            r = httpx.get(f"{self.api_url}/boards", headers=headers)
-            if r.status_code == 200:
-                self.report_pass("GET /boards fetched default boards")
-            else:
-                self.report_fail("GET /boards", f"Got status {r.status_code}")
-
-            board_id = f"test-board-{int(time.time())}"
-            r = httpx.post(
-                f"{self.api_url}/boards",
-                json={"board_id": board_id, "name": "E2E Live Board", "description": "Board for test"},
-                headers=headers,
-            )
-            if r.status_code in (200, 201):
-                self.report_pass(f"POST /boards created board '{board_id}'")
-            else:
-                self.report_fail("POST /boards", f"Got status {r.status_code}")
+            if not self.check("Server startup", wait_until_ready(self.base_url), "server did not become ready"):
                 return
 
-            # Get board details to retrieve initialized columns
-            r = httpx.get(f"{self.api_url}/boards/{board_id}", headers=headers)
-            if r.status_code != 200 or not r.json().get("columns"):
-                self.report_fail("GET /boards/{board_id}", f"Could not fetch columns: {r.status_code}")
-                return
-            columns = r.json()["columns"]
-            first_col_id = columns[0]["column_id"]
-            second_col_id = columns[1]["column_id"] if len(columns) > 1 else first_col_id
+            logins = [
+                ("me", ["--profile", "me"], None),
+                ("triage-1", ["--agent", "triage-1", "--role", "triage"], "triage"),
+                ("worker-1", ["--agent", "worker-1", "--role", "worker", "--caps", "py"], "worker"),
+                ("gk-1", ["--agent", "gk-1", "--role", "gatekeeper"], "gatekeeper"),
+            ]
+            for name, args, role in logins:
+                extra = {"workflow_role": role, "board_scope": []} if role else None
+                res = self.cli_login(*args, approve_extra=extra)
+                if not self.check(f"ak5 login profile {name}", res.returncode == 0, res.stdout[-400:]):
+                    return
 
-            # 3. Tickets API: Create ticket
-            r = httpx.post(
-                f"{self.api_url}/tickets",
-                json={
-                    "board_id": board_id,
-                    "column_id": first_col_id,
-                    "title": "E2E Live Feature Ticket",
-                    "description": "Verification of ticket creation and lifecycle",
-                    "priority": "high",
-                },
-                headers=headers,
+            res = self.ak5("--json", "whoami", profile="worker-1")
+            body = json.loads(res.stdout or "{}") if res.returncode == 0 else {}
+            self.check(
+                "whoami resolves token via daemon",
+                res.returncode == 0 and body.get("source") == "daemon",
+                res.stdout[-300:] + res.stderr[-300:],
             )
-            if r.status_code == 201:
-                ticket = r.json()
-                ticket_id = ticket["ticket_id"]
-                self.report_pass(f"POST /tickets created ticket #{ticket_id}")
-            else:
-                self.report_fail("POST /tickets", f"Got status {r.status_code}: {r.text}")
+
+            res = self.ak5("board", "create", "lt-board", "--template", "default", profile="me")
+            if not self.check("board create (human)", res.returncode == 0, res.stdout + res.stderr):
                 return
 
-            # 4. Tickets API: Transition status / Move
-            r = httpx.patch(
-                f"{self.api_url}/tickets/{ticket_id}/move",
-                json={"target_column_id": second_col_id},
-                headers=headers,
-            )
-            if r.status_code == 200:
-                self.report_pass(f"PATCH /tickets/{ticket_id}/move moved ticket to next column")
-            else:
-                self.report_fail("Ticket move", f"Got status {r.status_code}: {r.text}")
+            res = self.ak5("--json", "ticket", "create", "Live test request", profile="me")
+            tid = json.loads(res.stdout).get("ticket_id") if res.returncode == 0 else None
+            if not self.check("T1 ticket create → inbox", bool(tid), res.stdout + res.stderr):
+                return
 
-            # 5. Tickets API: Add Comment
-            r = httpx.post(
-                f"{self.api_url}/tickets/{ticket_id}/comments",
-                json={"content": "E2E automated verification comment"},
-                headers=headers,
-            )
-            if r.status_code == 201:
-                self.report_pass(f"POST /tickets/{ticket_id}/comments added comment")
-            else:
-                self.report_fail("POST ticket comment", f"Got status {r.status_code}")
+            res = self.ak5("--json", "next", "--inbox", profile="triage-1")
+            self.check("triage next --inbox", res.returncode == 0 and tid in res.stdout, res.stdout[-300:])
+            res = self.ak5("ticket", "claim", tid, profile="triage-1")
+            self.check("T3 triage claim", res.returncode == 0, res.stdout + res.stderr)
 
+            plan = self.sandbox_dir / "route.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "refined_title": "Live test request",
+                        "refined_spec": "Print hello",
+                        "acceptance_criteria": ["prints hello"],
+                        "target": {"board_id": "lt-board"},
+                        "confidence": 0.9,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            res = self.ak5("ticket", "route", tid, "--plan", f"@{plan}", profile="triage-1")
+            self.check("T4 route → board backlog", res.returncode == 0, res.stdout + res.stderr)
+
+            res = self.ak5(
+                "--json", "events", "wait", "--events", "WORK_AVAILABLE", "--timeout", "10", profile="worker-1"
+            )
+            self.check("events wait sees WORK_AVAILABLE", res.returncode == 0, f"exit={res.returncode} {res.stdout[-300:]}")
+
+            res = self.ak5("--json", "next", "--board", "lt-board", "--caps", "py", profile="worker-1")
+            self.check("worker next", res.returncode == 0 and tid in res.stdout, res.stdout[-300:])
+            res = self.ak5("ticket", "claim", tid, "--caps", "py", profile="worker-1")
+            self.check("T5 worker claim", res.returncode == 0, res.stdout + res.stderr)
+            res = self.ak5("ticket", "heartbeat", tid, profile="worker-1")
+            self.check("T6 heartbeat (local claim token)", res.returncode == 0, res.stdout + res.stderr)
+
+            deliverable = self.sandbox_dir / "deliverable.json"
+            deliverable.write_text(
+                json.dumps(
+                    {
+                        "summary": "hello printed",
+                        "artifacts": [{"kind": "text", "ref": "print('hello')"}],
+                        "criteria_self_check": [{"criterion": "prints hello", "pass": True, "note": ""}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            res = self.ak5("ticket", "submit", tid, "--deliverable", f"@{deliverable}", profile="worker-1")
+            self.check("T9 submit → agent_review", res.returncode == 0, res.stdout + res.stderr)
+
+            res = self.ak5("ticket", "claim", tid, profile="gk-1")
+            self.check("T11 gatekeeper claim", res.returncode == 0, res.stdout + res.stderr)
+            findings = self.sandbox_dir / "findings.json"
+            findings.write_text(
+                json.dumps([{"criterion": "prints hello", "pass": True, "note": "ok"}]), encoding="utf-8"
+            )
+            res = self.ak5("ticket", "verdict", tid, "--approve", "--findings", f"@{findings}", profile="gk-1")
+            self.check("T12 gatekeeper approve → human_review", res.returncode == 0, res.stdout + res.stderr)
+
+            res = self.ak5("ticket", "verdict", tid, "--approve", "--reason", "ship it", profile="worker-1")
+            self.check("T15 rejected for agent (human only)", res.returncode == 4, f"exit={res.returncode}")
+            res = self.ak5("ticket", "verdict", tid, "--approve", "--reason", "ship it", profile="me")
+            self.check("T15 human approve → done", res.returncode == 0, res.stdout + res.stderr)
+
+            res = self.ak5("--json", "ticket", "view", tid, profile="me")
+            stage = json.loads(res.stdout).get("stage") if res.returncode == 0 else None
+            self.check("ticket stage is done", stage == "done", f"stage={stage}")
+
+            res = self.ak5("next", "--board", "lt-board", "--wait", "1", profile="worker-1")
+            self.check("next --wait with no work → exit 6", res.returncode == 6, f"exit={res.returncode}")
+        except Exception as exc:  # noqa: BLE001
+            self.report_fail("Workflow suite", repr(exc))
         finally:
+            self.ak5("daemon", "stop", timeout=20)
             self.stop_server(proc)
 
     # -------------------------------------------------------------------------
-    # Test Suite 3: TypeScript SDK Compatibility
+    # Suite 3: TypeScript SDK (@ak5/sdk) with a device-grant agent token
     # -------------------------------------------------------------------------
     def test_typescript_sdk(self) -> None:
         print("\n\033[1;34m[Suite 3/3] TypeScript SDK Integration (@ak5/sdk)\033[0m")
@@ -368,54 +431,38 @@ class LiveTestRunner:
             self.log(f"SDK dist not found at {sdk_dist}. Run 'npm run build' in packages/sdk.", level="WARN")
             return
 
-        extra_env = {"AK5_IDENTIFY_SECRET": self.shared_secret}
-        proc = self.spawn_server(extra_env, use_web=False)
+        proc = self.spawn_server()
         try:
-            if not wait_until_ready(self.api_url):
-                self.report_fail("Server Startup (SDK test)", "Server failed to start")
+            if not self.check("Server startup (SDK)", wait_until_ready(self.base_url), "server did not become ready"):
                 return
-
+            agent = self.device_grant_token(
+                principal="agent", name="lt-sdk", workflow_role="worker", capabilities=["py"]
+            )
+            api = json.dumps(self.api_url)
             node_script = f"""
-            import {{ AK5Client }} from "{sdk_dist.as_posix()}";
+            import {{ AK5Client }} from {json.dumps(sdk_dist.as_posix())};
 
-            async function run() {{
-                const baseUrl = "{self.api_url}";
-                const secret = "{self.shared_secret}";
+            const client = new AK5Client({{ baseUrl: {api}, token: {json.dumps(agent["access_token"])} }});
+            const meta = await client.ensureCompatible();
+            if (String(meta.api_version) !== "2") throw new Error(`api_version=${{meta.api_version}}`);
+            const boards = await client.listBoards();
+            if (!Array.isArray(boards)) throw new Error("listBoards did not return an array");
 
-                // 1. With explicit option
-                const c1 = new AK5Client({{ baseUrl, actorId: "sdk_1", actorType: "agent", identifySecret: secret }});
-                const r1 = await c1.identify({{ actor_id: "sdk_1", actor_type: "agent", name: "SDK 1", role: "Dev" }});
-                if (!r1.access_token) throw new Error("No token returned");
-
-                // 2. With process.env
-                process.env.AK5_IDENTIFY_SECRET = secret;
-                const c2 = new AK5Client({{ baseUrl, actorId: "sdk_2", actorType: "agent" }});
-                const r2 = await c2.identify({{ actor_id: "sdk_2", actor_type: "agent", name: "SDK 2", role: "Dev" }});
-                if (!r2.access_token) throw new Error("No token returned from env identify");
-
-                // 3. Without secret -> should fail
-                delete process.env.AK5_IDENTIFY_SECRET;
-                const c3 = new AK5Client({{ baseUrl, actorId: "sdk_3", actorType: "agent" }});
-                let threw = false;
-                try {{
-                    await c3.identify({{ actor_id: "sdk_3", actor_type: "agent", name: "SDK 3", role: "Dev" }});
-                }} catch (e) {{
-                    threw = true;
-                }}
-                if (!threw) throw new Error("Expected identify without secret to fail");
-            }}
-            run().catch(e => {{ console.error(e); process.exit(1); }});
+            const bad = new AK5Client({{ baseUrl: {api}, token: "ak5_agt_invalid" }});
+            let rejected = false;
+            try {{ await bad.listBoards(); }} catch (e) {{ rejected = true; }}
+            if (!rejected) throw new Error("invalid agent token was accepted");
             """
-
             script_file = self.sandbox_dir / "sdk_smoke.mjs"
             script_file.write_text(node_script, encoding="utf-8")
-
-            res = subprocess.run(["node", str(script_file)], capture_output=True, text=True)
-            if res.returncode == 0:
-                self.report_pass("SDK explicit & env secret identification and rejection")
-            else:
-                self.report_fail("SDK integration", f"Stderr: {res.stderr}\nStdout: {res.stdout}")
-
+            res = subprocess.run(["node", str(script_file)], capture_output=True, text=True, check=False)
+            self.check(
+                "SDK: agent token, version check, invalid token rejected",
+                res.returncode == 0,
+                f"stderr={res.stderr[-500:]} stdout={res.stdout[-300:]}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report_fail("SDK suite", repr(exc))
         finally:
             self.stop_server(proc)
 
@@ -428,10 +475,10 @@ class LiveTestRunner:
         print(f"Target Port: {self.port}")
 
         try:
-            if mode in ("all", "security"):
-                self.test_security_gates()
-            if mode in ("all", "core"):
-                self.test_core_operations()
+            if mode in ("all", "identity"):
+                self.test_identity()
+            if mode in ("all", "workflow"):
+                self.test_workflow()
             if mode in ("all", "sdk"):
                 self.test_typescript_sdk()
         finally:
@@ -444,21 +491,24 @@ class LiveTestRunner:
         return 0 if self.failed_tests == 0 else 1
 
 
+_MODE_ALIASES = {"security": "identity", "core": "workflow"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run AK5 Live Server Integration Tests")
     parser.add_argument("--port", type=int, default=None, help="Port to bind server (default: random free port)")
     parser.add_argument(
         "--mode",
-        choices=["all", "security", "core", "sdk"],
+        choices=["all", "identity", "workflow", "sdk", *_MODE_ALIASES],
         default="all",
-        help="Test mode to execute",
+        help="Suite to execute (security/core are v1 aliases of identity/workflow)",
     )
     parser.add_argument("--verbose", action="store_true", help="Print server stdout/stderr")
     parser.add_argument("--keep-artifacts", action="store_true", help="Keep sandbox directory after tests")
     args = parser.parse_args()
 
     runner = LiveTestRunner(port=args.port, verbose=args.verbose, keep_artifacts=args.keep_artifacts)
-    sys.exit(runner.run_all(mode=args.mode))
+    sys.exit(runner.run_all(mode=_MODE_ALIASES.get(args.mode, args.mode)))
 
 
 if __name__ == "__main__":

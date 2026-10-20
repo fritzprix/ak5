@@ -1,18 +1,13 @@
-"""Authorization utilities and role-based access control helpers for AK5."""
+"""Lazy compatibility shim — prefer ``ak5.server.authz``."""
+from __future__ import annotations
 
-from ak5.models.actor import Actor
+from ak5._lazy_shim import make_module_getattr
 
-RESERVED_ADMIN_ROLES: frozenset[str] = frozenset({"admin", "system_admin", "root", "superuser"})
-RESERVED_ADMIN_IDS: frozenset[str] = frozenset({"admin", "system", "root"})
-
-
-def is_admin(actor: Actor) -> bool:
-    """Check if the given actor possesses administrative privileges."""
-    return actor.role.lower() in RESERVED_ADMIN_ROLES or actor.actor_id.lower() in RESERVED_ADMIN_IDS
+__getattr__ = make_module_getattr(__name__, "ak5.server.authz")
 
 
-def is_admin_or_owner(actor: Actor, created_by: str | None) -> bool:
-    """Check if the actor has administrative privileges or matches the owner/creator ID."""
-    if is_admin(actor):
-        return True
-    return created_by == actor.actor_id
+def __dir__() -> list[str]:
+    import importlib
+
+    mod = importlib.import_module("ak5.server.authz")
+    return sorted(set(dir(mod)) | set(globals()))

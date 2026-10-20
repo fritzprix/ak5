@@ -31,21 +31,46 @@ if [[ -z "$META" ]]; then
   exit 1
 fi
 
-required_declared=(
-  "greenlet"
-  "sqlalchemy"
+required_base=(
   "fastapi"
   "uvicorn"
-  "aiosqlite"
+  "click"
+  "httpx"
+  "pydantic"
+  "mcp"
+  "rich"
 )
-for dep in "${required_declared[@]}"; do
+for dep in "${required_base[@]}"; do
   if ! echo "$META" | grep -qiE "^Requires-Dist:[[:space:]]*${dep}"; then
-    echo "error: wheel METADATA missing declared dependency: ${dep}" >&2
+    echo "error: wheel METADATA missing base dependency: ${dep}" >&2
     echo "       (uvx only installs Requires-Dist — transitive lockfile deps do not ship)" >&2
     exit 1
   fi
-  echo "  ✓ Requires-Dist includes ${dep}"
+  echo "  ✓ Requires-Dist includes base ${dep}"
 done
+
+required_server=(
+  "greenlet"
+  "sqlalchemy"
+  "aiosqlite"
+  "sse-starlette"
+  "python-multipart"
+  "pydantic-settings"
+  "pyjwt"
+)
+for dep in "${required_server[@]}"; do
+  if ! echo "$META" | grep -qiE "^Requires-Dist:[[:space:]]*${dep}.*extra[[:space:]]*==[[:space:]]*['\"]server['\"]"; then
+    echo "error: wheel METADATA missing server-extra dependency: ${dep}" >&2
+    exit 1
+  fi
+  echo "  ✓ Requires-Dist includes server extra ${dep}"
+done
+
+if ! echo "$META" | grep -qiE "^Requires-Dist:[[:space:]]*asyncpg.*extra[[:space:]]*==[[:space:]]*['\"]postgres['\"]"; then
+  echo "error: wheel METADATA missing postgres-extra dependency: asyncpg" >&2
+  exit 1
+fi
+echo "  ✓ Requires-Dist includes postgres extra asyncpg"
 
 # --- Isolated venv install (mirrors uvx: only wheel + declared deps) ---
 TMP="$(mktemp -d)"
@@ -65,6 +90,8 @@ else
   echo "error: could not find python in isolated venv under $TMP/venv" >&2
   exit 1
 fi
+
+echo "==> Base install (no server extra)"
 uv pip install --python "$PY" --quiet "$WHEEL"
 
 AK5=""
@@ -79,19 +106,43 @@ if [[ -z "$AK5" ]]; then
   exit 1
 fi
 
+"$AK5" --version
+"$AK5" boards --help >/dev/null
+"$AK5" serve --help >/dev/null
+set +e
+SERVE_ERR="$("$AK5" serve --host 127.0.0.1 --port 9 2>&1)"
+SERVE_RC=$?
+set -e
+if [[ "$SERVE_RC" -eq 0 ]]; then
+  echo "error: 'ak5 serve' succeeded without server extra" >&2
+  exit 1
+fi
+if ! echo "$SERVE_ERR" | grep -qi "ak5\\[server\\]"; then
+  echo "error: missing install hint for server extra; got:" >&2
+  echo "$SERVE_ERR" >&2
+  exit 1
+fi
+echo "  ✓ base CLI works; serve prints ak5[server] hint (exit $SERVE_RC)"
+
+echo "==> Server extra install"
+uv pip install --python "$PY" --quiet "${WHEEL}[server]"
+
 echo "==> Import gate (SQLAlchemy asyncio / greenlet / FastAPI app)"
 "$PY" - <<'PY'
 import greenlet  # noqa: F401 — must be installable from wheel Requires-Dist
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: F401
-from ak5.main import app
-from ak5.web_ui_static import web_ui_available
+from ak5.server.app import app, create_app
+from ak5.server.web_ui_static import web_ui_available
 
 assert app is not None
+assert create_app is not None
 assert web_ui_available(), "embedded web_ui/index.html missing from wheel"
-print("  ✓ greenlet + sqlalchemy.ext.asyncio + ak5.main:app + web_ui")
+from ak5.server.web_ui_static import web_ui_assets_built
+assert web_ui_assets_built(), "embedded web_ui/_next static chunks missing from wheel"
+print("  ✓ greenlet + sqlalchemy.ext.asyncio + ak5.server.app:app + web_ui")
 PY
 
-echo "==> CLI entrypoints"
+echo "==> CLI entrypoints (with server)"
 "$AK5" --version
 "$AK5" web --help >/dev/null
 "$AK5" boards --help >/dev/null

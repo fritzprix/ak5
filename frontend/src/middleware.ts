@@ -1,32 +1,55 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthConfig, verifySessionCookie } from "./lib/auth";
+import {
+  authMeIndicatesSession,
+  isPublicPath,
+  looksLikeSessionCookie,
+} from "./lib/middlewareGate";
+
+async function verifyAk5Session(request: NextRequest): Promise<boolean> {
+  const sessionCookie = request.cookies.get("ak5_session")?.value;
+  if (!looksLikeSessionCookie(sessionCookie)) {
+    return false;
+  }
+  try {
+    const meUrl = new URL("/auth/me", request.url);
+    const res = await fetch(meUrl, {
+      headers: { cookie: request.headers.get("cookie") ?? "" },
+      cache: "no-store",
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { authenticated?: unknown };
+    return authMeIndicatesSession(body);
+  } catch {
+    return false;
+  }
+}
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const { isEnabled } = getAuthConfig();
 
-  // If authentication is disabled, pass all requests
-  if (!isEnabled) {
-    return NextResponse.next();
-  }
-
-  const cookie = request.cookies.get("ak5_auth")?.value;
-  const isAuthenticated = await verifySessionCookie(cookie);
-
-  // Allow auth API routes unconditionally
-  if (pathname.startsWith("/api/auth/")) {
-    return NextResponse.next();
-  }
-
-  // If navigating to /login
-  if (pathname === "/login") {
-    if (isAuthenticated) {
-      return NextResponse.redirect(new URL("/", request.url));
+  if (pathname.startsWith("/api/auth/") || isPublicPath(pathname)) {
+    if (pathname === "/login" || pathname.startsWith("/login/")) {
+      const hasSession = await verifyAk5Session(request);
+      const legacy = request.cookies.get("ak5_auth")?.value;
+      if (hasSession || (legacy && (await verifySessionCookie(legacy)))) {
+        return NextResponse.redirect(new URL("/", request.url));
+      }
     }
     return NextResponse.next();
   }
 
-  // Unauthenticated requests
+  // Env-password gate off → gateway / embed owns auth.
+  if (!isEnabled) {
+    return NextResponse.next();
+  }
+
+  const hasSession = await verifyAk5Session(request);
+  const legacyCookie = request.cookies.get("ak5_auth")?.value;
+  const isAuthenticated =
+    hasSession || (await verifySessionCookie(legacyCookie));
+
   if (!isAuthenticated) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -22,7 +22,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test src/lib/liveRefresh.test.ts src/lib/reviewDecision.test.ts src/lib/focusTrap.test.ts src/lib/boardDnD.test.ts src/lib/ticketEdit.test.ts"
+    "test": "tsx --test src/lib/sseFetch.test.ts src/lib/authToken.test.ts src/lib/attachmentDownload.test.ts src/lib/liveRefresh.test.ts src/lib/reviewDecision.test.ts src/lib/focusTrap.test.ts src/lib/boardDnD.test.ts src/lib/ticketEdit.test.ts src/lib/ticketHistory.test.ts src/lib/createTicketPayload.test.ts src/lib/sseBoardEvents.test.ts src/lib/webSession.test.ts src/lib/middlewareGate.test.ts src/lib/passkey.test.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

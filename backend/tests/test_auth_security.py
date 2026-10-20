@@ -5,7 +5,8 @@ from ak5.security import (
     reset_secret_caches,
     resolve_jwt_secret,
 )
-from ak5.web_auth import COOKIE_NAME, compute_session_hash, reset_rate_limits_for_tests
+from ak5.server.auth.sessions import SESSION_COOKIE
+from ak5.web_auth import reset_rate_limits_for_tests
 from httpx import AsyncClient
 
 
@@ -52,6 +53,28 @@ async def test_identify_open_without_secret(client: AsyncClient):
     )
     assert resp.status_code == 200
     assert "access_token" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_identify_blocked_without_dev_insecure_flag(
+    client: AsyncClient, monkeypatch
+):
+    monkeypatch.delenv("AK5_DEV_INSECURE_IDENTIFY", raising=False)
+    monkeypatch.setattr("ak5.server.config.settings.DEV_INSECURE_IDENTIFY", False)
+    reset_secret_caches()
+
+    resp = await client.post(
+        "/api/v1/auth/identify",
+        json={
+            "actor_id": "agent_blocked",
+            "actor_type": "agent",
+            "name": "Blocked",
+            "role": "Worker",
+            "capabilities": [],
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
 
 
 @pytest.mark.asyncio
@@ -106,7 +129,7 @@ async def test_identify_body_secret_accepted(client: AsyncClient, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_identify_allows_web_auth_cookie(client: AsyncClient, monkeypatch):
+async def test_identify_allows_web_session_cookie(client: AsyncClient, monkeypatch):
     monkeypatch.setenv("AK5_IDENTIFY_SECRET", "gate-secret")
     monkeypatch.setenv("AK5_AUTH_USERNAME", "admin")
     monkeypatch.setenv("AK5_AUTH_PASSWORD", "web-pass")
@@ -125,7 +148,13 @@ async def test_identify_allows_web_auth_cookie(client: AsyncClient, monkeypatch)
     )
     assert denied.status_code == 401
 
-    client.cookies.set(COOKIE_NAME, compute_session_hash("admin", "web-pass"))
+    login = await client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "web-pass"},
+    )
+    assert login.status_code == 200
+    assert SESSION_COOKIE in login.cookies
+
     ok = await client.post(
         "/api/v1/auth/identify",
         json={

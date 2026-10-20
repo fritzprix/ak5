@@ -19,7 +19,22 @@ const plexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: "AK5 — Agent-Orchestrated Kanban",
-  description: "Human and Autonomous AI Agent Collaborative Kanban System",
+  description:
+    "Self-hosted Kanban where AI agents pull work and humans give final approval.",
+  applicationName: "AK5",
+  openGraph: {
+    title: "AK5 — Agent-Orchestrated Kanban",
+    description:
+      "Self-hosted Kanban where AI agents pull work and humans give final approval.",
+    type: "website",
+    siteName: "AK5",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "AK5 — Agent-Orchestrated Kanban",
+    description:
+      "Self-hosted Kanban where AI agents pull work and humans give final approval.",
+  },
 };
 
 export const viewport: Viewport = {

@@ -6,7 +6,7 @@ from typing import Any
 import click
 import httpx
 from ak5.cli.config import clean_actor_id, get_api_url, require_auth_headers
-from ak5.services.event_context import (
+from ak5.contracts.event_context import (
     build_hook_environ,
     extract_event_context,
     matches_agent_filter,
@@ -342,64 +342,45 @@ def do_remove_subscription(subscription_id: str) -> None:
 
 @click.group("subscribe")
 def subscribe_group() -> None:
-    """Manage server-side board event hooks (Register & Return).
+    """Manage local daemon subscribers that wake your agent (Register & Return).
 
     \b
-    [Agent Best Practices & Event Subscription Guide]
-      1. DO NOT specify --events unless strictly necessary!
-         - Omit --events (default: ALL / core lifecycle):
-           Automatically receives all core events:
-           • TICKET_CREATED   (new ticket assigned to agent)
-           • TICKET_DELEGATED (subtask delegated to agent)
-           • TICKET_UPDATED   (assignee changed, priority changed, etc.)
-           • TICKET_MOVED     (ticket moved between columns)
-           • COMMENT_ADDED    (new comment or discussion mention)
-         - Explicitly listing --events is an overhead and common cause of dropped tasks
-           (e.g. omitting DELEGATED drops subtasks, omitting UPDATED drops re-assignments).
-         - If specified, supports 'DEFAULT', 'TICKET' (all ticket events), and aliases (e.g. TICKET_COMMENTED).
+    Subscribers live in the client daemon, not on the server (client.md §4.3).
+    The daemon keeps one server subscription per profile and fans events out
+    to every local subscriber. `subscribe add` stores the hook and exits 0.
 
     \b
-      2. --for-agent <AGENT_ID>
-         - Safely accepts actor ID with or without '@' (e.g. "my-agent" or "@my-agent").
-         - Filters events to tickets/subtasks assigned to your agent.
-
-    \b
-      3. Register & Return pattern:
-         - `ak5 subscribe create` registers a persistent server-side hook and exits immediately (exit 0).
-         - Verify registration with: `ak5 subscribe ls`.
-         - Do NOT run background polling loops or local SSE processes.
+    [Agents]
+      - Usually filter on WORK_AVAILABLE (your role has claimable work).
+      - --exec must WAKE your harness; claim / work / submit run in the woken
+        session, never inside --exec.
+      - Verify with `ak5 subscribe ls`. Do not run background poll loops;
+        to block until work exists use `ak5 next --wait 25` instead.
 
     \b
     [How hooks work]
-      - create registers a literal --exec command and exits immediately (exit 0).
-      - On matching board events, the AK5 Gateway runs that command as-is.
-      - Event data is NOT interpolated into --exec. Use env vars / stdin instead.
-      - Each event spawn gets a fresh process env for that event (runtime per invocation).
+      - The daemon runs --exec literally in a shell for each matching event.
+      - Event data is NOT interpolated into --exec. Use env vars / stdin.
       - Do NOT use curly-brace tokens like {ticket_id} (they are not expanded).
-      - Gateway --exec stdout is not your chat; --exec must wake the harness.
+      - The hook gets $AK5_PROFILE (the subscriber's profile), so the woken
+        harness calls ak5 as that profile. Daemon-process tokens are not passed.
 
     \b
     [Event payload]
-      Env:  $AK5_EVENT  $AK5_EVENT_TYPE  $AK5_BOARD_ID  $AK5_TICKET_ID
-            $AK5_TITLE  $AK5_ACTOR_ID  $AK5_EVENT_ACTOR_ID  $AK5_STATUS
-            $AK5_SUMMARY  $AK5_DATA_JSON
-      $AK5_ACTOR_ID binds the woken session (--for-agent / subscription owner).
-      $AK5_EVENT_ACTOR_ID is who caused the event.
-      stdin: JSON {"event": "...", "data": {...}}  (e.g. curl -d @-)
+      Env:  $AK5_EVENT  $AK5_EVENT_TYPE  $AK5_EVENT_ID  $AK5_CURSOR
+            $AK5_BOARD_ID  $AK5_TICKET_ID  $AK5_TITLE  $AK5_STATUS
+            $AK5_SUMMARY  $AK5_ACTOR_ID  $AK5_EVENT_ACTOR_ID  $AK5_DATA_JSON
+            $AK5_PROFILE  $AK5_SUBSCRIBER_ID
+      $AK5_ACTOR_ID / $AK5_EVENT_ACTOR_ID: who caused the event.
+      stdin: event JSON (e.g. curl -d @-)
 
     \b
     [Examples]
-      # Recommended for Agents (no --events needed; auto-subscribes all core lifecycle):
-      ak5 subscribe create proj-core-engine --for-agent "$AK5_ACTOR_ID" \
-        --exec 'agent -p "$AK5_SUMMARY"'
-
-    \b
-      # Webhook forwarding (all events):
-      ak5 subscribe create proj-core-engine \
-        --exec 'curl -X POST https://example.com/hook -H "Content-Type: application/json" -d @-'
-
-    \b
-      # Inspect & remove:
+      ak5 subscribe add proj-core-engine --events WORK_AVAILABLE \\
+        --exec 'claude -p "$AK5_SUMMARY"'
+      ak5 subscribe add --events HUMAN_ACTION_REQUIRED \\
+        --exec 'notify-send "AK5" "$AK5_SUMMARY"'
+      ak5 subscribe add --preset curl:http://127.0.0.1:3030/hook
       ak5 subscribe list
       ak5 subscribe remove <ID>
 
@@ -416,9 +397,10 @@ def subscribe_group() -> None:
     "--exec",
     "-x",
     "exec_command",
-    required=True,
+    default=None,
     help=(
-        "Literal shell command that WAKES your agent runtime on match (required). "
+        "Literal shell command that WAKES your agent runtime on match "
+        "(required unless --preset). "
         "Pass context via $AK5_EVENT / $AK5_TICKET_ID / $AK5_SUMMARY / stdin JSON. "
         "Do not put claim/move/work here (those run in the woken session). "
         "No {placeholder} expansion."
@@ -428,71 +410,147 @@ def subscribe_group() -> None:
     "--events",
     "-e",
     default=None,
-    help=(
-        "Optional event filter (comma-separated, e.g. TICKET, or TICKET_CREATED,TICKET_MOVED). "
-        "RECOMMENDED FOR AGENTS: Omit this option to automatically subscribe to all core lifecycle "
-        "events (TICKET_CREATED, TICKET_DELEGATED, TICKET_UPDATED, TICKET_MOVED, COMMENT_ADDED). "
-        "Supports 'DEFAULT', 'TICKET' (all ticket events), and aliases."
-    ),
+    help="Optional event filter (comma-separated). Omit for all events the daemon spools.",
 )
-@click.option(
-    "--for-agent",
-    "-a",
-    default=None,
-    help="Only tickets assigned to this actor ID (with or without leading '@').",
-)
-@click.option(
-    "--ignore-actor",
-    default=None,
-    help="Skip events whose actor_id matches this ID (with or without leading '@').",
-)
-@click.option("--debounce", default=0.0, type=float, help="Per-ticket cooldown seconds between runs.")
-@click.option("--id", "custom_id", default=None, help="Custom subscription ID (default: auto-generated).")
+@click.option("--id", "custom_id", default=None, help="Custom subscriber ID (default: auto-generated).")
 @click.option("--dry-run", is_flag=True, help="Print hook contract and exit without registering.")
+@click.option("--profile", default=None, help="Profile (default: current AK5_PROFILE / profiles.toml default)")
+@click.option(
+    "--preset",
+    default=None,
+    help="Build --exec from a preset (claude|cursor|curl:<url>); still stored as exec.",
+)
 def subscribe_add(
     board_id: str | None,
-    exec_command: str,
+    exec_command: str | None,
     events: str | None,
-    for_agent: str | None,
-    ignore_actor: str | None,
-    debounce: float,
     custom_id: str | None,
     dry_run: bool,
+    profile: str | None,
+    preset: str | None,
 ) -> None:
-    """Register a server-side hook and return immediately.
+    """Register a **local** daemon subscriber (client.md §4.3). Never creates a server hook.
 
     \b
     Examples:
-      # Recommended: omit --events so all core events (created, delegated, updated, moved, comments) are captured
-      ak5 subscribe create proj-core-engine --for-agent "$AK5_ACTOR_ID" \
-        --exec 'agent -p "$AK5_SUMMARY"'
-      ak5 subscribe create proj-core-engine --exec './scripts/on_board_event.sh'
-      ak5 subscribe create --exec 'curl -X POST https://hooks.example/ak5 -d @-' --dry-run
+      ak5 subscribe add --exec 'agent -p \"$AK5_SUMMARY\"' --events WORK_AVAILABLE
+      ak5 subscribe add proj-core-engine --preset claude --events WORK_AVAILABLE
     """
-    do_subscribe(
-        board_id=board_id,
-        exec_command=exec_command,
-        events=events,
-        for_agent=for_agent,
-        ignore_actor=ignore_actor,
-        debounce=debounce,
-        custom_id=custom_id,
-        dry_run=dry_run,
+    if preset:
+        if preset == "claude":
+            exec_command = 'claude -p "$AK5_SUMMARY"'
+        elif preset == "cursor":
+            exec_command = 'agent -p "$AK5_SUMMARY"'
+        elif preset.startswith("curl:"):
+            url = preset[5:]
+            exec_command = (
+                f'curl -s -X POST {url} -H "Content-Type: application/json" -d @-'
+            )
+        else:
+            raise click.UsageError(f"unknown preset: {preset}")
+    if not exec_command:
+        raise click.UsageError("Provide --exec '<command>' or --preset claude|cursor|curl:<url>.")
+
+    _warn_legacy_placeholders(exec_command)
+
+    if dry_run:
+        console.print(
+            Panel.fit(
+                f"local=true\nexec={exec_command}\nevents={events}\nboard={board_id}\nprofile={profile}",
+                title="subscribe dry-run",
+            )
+        )
+        return
+
+    from ak5.daemon.ipc import daemon_client, ensure_daemon
+
+    ensure_daemon()
+    event_list = [e.strip() for e in (events or "").split(",") if e.strip()]
+    with daemon_client() as client:
+        resp = client.post(
+            "/v1/subscribers",
+            json={
+                "profile": profile,
+                "board_id": board_id,
+                "events": event_list,
+                "exec_command": exec_command,
+                "id": custom_id,
+            },
+        )
+        resp.raise_for_status()
+        body = resp.json()
+    console.print(
+        f"[green]✓ local subscriber[/green] {body.get('id')} "
+        f"(profile={body.get('profile')})"
     )
 
 
 @subscribe_group.command("list")
 @click.option("--board", "-b", "board_id", default=None, help="Filter by target board ID.")
-def subscribe_list(board_id: str | None) -> None:
-    """List hooks registered by the current actor (admins see all)."""
-    do_list_subscriptions(board_id)
+@click.option("--profile", default=None, help="Profile for local subscribers")
+@click.option(
+    "--server",
+    "list_server",
+    is_flag=True,
+    help="List legacy server subscriptions (usually empty after #11).",
+)
+def subscribe_list(board_id: str | None, profile: str | None, list_server: bool) -> None:
+    """List local daemon subscribers (default)."""
+    if list_server:
+        do_list_subscriptions(board_id)
+        return
+    from ak5.daemon.ipc import daemon_client, ensure_daemon
+
+    ensure_daemon()
+    with daemon_client() as client:
+        resp = client.get("/v1/subscribers", params={"profile": profile} if profile else None)
+        resp.raise_for_status()
+        rows = resp.json()
+    if board_id:
+        rows = [r for r in rows if r.get("board_id") in (board_id, None, "*")]
+    if not rows:
+        console.print("[dim]No local subscribers.[/dim]")
+        return
+    table = Table(title="Local subscribers", show_header=True, header_style="bold magenta")
+    table.add_column("ID", style="cyan")
+    table.add_column("Profile")
+    table.add_column("Board")
+    table.add_column("Events")
+    table.add_column("Exec", style="yellow")
+    for s in rows:
+        table.add_row(
+            s.get("id", ""),
+            s.get("profile", ""),
+            s.get("board_id") or "*",
+            ",".join(s.get("events") or []) or "*",
+            s.get("exec_command", ""),
+        )
+    console.print(table)
 
 
 @subscribe_group.command("remove")
 @click.argument("subscription_id", required=True, metavar="<SUBSCRIPTION_ID>")
-def subscribe_remove(subscription_id: str) -> None:
-    """Delete a registered hook by ID (owner or admin only)."""
-    do_remove_subscription(subscription_id)
+@click.option(
+    "--server",
+    "remove_server",
+    is_flag=True,
+    help="Remove a legacy server subscription instead of a local one.",
+)
+def subscribe_remove(subscription_id: str, remove_server: bool) -> None:
+    """Delete a local daemon subscriber by ID."""
+    if remove_server:
+        do_remove_subscription(subscription_id)
+        return
+    from ak5.daemon.ipc import daemon_client, ensure_daemon
+
+    ensure_daemon()
+    with daemon_client() as client:
+        resp = client.delete(f"/v1/subscribers/{subscription_id}")
+        if resp.status_code == 404:
+            console.print(f"[yellow]subscriber not found:[/yellow] {subscription_id}")
+            raise SystemExit(1)
+        resp.raise_for_status()
+    console.print(f"[green]✓ removed[/green] {subscription_id}")
 
 
 @subscribe_group.command("watch")
@@ -521,14 +579,14 @@ def subscribe_watch(
     debounce: float,
     once: bool,
 ) -> None:
-    """DEPRECATED. Agents: subscribe create. Humans: ak5 events watch."""
+    """DEPRECATED. Agents: subscribe add. Humans: ak5 events watch."""
     from ak5.cli.agent_env import refuse_blocking_watch_for_agents
     from ak5.cli.commands.events import events_watch
 
     console.print(
         "[bold yellow]DEPRECATED:[/bold yellow] "
         "[cyan]ak5 subscribe watch[/cyan] is not agent subscription.\n"
-        "  Agents: [cyan]ak5 subscribe create <BOARD> --exec '…'[/cyan] then [cyan]ak5 subscribe ls[/cyan]\n"
+        "  Agents: [cyan]ak5 subscribe add <BOARD> --exec '…'[/cyan] then [cyan]ak5 subscribe ls[/cyan]\n"
         "  Humans: [cyan]ak5 events watch <BOARD> --exec '…'[/cyan]"
     )
     refuse_blocking_watch_for_agents()

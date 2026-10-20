@@ -115,6 +115,6 @@ curl -s https://pypi.org/pypi/ak5/json | jq -r '.info.version'
 # Verify the published version executes via uvx
 uvx --refresh ak5@latest --version
 
-# Verify the embedded web dashboard launches
-uvx ak5 web --help
+# Verify the server extra (API + embedded dashboard) resolves
+uvx --refresh --from 'ak5[server]@latest' ak5 serve --help
 ```

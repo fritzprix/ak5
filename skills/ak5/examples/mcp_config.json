@@ -1,17 +1,10 @@
 {
   "mcpServers": {
     "ak5": {
-      "command": "uv",
-      "args": [
-        "run",
-        "python",
-        "-m",
-        "ak5.mcp.server"
-      ],
+      "command": "uvx",
+      "args": ["--from", "ak5[mcp]", "ak5", "mcp"],
       "env": {
-        "AK5_API_URL": "http://127.0.0.1:8000/api/v1",
-        "AK5_ACTOR_ID": "agent_orchestrator",
-        "AK5_ACTOR_ROLE": "Lead Orchestrator"
+        "AK5_PROFILE": "worker-1"
       }
     }
   }

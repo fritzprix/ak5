@@ -1,0 +1,224 @@
+"""Runtime secrets for JWT signing and optional identify gate.
+
+UX stays the same: CLI/MCP pick up ``AK5_IDENTIFY_SECRET`` from the environment
+automatically. The dashboard can mint actor JWTs after a successful web-login
+cookie when the identify secret is enabled.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import secrets
+import shutil
+from pathlib import Path
+
+from fastapi import Request
+
+from ak5.paths import get_app_data_dir
+
+logger = logging.getLogger(__name__)
+
+IDENTIFY_SECRET_HEADER = "X-AK5-Identify-Secret"
+
+# Legacy hard-coded value — never treat as a configured production secret.
+_LEGACY_INSECURE_JWT = "ak5-dev-secret-key-change-in-production-2026"
+
+_jwt_secret_cache: str | None = None
+
+
+def jwt_secret_file() -> Path:
+    """Path used to persist an auto-generated JWT signing key."""
+    override = os.environ.get("AK5_JWT_SECRET_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+
+    app_secret = get_app_data_dir() / "jwt_secret"
+    legacy_secret = Path.cwd() / ".ak5" / "jwt_secret"
+    if not app_secret.exists() and legacy_secret.is_file():
+        try:
+            shutil.copy2(legacy_secret, app_secret)
+            logger.info("Migrated legacy JWT secret from %s to %s", legacy_secret, app_secret)
+        except OSError as e:
+            logger.warning(
+                "Failed to copy legacy JWT secret from %s to %s: %s (a new secret will be generated)",
+                legacy_secret,
+                app_secret,
+                e,
+            )
+    return app_secret
+
+
+def reset_secret_caches() -> None:
+    """Clear cached secrets (tests only)."""
+    global _jwt_secret_cache
+    _jwt_secret_cache = None
+
+
+def _env_or_settings_jwt() -> str:
+    for key in ("AK5_JWT_SECRET", "JWT_SECRET"):
+        value = os.environ.get(key, "").strip()
+        if value and value != _LEGACY_INSECURE_JWT:
+            return value
+
+    from ak5.server.config import settings
+
+    configured = (settings.JWT_SECRET or "").strip()
+    if configured and configured != _LEGACY_INSECURE_JWT:
+        return configured
+    return ""
+
+
+def validate_hosted_jwt_secret_config() -> None:
+    """Hosted must not auto-generate per-instance JWT keys (#165).
+
+    Require ``AK5_JWT_SECRET`` / ``JWT_SECRET`` / settings, or a non-empty
+    ``AK5_JWT_SECRET_FILE``. Auto-persist under ``AK5_DATA_DIR`` is local-only.
+    """
+    from ak5.server.config import hosted_profile
+
+    if not hosted_profile():
+        return
+    if _env_or_settings_jwt():
+        return
+    override = os.environ.get("AK5_JWT_SECRET_FILE", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        try:
+            if path.is_file() and path.read_text(encoding="utf-8").strip():
+                return
+        except OSError as exc:
+            raise ValueError(
+                f"AK5_DEPLOY_PROFILE=hosted: cannot read AK5_JWT_SECRET_FILE ({path}): {exc}"
+            ) from exc
+        raise ValueError(
+            "AK5_DEPLOY_PROFILE=hosted requires a non-empty AK5_JWT_SECRET_FILE "
+            f"(missing or empty: {path})"
+        )
+    raise ValueError(
+        "AK5_DEPLOY_PROFILE=hosted requires AK5_JWT_SECRET (or AK5_JWT_SECRET_FILE)"
+    )
+
+
+def resolve_jwt_secret() -> str:
+    """Resolve JWT signing secret: env → settings → persisted file → generate."""
+    from_env = _env_or_settings_jwt()
+    if from_env:
+        return from_env
+
+    path = jwt_secret_file()
+    try:
+        if path.is_file():
+            stored = path.read_text(encoding="utf-8").strip()
+            if stored:
+                return stored
+    except OSError as exc:
+        logger.warning("Could not read JWT secret file %s: %s", path, exc)
+
+    from ak5.server.config import hosted_profile
+
+    if hosted_profile():
+        # Belt-and-suspenders if called before lifespan validate (#165).
+        raise ValueError(
+            "AK5_DEPLOY_PROFILE=hosted requires AK5_JWT_SECRET (or AK5_JWT_SECRET_FILE)"
+        )
+
+    generated = secrets.token_urlsafe(48)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(generated + "\n")
+        logger.info("Generated JWT signing secret at %s (set AK5_JWT_SECRET to override)", path)
+    except OSError as exc:
+        logger.warning(
+            "Could not persist JWT secret to %s (%s); using in-memory secret for this process",
+            path,
+            exc,
+        )
+    return generated
+
+
+def get_jwt_secret() -> str:
+    """Cached JWT signing secret for the process lifetime."""
+    global _jwt_secret_cache
+    if _jwt_secret_cache is None:
+        _jwt_secret_cache = resolve_jwt_secret()
+    return _jwt_secret_cache
+
+
+def get_identify_secret() -> str:
+    """Optional shared secret required for ``POST /auth/identify`` when set."""
+    for key in ("AK5_IDENTIFY_SECRET", "IDENTIFY_SECRET"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+
+    from ak5.server.config import settings
+
+    return (settings.IDENTIFY_SECRET or "").strip()
+
+
+def identify_headers_from_env() -> dict[str, str]:
+    """Headers CLI/MCP/SDK should attach when calling identify (empty if unset)."""
+    secret = get_identify_secret()
+    if not secret:
+        return {}
+    return {IDENTIFY_SECRET_HEADER: secret}
+
+
+def extract_identify_secret(request: Request, body_secret: str | None = None) -> str | None:
+    header_val = request.headers.get(IDENTIFY_SECRET_HEADER)
+    if header_val and header_val.strip():
+        return header_val.strip()
+    if body_secret and body_secret.strip():
+        return body_secret.strip()
+    return None
+
+
+def is_loopback_client(request: Request) -> bool:
+    """True when the ASGI client host is loopback (or Starlette TestClient)."""
+    client = request.client
+    if client is None:
+        return False
+    host = (client.host or "").strip().lower()
+    if host in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_dev_insecure_identify_enabled() -> bool:
+    """``AK5_DEV_INSECURE_IDENTIFY=1`` (identity.md §2 local path)."""
+    raw = os.environ.get("AK5_DEV_INSECURE_IDENTIFY", "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    from ak5.server.config import settings
+
+    return bool(settings.DEV_INSECURE_IDENTIFY)
+
+
+def is_dev_insecure_identify_allowed(request: Request) -> bool:
+    """Identify is allowed only with the insecure flag **and** a loopback client."""
+    return is_dev_insecure_identify_enabled() and is_loopback_client(request)
+
+
+def is_identify_authorized(request: Request, provided_secret: str | None) -> bool:
+    """Allow identify when secret unset, matches, or valid web-auth cookie (gate on).
+
+    Callers must also enforce :func:`is_dev_insecure_identify_allowed` (identity.md §2).
+    """
+    if not is_dev_insecure_identify_allowed(request):
+        return False
+
+    required = get_identify_secret()
+    if not required:
+        return True
+
+    return bool(
+        provided_secret is not None and secrets.compare_digest(provided_secret, required)
+    )

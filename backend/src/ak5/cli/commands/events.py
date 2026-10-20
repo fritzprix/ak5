@@ -18,12 +18,12 @@ _DEMO_ECHO = 'echo "[$AK5_EVENT] $AK5_TICKET_ID: $AK5_TITLE"'
 
 @click.group("events")
 def events_group() -> None:
-    """Observe board SSE streams in a human terminal (blocking).
+    """Wait for or observe board events.
 
     \b
-    Agents must NOT use this group. Register hooks instead:
-      ak5 subscribe create <BOARD_ID> --exec '…'
-      ak5 subscribe ls
+    Agents:  ak5 events wait --events WORK_AVAILABLE --timeout 25   (daemon long-poll)
+             or a wake hook: ak5 subscribe add --exec '…' && ak5 subscribe ls
+    Humans:  ak5 events watch <BOARD_ID>   (blocking SSE; refused for agents)
     """
 
 
@@ -63,7 +63,7 @@ def events_watch(
     debounce: float,
     once: bool,
 ) -> None:
-    """Foreground SSE watcher for humans (blocking). Agents: use subscribe create.
+    """Foreground SSE watcher for humans (blocking). Agents: use subscribe add.
 
     \b
     Examples:
@@ -80,7 +80,7 @@ def events_watch(
         raise click.UsageError(
             "--exec is required for events watch "
             "(or pass --demo-echo for a terminal demo). "
-            "Agents should use: ak5 subscribe create <BOARD> --exec '...'"
+            "Agents should use: ak5 subscribe add <BOARD> --exec '...'"
         )
 
     api_url = get_api_url()
@@ -105,6 +105,75 @@ def events_watch(
     except httpx.ConnectError:
         console.print(f"[bold red]✗ Failed to connect to AK5 Gateway at {api_url}[/bold red]")
         raise SystemExit(1)
+
+
+@events_group.command("wait")
+@click.option("--profile", default=None, help="Profile name (default: AK5_PROFILE / default_profile)")
+@click.option("--events", "-e", default=None, help="Comma-separated event types")
+@click.option("--timeout", default=25.0, type=float, help="Seconds to wait (exit 6 on timeout)")
+@click.option("--cursor", default=0, type=int, help="Local spool cursor")
+@click.pass_context
+def events_wait(
+    ctx: click.Context,
+    profile: str | None,
+    events: str | None,
+    timeout: float,
+    cursor: int,
+) -> None:
+    """Wait for a local daemon event (client.md §4.4). Exit 6 on timeout."""
+    import json
+
+    from ak5.daemon.ipc import daemon_client, ensure_daemon
+
+    json_mode = bool(ctx.obj and ctx.obj.get("json"))
+    ensure_daemon()
+    params: dict = {"cursor": cursor, "wait": timeout}
+    if profile:
+        params["profile"] = profile
+    if events:
+        params["events"] = events
+    with daemon_client(timeout=timeout + 5) as client:
+        resp = client.get("/v1/events", params=params)
+        resp.raise_for_status()
+        body = resp.json()
+    if json_mode:
+        click.echo(json.dumps(body))
+    else:
+        console.print(body)
+    if not body.get("events"):
+        raise SystemExit(6)
+
+
+@events_group.command("poll")
+@click.option("--profile", default=None)
+@click.option("--events", "-e", default=None)
+@click.option("--cursor", default=0, type=int)
+@click.pass_context
+def events_poll(ctx: click.Context, profile: str | None, events: str | None, cursor: int) -> None:
+    """One-shot local spool poll (or server poll if daemon is down — server path TBD)."""
+    import json
+
+    from ak5.daemon.ipc import daemon_client, ensure_daemon
+    from ak5.daemon.server import is_daemon_running
+
+    json_mode = bool(ctx.obj and ctx.obj.get("json"))
+    if not is_daemon_running():
+        # Fallback note: without daemon, agents use server GET /events via AK5Client later.
+        raise click.ClickException("daemon not running — start with `ak5 daemon start`")
+    ensure_daemon()
+    params: dict = {"cursor": cursor, "wait": 0}
+    if profile:
+        params["profile"] = profile
+    if events:
+        params["events"] = events
+    with daemon_client() as client:
+        resp = client.get("/v1/events", params=params)
+        resp.raise_for_status()
+        body = resp.json()
+    if json_mode:
+        click.echo(json.dumps(body))
+    else:
+        console.print(body)
 
 
 # Top-level alias: `ak5 watch` → same as `ak5 events watch`

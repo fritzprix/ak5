@@ -1,27 +1,31 @@
 # Rule: Agent-Facing CLI & Subscription Architecture
 
-## 1. 핵심 원칙: "Register & Return" (Non-blocking Principle)
+## 1. 핵심 원칙: "서버는 기록, daemon이 실행" (Register & Return)
 
-1. **상주 프로세스(Server)가 실행 주체**:
-   - 시스템에는 이미 백그라운드에 상시 구동 중인 AK5 Gateway(FastAPI 서버 프로세스)가 존재한다.
-   - 따라서 이벤트 감지 및 후속 작업 실행의 주체는 **상시 살아있는 서버 프로세스**여야 한다.
+1. **서버는 기록만 한다**:
+   - AK5 서버는 상태 머신, claim/lease, 이벤트 log를 기록하고 강제한다. 클라이언트 쪽 명령을 실행하지 않는다 (server-side exec hook 없음, #11).
+   - 서버는 profile당 subscription 하나(consumer = client daemon)에 long-poll로 이벤트를 넘긴다 ([client.md](../../docs/spec/client.md) §4).
 
-2. **CLI는 오직 등록(Registration)만 수행하고 즉시 리턴**:
-   - `ak5 subscribe`를 비롯하여 에이전트가 호출하는 모든 설정, 구독, 훅 등록 CLI 명령어는 **결코 포그라운드에서 블로킹(무한 대기)되어서는 안 된다**.
-   - 명령어는 서버 API에 실행할 규칙(명령어 텍스트, 보드 ID, 필터 등)을 등록하고 1초 이내에 `exit 0`으로 즉시 반환되어야 한다.
+2. **client daemon이 실행 주체**:
+   - 이벤트 수신, spool, 로컬 구독자 fan-out, hook 실행은 OS 사용자당 하나인 `ak5 daemon`이 맡는다.
+   - hook은 exec 문자열 하나로 통일한다. daemon이 이벤트마다 셸로 실행하고, 이벤트 데이터는 env(`$AK5_EVENT`, `$AK5_TICKET_ID`, …)와 stdin JSON으로만 넘긴다. 명령 문자열에 보간하지 않는다.
+   - 외부 웹훅·HTTP harness는 `curl … -d @-`를 exec로 등록한다 (`--preset curl:<url>`).
 
-3. **이벤트 트리거 시의 실행**:
-   - 이벤트 발생 시 등록된 명령어 텍스트는 서버 프로세스가 로컬 쉘(`asyncio.create_subprocess_shell`)로 비동기 실행한다.
-   - 외부 웹훅 연동이 필요한 경우 `curl` 명령어 텍스트를 등록한다.
+3. **CLI는 등록만 하고 즉시 리턴**:
+   - `ak5 subscribe add|list|remove`를 비롯해 agent가 호출하는 설정·등록 명령은 **포그라운드에서 블로킹되면 안 된다**. daemon에 규칙을 저장하고 1초 이내에 `exit 0`으로 반환한다.
+   - 구독 성공 정의: `ak5 subscribe ls`에 행이 있음 (배경 PID나 stdout 배너가 아님).
 
-4. **터미널 관측(Observation)과의 분리**:
-   - 개발자가 터미널에서 화면을 띄워두고 실시간으로 이벤트를 지켜보는 도구는 `ak5 events watch`(또는 `ak5 watch`)이다.
-   - `ak5 subscribe`는 **자동화 액션(Action Trigger)** 등록 용도로만 사용한다 (`create` / `list` / `remove`).
-   - 에이전트/하네스(비-TTY, `AK5_AGENT=1` 등)에서 blocking watch를 실행하면 **exit 2**로 거부한다.
-   - 구독 성공 정의: `ak5 subscribe ls`에 hook 행이 존재함 (로컬 배경 PID/stdout 배너가 아님).
+4. **대기는 명시적 원시 연산으로만**:
+   - 할 일을 기다려야 하면 `ak5 next --wait <sec>` 또는 `ak5 events wait --timeout <sec>`를 쓴다. 둘 다 daemon의 로컬 long-poll을 쓰고 시간 제한이 있으며, 서버 연결을 늘리지 않는다.
+   - agent가 직접 poll 루프 스크립트나 배경 SSE 프로세스를 만들지 않는다.
+
+5. **터미널 관측과의 분리**:
+   - 사람이 화면에 띄워 두고 보는 도구는 `ak5 events watch`(또는 `ak5 watch`), `ak5 board --watch`이다.
+   - agent/harness 런타임(비-TTY, `AK5_AGENT=1` 등)에서 `events watch` / `watch`를 실행하면 **exit 2**로 거부한다.
 
 ## 2. 회귀 방지 체크리스트 (Regression Prevention)
-- [ ] `ak5 subscribe` 실행 시 터미널/쉘 프로세스가 종료되지 않고 대기하는가? ➔ **절대 금지 (Defect)**
-- [ ] `--dry-run` 플래그는 SSE 스트림 연결 없이 즉시 문법 유효성을 검증하고 리턴하는가?
-- [ ] 에이전트 도구(`workspace__runShell`) 호출 시 타임아웃 없이 즉시 결과 JSON/텍스트를 수신하는가?
-- [ ] 관련 Postmortem 참조: `docs/postmortem-20260927-subscribe-architecture.md`
+- [ ] `ak5 subscribe add` 실행 후 쉘이 종료되지 않고 대기하는가? ➔ **절대 금지 (Defect)**
+- [ ] `--dry-run`은 daemon·서버에 연결하지 않고 즉시 hook 계약을 출력하고 리턴하는가?
+- [ ] 서버 코드에 클라이언트 명령을 실행하는 경로(subprocess)가 다시 생기지 않았는가?
+- [ ] `ak5 next --wait` / `ak5 events wait`는 timeout 후 exit 6으로 끝나는가?
+- [ ] 관련 문서: [client.md](../../docs/spec/client.md) §4, [cli.md](../../docs/spec/cli.md) §4.6, `docs/postmortem-20260927-subscribe-architecture.md` (v1 배경)
