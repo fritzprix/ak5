@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from ak5.server.config import get_notify_mode, notify_poll_interval_seconds, settings
@@ -123,16 +123,12 @@ async def _pg_listen_loop(stop: asyncio.Event) -> None:
             raise
         except Exception:
             logger.exception("pg LISTEN loop error; retrying in 2s")
-            try:
+            with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=2.0)
-            except TimeoutError:
-                pass
         finally:
             if conn is not None:
-                try:
+                with suppress(Exception):
                     await conn.close()
-                except Exception:
-                    pass
 
 
 @asynccontextmanager
@@ -155,9 +151,7 @@ async def notify_lifespan() -> AsyncIterator[None]:
             _listener_stop.set()
         if _listener_task is not None:
             _listener_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await _listener_task
-            except asyncio.CancelledError:
-                pass
             _listener_task = None
             _listener_stop = None

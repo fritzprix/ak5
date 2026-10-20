@@ -5,7 +5,6 @@ Server does **not** execute shell hooks — that is the client daemon's job.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
