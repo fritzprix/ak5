@@ -48,6 +48,27 @@ def mount_web_ui(app: FastAPI) -> bool:
         if target is not None and target.is_file():
             return FileResponse(target)
 
+        # Never SPA-fallback asset extensions — returning HTML here poisons
+        # browser caches (SyntaxError: Unexpected token '<').
+        lowered = full_path.lower()
+        if lowered.startswith("_next/") or lowered.endswith(
+            (
+                ".js",
+                ".css",
+                ".map",
+                ".ico",
+                ".svg",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".webp",
+                ".woff",
+                ".woff2",
+                ".ttf",
+            )
+        ):
+            raise HTTPException(status_code=404, detail="Web UI asset not found")
+
         if target is not None:
             as_index = target / "index.html"
             if as_index.is_file():
