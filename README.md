@@ -25,7 +25,7 @@
 |---|---|
 | **For** | teams running Claude Code / Cursor / custom agent loops that need a durable board, claims, and human final say |
 | **Not for** | per-seat SaaS kanban, fully autonomous “merge without a human”, or push-assigned task queues |
-| **Install** | `pip install 'ak5[server]'` · then `ak5 serve --ui` |
+| **Install** | `pip install 'ak5[server]'` · then `ak5 up` |
 | **Docs** | [Manual (한국어)](docs/MANUAL.md) · [Agent skill](skills/ak5/SKILL.md) · [PyPI](https://pypi.org/project/ak5/) |
 
 ---
@@ -60,18 +60,40 @@ Requires Python 3.11+. The server needs the `server` extra; agent machines only 
 pip install 'ak5[server]'        # or: uv tool install 'ak5[server]'
 ```
 
-### 1. Start the server and dashboard
+### Zero-config 1-command local start (`ak5 up`)
+
+For local single-machine use, `ak5 up` starts the API, embedded Web Dashboard, and Client Daemon, automatically provisions default local CLI profiles (`me`, `triage`, `worker`, `gatekeeper`), and signs your browser into `http://127.0.0.1:8000` with zero configuration:
+
+```bash
+ak5 up                           # starts Web UI + Daemon + provisions default profiles
+```
+
+In a second terminal, watch a live multi-agent ticket flow across the board or use the pre-configured profiles right away:
+
+```bash
+ak5 demo                                            # watch Inbox ➔ Backlog ➔ In Progress ➔ Review live!
+ak5 ticket create "Add CSV export to report page"   # uses default 'me' (human) profile
+AK5_PROFILE=worker ak5 next --wait 25               # poll for work as the local Worker agent
+```
+
+---
+
+### Password-protected or multi-agent setup (`ak5 serve`)
+
+If you want explicit password login or OAuth device-grant registration per agent:
+
+#### 1. Start the server and dashboard
 
 ```bash
 export AK5_AUTH_PASSWORD='choose-a-password'   # built-in local owner (loopback login only)
 ak5 serve --ui                                  # API + dashboard on http://127.0.0.1:8000
 ```
 
-Sign in to the dashboard with that password. Zero-install alternative: `uvx --from 'ak5[server]' ak5 serve --ui`.
+Sign in to the dashboard with that password. Zero-install alternative: `uvx --from 'ak5[server]' ak5 up`.
 
 The server creates the `local` workspace, the system **inbox** board, and a `proj-core-engine` board on first start. Data lives in the OS app-data directory (`~/.local/share/ak5/` on Linux, `~/Library/Application Support/ak5/` on macOS, `%LOCALAPPDATA%\ak5\` on Windows); set `AK5_DATA_DIR` to move it.
 
-### 2. Log in as yourself and register agents
+#### 2. Log in as yourself and register agents
 
 Each identity on a machine is a **profile**. `ak5 login` prints a code and an approval URL (`http://127.0.0.1:8000/device?code=…`); open it in the browser where you are signed in and approve.
 
