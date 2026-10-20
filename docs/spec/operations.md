@@ -38,7 +38,9 @@ hosted 다중 사용자 배포 전에 필요한 **운영 기본기**를 정의�
 IP 신뢰는 둘 중 하나다.
 
 1. **`AK5_TRUSTED_PROXIES`(CIDR 목록)**: 소켓 peer가 그 목록에 속할 때만 `X-Forwarded-For`를 오른쪽부터 걸어 원 IP를 고른다. 설정이 없으면 소켓 peer를 쓴다.
-2. **`AK5_CLIENT_IP_HEADER`(플랫폼 보증 헤더)**: Vercel 등 엣지가 덮어쓰는 헤더(`x-real-ip`, `x-vercel-forwarded-for`, `cf-connecting-ip`)만 허용한다. 외부에서 위조 가능한 환경에서는 금지. CIDR을 알 수 없는 serverless에서 사용한다(#125).
+2. **`AK5_CLIENT_IP_HEADER`(플랫폼 보증 헤더)**: Vercel 등 엣지가 덮어쓰는 헤더(`x-real-ip`, `x-vercel-forwarded-for`, `cf-connecting-ip`)만 허용한다(#125).
+   - **`AK5_TRUSTED_PROXIES`도 같이 있으면**: peer가 그 CIDR에 속할 때만 헤더를 믿는다(위조 방지).
+   - **프록시 목록이 비어 있으면**: 헤더를 그대로 믿는다. 이 모드는 **플랫폼 엣지만이 이 프로세스에 도달할 수 있다**는 배포 전제에서만 안전하다. 공개 소켓에 직접 bind하면 클라이언트가 헤더를 위조해 rate-limit 버킷을 고를 수 있으므로 금지.
 
 ### 2.2 알고리즘과 저장
 

@@ -24,21 +24,23 @@ def test_validate_hosted_accepts_client_ip_header(monkeypatch: pytest.MonkeyPatc
     validate_hosted_client_ip_config()
 
 
-def test_validate_hosted_rejects_unknown_header(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("AK5_DEPLOY_PROFILE", "hosted")
+def test_validate_rejects_unknown_header_on_local(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AK5_DEPLOY_PROFILE", "local")
     monkeypatch.setenv("AK5_CLIENT_IP_HEADER", "x-forwarded-for")
     with pytest.raises(ValueError, match="Invalid AK5_CLIENT_IP_HEADER"):
         validate_hosted_client_ip_config()
 
 
-def test_local_profile_skips_hosted_gate(monkeypatch: pytest.MonkeyPatch):
+def test_local_profile_skips_hosted_presence_gate(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AK5_DEPLOY_PROFILE", "local")
     monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
     monkeypatch.delenv("AK5_CLIENT_IP_HEADER", raising=False)
     validate_hosted_client_ip_config()
 
 
-def test_platform_header_mode_uses_header(monkeypatch: pytest.MonkeyPatch):
+def test_platform_header_mode_uses_header_when_proxies_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setenv("AK5_CLIENT_IP_HEADER", "x-vercel-forwarded-for")
     monkeypatch.delenv("AK5_TRUSTED_PROXIES", raising=False)
     ip = resolve_client_ip(
@@ -46,6 +48,17 @@ def test_platform_header_mode_uses_header(monkeypatch: pytest.MonkeyPatch):
         "10.0.0.1",
     )
     assert ip == "203.0.113.9"
+
+
+def test_platform_header_requires_trusted_peer_when_proxies_set(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("AK5_CLIENT_IP_HEADER", "x-real-ip")
+    monkeypatch.setenv("AK5_TRUSTED_PROXIES", "10.0.0.0/8")
+    spoofed = resolve_client_ip({"x-real-ip": "203.0.113.9"}, "198.51.100.2")
+    assert spoofed == "198.51.100.2"
+    trusted = resolve_client_ip({"x-real-ip": "203.0.113.9"}, "10.0.0.5")
+    assert trusted == "203.0.113.9"
 
 
 def test_without_platform_mode_spoofed_header_ignored(monkeypatch: pytest.MonkeyPatch):
