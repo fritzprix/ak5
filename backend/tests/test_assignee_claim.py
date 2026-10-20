@@ -8,6 +8,7 @@ import pytest
 from ak5.models.actor import Actor
 from ak5.models.audit import AuditLog
 from ak5.models.ticket import Ticket
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 from ak5.services.workflow import clear_assignees_without_claim
 from helpers_workflow import board_ticket, inbox_ticket
 from httpx import AsyncClient
@@ -123,6 +124,7 @@ async def test_startup_clears_stale_assignee_with_audit(test_db):
     assert col is not None
     stale = Ticket(
         ticket_id="TK-STALE-ASG",
+        workspace_id=LOCAL_WORKSPACE_ID,
         board_id="proj-core-engine",
         column_id=col.column_id,
         title="Stale assignee",

@@ -90,6 +90,7 @@ async def test_list_tickets_hides_other_workspace(
         test_db.add(
             Column(
                 column_id=col_id,
+                workspace_id=other_ws,
                 board_id="board-other-ws",
                 name="Backlog",
                 stage="backlog",
@@ -215,6 +216,7 @@ async def test_claim_and_comment_reject_cross_workspace_ticket(
         test_db.add(
             Column(
                 column_id=col_id,
+                workspace_id=other_ws,
                 board_id="board-other-ws",
                 name="Backlog",
                 stage="backlog",
@@ -265,13 +267,14 @@ async def test_board_next_columns_members_reject_cross_workspace(
     client: AsyncClient, auth_headers, test_db: AsyncSession
 ):
     await ensure_local_tenancy(test_db)
-    await _ensure_other_workspace(test_db)
+    other_ws = await _ensure_other_workspace(test_db)
     # Give other board a backlog column so add_column isn't the only path.
     col_id = "col-other-ws-backlog"
     if await test_db.get(Column, col_id) is None:
         test_db.add(
             Column(
                 column_id=col_id,
+                workspace_id=other_ws,
                 board_id="board-other-ws",
                 name="Backlog",
                 stage="backlog",
