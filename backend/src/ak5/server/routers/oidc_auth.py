@@ -68,9 +68,9 @@ from ak5.server.services.workspaces import (
 )
 from ak5.server.web_auth import (
     check_rate_limit,
-    client_ip_from_headers,
     record_failed_attempt,
     record_successful_attempt,
+    resolve_client_ip,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,9 +83,9 @@ def _is_secure(request: Request) -> bool:
 
 
 def _client_key(request: Request) -> str:
-    return client_ip_from_headers(
-        request.headers.get("x-forwarded-for"),
-        request.headers.get("x-real-ip"),
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    return resolve_client_ip(
+        headers,
         request.client.host if request.client else "127.0.0.1",
     )
 
@@ -366,9 +366,9 @@ async def local_owner_login(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JSONResponse:
     """Local-owner password login — **loopback only** (identity.md §8)."""
-    ip = client_ip_from_headers(
-        request.headers.get("x-forwarded-for"),
-        request.headers.get("x-real-ip"),
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    ip = resolve_client_ip(
+        headers,
         request.client.host if request.client else "127.0.0.1",
     )
     allowed, wait_seconds = check_rate_limit(ip)
