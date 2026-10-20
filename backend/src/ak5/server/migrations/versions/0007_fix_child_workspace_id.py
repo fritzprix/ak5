@@ -8,6 +8,7 @@ Create Date: 2026-10-20
 from __future__ import annotations
 
 from alembic import op
+from sqlalchemy import text
 
 revision = "0007_fix_child_workspace_id"
 down_revision = "0006_postgres_rls"
@@ -16,6 +17,13 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    # 0006 enables FORCE RLS. Without bypass, these UPDATEs (and their
+    # parent-board/ticket subqueries) see zero rows on PostgreSQL for
+    # non-BYPASSRLS roles — including the table owner under FORCE.
+    if bind.dialect.name == "postgresql":
+        op.execute(text("SELECT set_config('ak5.bypass_rls', 'on', true)"))
+
     # Board-scoped children
     op.execute(
         """
