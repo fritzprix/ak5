@@ -1,11 +1,18 @@
 # v2 릴리스 체크리스트 (발췌)
 
-정본 조율은 [#36](https://github.com/fritzprix/ak5/issues/36) (사람/오케스트레이터; agent 미위임).  
-에픽 [#22](https://github.com/fritzprix/ak5/issues/22): Wave 7·8·pipeline runner는 `feat/workflow-v2`에 착지.  
-남은 사람 게이트: [#174](https://github.com/fritzprix/ak5/pull/174) launch harden 머지 → 그다음 **#36** (+ 에픽 트래킹). 워커는 PR을 머지하지 않는다.
+정본 조율은 [#36](https://github.com/fritzprix/ak5/issues/36) (사람/오케스트레이터).  
+에픽 [#22](https://github.com/fritzprix/ak5/issues/22): Wave 7·8·pipeline runner + `ak5 up`는 `feat/workflow-v2`에 착지.
+
+## 사전 게이트
+
+- [x] [#174](https://github.com/fritzprix/ak5/pull/174) launch harden 머지
+- [x] [#177](https://github.com/fritzprix/ak5/pull/177) zero-config `ak5 up` 머지 → `feat/workflow-v2`
+
 ## 릴리스 (#36)
 
-- [ ] 대상 브랜치 결정 (`dev/2.0.x` 등) 후 `feat/workflow-v2` squash
+- [x] 대상 브랜치 결정: 신규 [`dev/2.0.x`](https://github.com/fritzprix/ak5/tree/dev/2.0.x) (from `master` @ v1.0.26)
+- [x] 범위 결정: **2.0.0 = full v2 stack** (identity + hosted/Postgres 포함; local-only 분할 안 함)
+- [ ] [`feat/workflow-v2` → `dev/2.0.x` squash merge](https://github.com/fritzprix/ak5/pull/178)
 - [ ] 버전 2.0.0 · CHANGELOG · v1→v2 마이그레이션 가이드
 - [ ] 보안 리뷰 · 회귀 게이트 · PyPI/npm · GitHub Release
 
