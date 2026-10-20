@@ -69,9 +69,12 @@ python scripts/pipeline_ownership.py       # open-PR ownership-root overlaps (ex
 python scripts/pipeline_tick.py            # one dry-run tick (status + ownership + pick)
 python scripts/pipeline_tick.py --apply-claim           # label implementing + issue comment
 python scripts/pipeline_tick.py --apply-claim --checkout  # also create local branch
+python scripts/pipeline_launch.py                        # dry-run: worktree + agent cmds (#171)
+python scripts/pipeline_launch.py --worktree             # create ../ak5-wt-<n>
+python scripts/pipeline_launch.py --worktree --launch-agent
 ```
 
-All default to read-only except `--apply-claim` / `--checkout`. Skips epic (#22) and release (#36). Agent/worktree launch stays outside these scripts (Cursor / orchestrator).
+All default to read-only except `--apply-claim` / `--checkout` / `--worktree` / `--launch-agent`. Skips epic (#22) and release (#36).
 
 ## Concurrency & ownership
 
@@ -79,7 +82,7 @@ All default to read-only except `--apply-claim` / `--checkout`. Skips epic (#22)
 - Prefer non-overlapping ownership roots; `pipeline_ownership.py` flags overlaps among open PRs.
 - Open-PR queue must not stay empty while inferred-ready issues exist.
 
-## Remaining automation (#38)
+## Remaining automation
 
-- Optional: wire `pipeline_tick` → Cursor Agent CLI / git worktree launcher
+- #171: `pipeline_launch.py` (opt-in worktree + Cursor Agent CLI)
 - Optional: auto label `pipeline:review` when a PR with `Closes #N` opens
