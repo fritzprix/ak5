@@ -94,4 +94,4 @@ Optional later:
 
 - Auto label `pipeline:review` when a PR with `Closes #N` opens
 
-**Next human gates:** finish [#36](https://github.com/fritzprix/ak5/issues/36) on `dev/2.0.x` — security review + regression (#29), then publish `v2.0.0` to PyPI/npm (version/docs already staged).
+**v2.0.0 published** to PyPI ([release](https://github.com/fritzprix/ak5/releases/tag/v2.0.0)). Remaining #36 follow-ups: npm publish (needs `NPM_TOKEN`), optional recovery rehearsal.
