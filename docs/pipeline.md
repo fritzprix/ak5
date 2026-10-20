@@ -82,7 +82,16 @@ All default to read-only except `--apply-claim` / `--checkout` / `--worktree` / 
 - Prefer non-overlapping ownership roots; `pipeline_ownership.py` flags overlaps among open PRs.
 - Open-PR queue must not stay empty while inferred-ready issues exist.
 
-## Remaining automation
+## Status (epic #22)
 
-- #171: `pipeline_launch.py` (opt-in worktree + Cursor Agent CLI)
-- Optional: auto label `pipeline:review` when a PR with `Closes #N` opens
+Pipeline runner landed on `feat/workflow-v2` (#38, #168–#170, #171/#172): status / pick / ownership / tick / launch.
+
+Open follow-up (human merge only — workers never merge):
+
+- [#174](https://github.com/fritzprix/ak5/pull/174): harden `pipeline_launch.py` after #172 inline review (claim / worktree cleanup / `cursor.CMD` / cmd injection). Treat MVP as complete only after this lands.
+
+Optional later:
+
+- Auto label `pipeline:review` when a PR with `Closes #N` opens
+
+**Next human gates:** merge #174, then [#36](https://github.com/fritzprix/ak5/issues/36) v2.0.0 release (not agent-delegated).

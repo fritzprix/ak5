@@ -1,6 +1,13 @@
 # v2 릴리스 체크리스트 (발췌)
 
-정본 조율은 #36. 여기서는 agent가 문서화한 **필수 검증 항목**만 추적한다.
+정본 조율은 [#36](https://github.com/fritzprix/ak5/issues/36) (사람/오케스트레이터; agent 미위임).  
+에픽 [#22](https://github.com/fritzprix/ak5/issues/22): Wave 7·8·pipeline runner는 `feat/workflow-v2`에 착지.  
+남은 사람 게이트: [#174](https://github.com/fritzprix/ak5/pull/174) launch harden 머지 → 그다음 **#36** (+ 에픽 트래킹). 워커는 PR을 머지하지 않는다.
+## 릴리스 (#36)
+
+- [ ] 대상 브랜치 결정 (`dev/2.0.x` 등) 후 `feat/workflow-v2` squash
+- [ ] 버전 2.0.0 · CHANGELOG · v1→v2 마이그레이션 가이드
+- [ ] 보안 리뷰 · 회귀 게이트 · PyPI/npm · GitHub Release
 
 ## 복구 리허설 (#119 / operations.md §5)
 
