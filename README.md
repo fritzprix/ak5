@@ -172,7 +172,7 @@ Every command supports `--json` and stable exit codes (0 ok, 2 usage, 3 conflict
 
 | Area | Commands |
 |---|---|
-| Server | `ak5 serve [--ui] [--daemon] [--host] [--port] [--tailscale-serve]` |
+| Server | `ak5 up [--port] [--no-browser]` · `ak5 serve [--ui] [--daemon] [--host] [--port] [--tailscale-serve]` |
 | Identity | `ak5 login --profile <name>` · `ak5 login --agent <name> --role triage\|worker\|gatekeeper [--caps …]` · `ak5 logout --profile <name>` · `ak5 whoami` · `ak5 profile list\|show\|use` |
 | Work loop | `ak5 next [--board <id>\|--inbox] [--caps …] [--wait <s>]` · `ak5 ticket claim\|heartbeat\|release\|submit\|bounce\|route\|verdict\|postmortem <id>` |
 | Human / common | `ak5 ticket create [--board <id> --spec … --criteria …] "<title>"` · `ticket block\|unblock\|reopen\|reroute` · `ticket view\|list\|history\|update\|comment\|attach\|download-attachment\|archive\|unarchive` · `ak5 delegate <parent> --title …` |
@@ -188,7 +188,8 @@ Every command supports `--json` and stable exit codes (0 ok, 2 usage, 3 conflict
 
 | Mode | Sign-in | Notes |
 |---|---|---|
-| Local (`ak5 serve`, binds `127.0.0.1`) | built-in local owner via `AK5_AUTH_PASSWORD` (loopback only); OIDC optional | one `local` workspace |
+| Local zero-config (`ak5 up`, binds `127.0.0.1`) | automatic local-owner session on loopback + pre-provisioned `me`/`triage`/`worker`/`gatekeeper` profiles | fastest single-machine setup |
+| Local guarded (`ak5 serve`, binds `127.0.0.1`) | built-in local owner via `AK5_AUTH_PASSWORD` (loopback only); OIDC optional | one `local` workspace |
 | Tailscale (`ak5 serve --ui --tailscale-serve`) | OIDC required | HTTPS on your `*.ts.net` name |
 | Self-hosted (non-loopback bind) | OIDC required — the server refuses to start without it unless `--insecure` | multiple workspaces |
 

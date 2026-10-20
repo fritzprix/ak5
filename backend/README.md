@@ -25,6 +25,22 @@
 
 ## Quick start
 
+### Zero-config local start (`ak5 up`)
+
+```bash
+# Starts API + Web Dashboard + Client Daemon on http://127.0.0.1:8000
+# and auto-provisions local profiles: me (default), triage, worker, gatekeeper
+ak5 up
+
+# In another terminal, watch a live v2 multi-agent workflow on the board:
+ak5 demo
+ak5 ticket create "Add CSV export" --board proj-core-engine \
+  --spec "Export button on the report page" --criteria "downloads a CSV"
+AK5_PROFILE=worker ak5 next --board proj-core-engine --wait 25 --json
+```
+
+### Password-protected or custom agent registration (`ak5 serve`)
+
 ```bash
 # Server + dashboard on http://127.0.0.1:8000 (zero-install: uvx --from 'ak5[server]' ak5 serve --ui)
 export AK5_AUTH_PASSWORD='choose-a-password'
@@ -58,6 +74,8 @@ The daemon runs the command per matching event; event data arrives as `$AK5_*` e
 ## Command overview
 
 ```text
+ak5 up [--port] [--no-browser]                         zero-config local server + UI + daemon + profiles
+ak5 demo [--board <id>] [--auto-approve]               run live v2 multi-agent workflow simulation
 ak5 serve [--ui] [--daemon] [--tailscale-serve]        server (needs ak5[server])
 ak5 login --profile <name> | --agent <name> --role R   device grant; ak5 whoami, ak5 profile list
 ak5 next [--board <id>|--inbox] [--wait <s>]           find work (exit 6 = none)
