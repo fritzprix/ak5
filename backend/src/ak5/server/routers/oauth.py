@@ -199,10 +199,10 @@ async def device_approval_page(
 ) -> HTMLResponse:
     """Minimal server-rendered approval page (identity.md §3.3 / #25)."""
     from ak5.server.routers.oidc_auth import (
-        _is_secure,
-        _set_session_cookies,
         auto_create_local_web_session,
+        is_secure_request,
         local_auto_login_enabled,
+        set_session_cookies,
     )
 
     html = _DEVICE_PAGE.replace("__CODE__", (code or "").replace('"', ""))
@@ -210,11 +210,11 @@ async def device_approval_page(
     cookie = request.cookies.get(SESSION_COOKIE)
     if await resolve_web_session(db, cookie) is None and local_auto_login_enabled(request):
         _user, session_cookie, csrf = await auto_create_local_web_session(db)
-        _set_session_cookies(
+        set_session_cookies(
             response,
             session_cookie=session_cookie,
             csrf_token=csrf,
-            secure=_is_secure(request),
+            secure=is_secure_request(request),
         )
     return response
 

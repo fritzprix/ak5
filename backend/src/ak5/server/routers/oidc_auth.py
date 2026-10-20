@@ -79,8 +79,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oidc-auth"])
 
 
-def _is_secure(request: Request) -> bool:
+def is_secure_request(request: Request) -> bool:
     return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+_is_secure = is_secure_request
 
 
 def _client_key(request: Request) -> str:
@@ -100,7 +103,7 @@ def _too_many_pending(exc: PendingLimitError) -> JSONResponse:
     )
 
 
-def _set_session_cookies(
+def set_session_cookies(
     response: Response,
     *,
     session_cookie: str,
@@ -125,6 +128,9 @@ def _set_session_cookies(
         path="/",
         max_age=60 * 60 * 24 * 14,
     )
+
+
+_set_session_cookies = set_session_cookies
 
 
 def _clear_session_cookies(response: Response, *, secure: bool) -> None:

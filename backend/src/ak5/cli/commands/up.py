@@ -68,6 +68,7 @@ async def bootstrap_local_profiles(api_url: str) -> dict[str, str]:
         LOCAL_WORKSPACE_ID,
         Agent,
         AgentCredential,
+        UserSession,
     )
     from ak5.server.seed import ensure_local_tenancy, seed_initial_data
     from ak5.server.services.agents import (
@@ -99,8 +100,36 @@ async def bootstrap_local_profiles(api_url: str) -> dict[str, str]:
             )
             await db.flush()
 
-        # 1. Human owner profile ("me")
-        refresh_token, _session_id = await create_cli_session_tokens(db, user.user_id)
+        # 1. Human owner profile ("me") — reuse valid CLI refresh token if present
+        existing_me = load_credential("me")
+        refresh_token = ""
+        if (
+            existing_me is not None
+            and existing_me.status == "active"
+            and existing_me.refresh_token
+        ):
+            refresh_hash = hashlib.sha256(
+                existing_me.refresh_token.encode("utf-8")
+            ).hexdigest()
+            now_naive = datetime.now(UTC).replace(tzinfo=None)
+            valid_session = (
+                await db.execute(
+                    select(UserSession).where(
+                        UserSession.user_id == user.user_id,
+                        UserSession.client == "cli",
+                        UserSession.refresh_token_hash == refresh_hash,
+                        UserSession.revoked_at.is_(None),
+                        UserSession.expires_at > now_naive,
+                    )
+                )
+            ).scalar_one_or_none()
+            if valid_session is not None:
+                refresh_token = existing_me.refresh_token
+
+        if not refresh_token:
+            refresh_token, _session_id = await create_cli_session_tokens(
+                db, user.user_id
+            )
         ttl = session_token_ttl()
         access_token = issue_access_token(
             Principal(
@@ -169,8 +198,9 @@ async def bootstrap_local_profiles(api_url: str) -> dict[str, str]:
                         reused_agent = candidate
 
             if reused_agent is not None:
+                assert existing_cred is not None
                 agent = reused_agent
-                plaintext = existing_cred.access_token  # type: ignore[union-attr]
+                plaintext = existing_cred.access_token
             else:
                 agent = (
                     await db.execute(

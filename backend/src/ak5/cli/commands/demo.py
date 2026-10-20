@@ -227,6 +227,9 @@ async def run_collaboration_simulation(
         )
 
         # Step 4: Worker submits deliverable -> agent_review
+        console.print(
+            f"\n[bold yellow][Step 4] Worker Agent (@{worker_id}) submits deliverable...[/bold yellow]"
+        )
         submit_resp = await client.post(
             f"/tickets/{ticket_id}/submit",
             json={
@@ -257,7 +260,7 @@ async def run_collaboration_simulation(
 
         # Step 5: Gatekeeper claims review and approves -> human_review
         console.print(
-            f"\n[bold yellow][Step 4] Gatekeeper Agent (@{gk_id}) audits deliverable...[/bold yellow]"
+            f"\n[bold yellow][Step 5] Gatekeeper Agent (@{gk_id}) audits deliverable...[/bold yellow]"
         )
         gk_claim_resp = await client.post(
             f"/tickets/{ticket_id}/claim",
@@ -303,7 +306,7 @@ async def run_collaboration_simulation(
             if step_delay > 0:
                 await asyncio.sleep(step_delay)
             console.print(
-                "\n[bold yellow][Step 5] Human PM approves final sign-off...[/bold yellow]"
+                "\n[bold yellow][Step 6] Human PM approves final sign-off...[/bold yellow]"
             )
             rev_resp = await client.post(
                 f"/tickets/{ticket_id}/verdict",

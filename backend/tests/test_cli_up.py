@@ -67,13 +67,19 @@ async def test_bootstrap_local_profiles_idempotent_and_demo_v2(
     assert by_name["me"].principal == "user"
     assert by_name["worker"].role == "worker"
 
+    me_cred_1 = load_credential("me")
+    assert me_cred_1 is not None
+    assert me_cred_1.refresh_token
     worker_cred_1 = load_credential("worker")
     assert worker_cred_1 is not None
     assert worker_cred_1.access_token.startswith("ak5_agt_")
 
-    # Second run reuses existing active agent & credential rather than duplicating
+    # Second run reuses existing active CLI refresh token & agent credential
     second = await bootstrap_local_profiles(api_url)
     assert second == first
+    me_cred_2 = load_credential("me")
+    assert me_cred_2 is not None
+    assert me_cred_2.refresh_token == me_cred_1.refresh_token
     worker_cred_2 = load_credential("worker")
     assert worker_cred_2 is not None
     assert worker_cred_2.access_token == worker_cred_1.access_token
