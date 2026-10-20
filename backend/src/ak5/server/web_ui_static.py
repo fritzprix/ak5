@@ -7,6 +7,29 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
+PUBLIC_STATIC_ASSET_EXTENSIONS: tuple[str, ...] = (
+    ".js",
+    ".mjs",
+    ".css",
+    ".map",
+    ".ico",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".webmanifest",
+)
+
+STATIC_ASSET_EXTENSIONS: tuple[str, ...] = (
+    *PUBLIC_STATIC_ASSET_EXTENSIONS,
+    ".txt",
+    ".json",
+)
+
 
 def web_ui_root() -> Path:
     return Path(__file__).resolve().parent / "web_ui"
@@ -14,6 +37,12 @@ def web_ui_root() -> Path:
 
 def web_ui_available() -> bool:
     return (web_ui_root() / "index.html").is_file()
+
+
+def web_ui_assets_built() -> bool:
+    """Return True when the full static export (index.html + _next/ chunks) is present."""
+    root = web_ui_root()
+    return (root / "index.html").is_file() and (root / "_next").is_dir()
 
 
 def _safe_join(root: Path, relative: str) -> Path | None:
@@ -51,21 +80,10 @@ def mount_web_ui(app: FastAPI) -> bool:
         # Never SPA-fallback asset extensions — returning HTML here poisons
         # browser caches (SyntaxError: Unexpected token '<').
         lowered = full_path.lower()
-        if lowered.startswith("_next/") or lowered.endswith(
-            (
-                ".js",
-                ".css",
-                ".map",
-                ".ico",
-                ".svg",
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".webp",
-                ".woff",
-                ".woff2",
-                ".ttf",
-            )
+        if (
+            lowered == "_next"
+            or lowered.startswith("_next/")
+            or lowered.endswith(STATIC_ASSET_EXTENSIONS)
         ):
             raise HTTPException(status_code=404, detail="Web UI asset not found")
 

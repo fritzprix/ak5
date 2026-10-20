@@ -51,7 +51,12 @@ from ak5.server.routers.workspaces import router as workspaces_router
 from ak5.server.seed import seed_initial_data
 from ak5.server.services.workflow import WorkflowError
 from ak5.server.web_auth import get_web_auth_config
-from ak5.server.web_ui_static import mount_web_ui, web_ui_available
+from ak5.server.web_ui_static import (
+    PUBLIC_STATIC_ASSET_EXTENSIONS,
+    mount_web_ui,
+    web_ui_assets_built,
+    web_ui_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +173,7 @@ def _is_public_path(path: str) -> bool:
             if path == prefix or path.startswith(prefix + "/"):
                 return True
     # Static asset extensions always public (JS/CSS needed on login page)
-    lowered = path.lower()
-    for ext in (".js", ".css", ".map", ".ico", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".woff", ".woff2", ".ttf"):
-        if lowered.endswith(ext):
-            return True
-    return False
+    return path.lower().endswith(PUBLIC_STATIC_ASSET_EXTENSIONS)
 
 
 async def _request_has_web_session(request: Request) -> bool:
@@ -378,7 +379,11 @@ def create_app() -> FastAPI:
 
         @application.get("/api/system/web-ui", tags=["system"], include_in_schema=False)
         async def web_ui_status():
-            return {"web_ui": True, "available": web_ui_available()}
+            return {
+                "web_ui": True,
+                "available": web_ui_available(),
+                "assets_built": web_ui_assets_built(),
+            }
 
     # Outermost: request id in/out + access log. Added last so it wraps every other middleware.
     install_audit_hook()

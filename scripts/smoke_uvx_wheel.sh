@@ -137,6 +137,8 @@ from ak5.server.web_ui_static import web_ui_available
 assert app is not None
 assert create_app is not None
 assert web_ui_available(), "embedded web_ui/index.html missing from wheel"
+from ak5.server.web_ui_static import web_ui_assets_built
+assert web_ui_assets_built(), "embedded web_ui/_next static chunks missing from wheel"
 print("  ✓ greenlet + sqlalchemy.ext.asyncio + ak5.server.app:app + web_ui")
 PY
 
