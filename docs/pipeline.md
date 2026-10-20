@@ -39,17 +39,41 @@ Development of ak5 v2 follows the same shape as the product workflow: a ticket (
 
 ## Review checklist
 
-Run against the tree produced by merging the PR into its base:
+Run against the tree produced by merging the PR into its base (gatekeeper / reviewer agent):
 
-1. `pytest` and `ruff` pass (backend); no weakened or deleted tests.
-2. No `.env` / secret leakage in the diff.
-3. Changed paths decide extra gates: frontend build/lint/tests, SDK tests.
+1. `pytest` and `ruff` pass (backend); no weakened or deleted tests to make CI green.
+2. No `.env` / secret leakage in the diff (tokens, private keys, connection strings).
+3. Changed paths decide extra gates: frontend build/lint/tests, SDK tests / typecheck.
 4. Server starts on a **copy of a real v1 DB**, twice in a row (migration is idempotent).
-5. Integration E2E passes.
-6. Live-server CLI and SDK contract tests pass (the CI "Live Server Contracts" job).
-7. Change stays within the issue's scope; out-of-scope edits are flagged.
+5. Integration E2E passes when the change touches workflow / auth / events.
+6. Live-server CLI and SDK contract tests pass (CI job **Live Server Contracts**).
+7. Change stays within the issue's scope; out-of-scope edits are flagged or split.
 8. Spec changes (`docs/spec/*`) match the code, and vice versa.
+9. Hosted / ops docs (`docs/deploy/*`, `docs/ops/*`) match fail-closed startup gates when touched.
 
-## Open items
+## Status helper (read-only runner fragment)
 
-- Runner automation (readiness from labels and `## 의존`, worktree + agent launch, label transitions, concurrency limit, file-ownership conflict detection) is not implemented; workers and reviewer run as manual loops (#38).
+```bash
+python scripts/pipeline_status.py
+python scripts/pipeline_status.py --json
+```
+
+Reads open issues + `pipeline:*` / `v2` labels, parses `## 의존`, and prints inferred readiness. Does **not** change labels or start agents.
+
+## Concurrency & ownership (manual rules until automation)
+
+- At most **one** `pipeline:implementing` issue per worker agent.
+- Prefer non-overlapping paths; if two PRs touch the same package root, serialize or escalate.
+- Open-PR queue must not stay empty while `pipeline:ready` (or inferred-ready) issues exist.
+
+## Open decisions (#38)
+
+- [ ] Review owner: orchestrator vs dedicated reviewer agent (must stay ≠ implementer)
+- [ ] `pipeline:integrating`: auto-merge after regression gate (#29) vs human confirm
+- [ ] Runner cadence: manual tick vs scheduled
+- [ ] Rework cap before `pipeline:escalated` (default in conventions: 3× 🔁)
+
+## Remaining automation (#38)
+
+- Full runner: ready判定 → worktree + agent → label transitions + issue comments
+- File-ownership conflict detection beyond the manual rules above
