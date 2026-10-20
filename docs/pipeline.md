@@ -20,15 +20,15 @@ Development of ak5 v2 follows the same shape as the product workflow: a ticket (
 
 - **Worker** — implements `pipeline:ready` tickets, one at a time.
 - **Reviewer** — a separate agent from the worker. Reviews open PRs on a loop and **only comments**: no push, no merge, no branch edits.
-- **Merger** — human (or worker after explicit ✅ / APPROVE gatekeeper verdict). **No auto-merge.**
+- **Merger** — **human only**. Worker/cloud agents must never merge, even after APPROVE.
+  Unresolved review threads / inline comments must be cleared before a human merges.
 
 ## Decisions (#38) — locked defaults
 
 | Topic | Decision |
 |---|---|
 | Review owner | Dedicated reviewer / gatekeeper agent ≠ implementer |
-| Integrating / merge | Human or post-APPROVE merge; not CI-auto |
-| Runner cadence | Manual tick (`pipeline_tick.py`); optional outer scheduler |
+| Integrating / merge | **Human only** (worker never merges; APPROVE ≠ merge) || Runner cadence | Manual tick (`pipeline_tick.py`); optional outer scheduler |
 | Rework cap | 3× 🔁 on the same PR → `pipeline:escalated` |
 
 ## Worker conventions
@@ -70,11 +70,13 @@ python scripts/pipeline_tick.py            # one dry-run tick (status + ownershi
 python scripts/pipeline_tick.py --apply-claim           # label implementing + issue comment
 python scripts/pipeline_tick.py --apply-claim --checkout  # also create local branch
 python scripts/pipeline_launch.py                        # dry-run: worktree + agent cmds (#171)
-python scripts/pipeline_launch.py --worktree             # create ../ak5-wt-<n>
+python scripts/pipeline_launch.py --worktree             # create ../ak5-wt-<n> + claim labels
 python scripts/pipeline_launch.py --worktree --launch-agent
 ```
 
-All default to read-only except `--apply-claim` / `--checkout` / `--worktree` / `--launch-agent`. Skips epic (#22) and release (#36).
+All default to read-only except `--apply-claim` / `--checkout` / `--worktree` / `--launch-agent`.  
+`--worktree` claims like `pipeline_tick --apply-claim` (unless `--no-claim`). Skips epic (#22) and release (#36).  
+**Workers never merge PRs.**
 
 ## Concurrency & ownership
 
