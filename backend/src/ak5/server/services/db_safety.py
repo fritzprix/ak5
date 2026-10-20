@@ -241,7 +241,10 @@ def prepare_database_for_use(database_url: str | None = None, *, force: bool = F
             assert_database_url_matches_canonical(database_url)
         return live
 
-    app_dir = get_app_data_dir()
+    app_dir = get_app_data_dir(create=True)
+    from ak5.server.database import ensure_sqlite_parent_dir
+
+    ensure_sqlite_parent_dir(database_url if database_url else None)
     if os.environ.get("AK5_MIGRATE_LEGACY", "").strip().lower() in ("1", "true", "yes"):
         migrate_legacy_cwd_data(app_dir, opt_in=True)
     else:
