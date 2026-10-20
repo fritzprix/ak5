@@ -293,7 +293,7 @@ def _load_dotenv_files() -> None:
 
 def _print_api_banner(host: str, port: int) -> None:
     from ak5.server.config import settings
-    from ak5.server.web_ui_static import web_ui_available
+    from ak5.server.web_ui_static import web_ui_assets_built
 
     console.print(f"[bold cyan]Starting AK5 Gateway on http://{host}:{port}...[/bold cyan]")
     console.print(f"  - Database:           [cyan]{settings.DATABASE_URL}[/cyan]")
@@ -309,7 +309,7 @@ def _print_api_banner(host: str, port: int) -> None:
         f"  - SSE Real-time Bus:  [link=http://{host}:{port}/api/v1/events/stream]"
         f"http://{host}:{port}/api/v1/events/stream[/link]"
     )
-    if web_ui_available():
+    if web_ui_assets_built():
         console.print(
             f"  - Web Dashboard:      [link=http://{host}:{port}/]"
             f"http://{host}:{port}/[/link]"
@@ -463,12 +463,12 @@ def run_serve(
     _prepare_database()
 
     if ui:
-        from ak5.server.web_ui_static import web_ui_available
+        from ak5.server.web_ui_static import web_ui_assets_built
 
-        if not web_ui_available():
+        if not web_ui_assets_built():
             console.print(
                 "[bold yellow]Warning:[/bold yellow] Embedded web UI assets not found "
-                "([cyan]ak5/server/web_ui/index.html[/cyan])."
+                "([cyan]ak5/server/web_ui/_next[/cyan])."
             )
             console.print(
                 "Build them with [bold cyan]scripts/build_web_ui.sh[/bold cyan] "
