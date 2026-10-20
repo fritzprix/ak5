@@ -233,10 +233,14 @@ async def test_live_postgres_rls_cross_workspace_blocking():
         all_ids = {b.board_id for b in all_boards}
         assert board_alpha_id in all_ids and board_beta_id in all_ids
 
-    # 5. Workspace GUC survives commit (after_begin re-applies session.info)
+    # 5. Workspace GUC survives commit (after_begin re-applies session.info).
+    # SET LOCAL ROLE ends at commit — re-apply only the role; workspace GUC must
+    # come back from session.info via after_begin on the next transaction.
     async with maker() as session:
         await _scope(session, ws_alpha)
         await session.commit()
+        if has_bypass:
+            await session.execute(text("SET LOCAL ROLE ak5_test_tenant"))
         boards = (await session.execute(select(Board))).scalars().all()
         board_ids = {b.board_id for b in boards}
         assert board_alpha_id in board_ids

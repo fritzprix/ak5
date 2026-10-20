@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -17,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ak5.contracts.errors import ErrorCode
 from ak5.server.config import settings
-from ak5.server.database import AsyncSessionLocal, open_admin_session
+from ak5.server.database import AsyncSessionLocal, AsyncSessionLocalAdmin
 from ak5.server.models.event import Event
 from ak5.server.models.subscription import Subscription
 from ak5.server.services.event_bus import event_bus
@@ -143,10 +145,23 @@ class SubscriptionService:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        admin_session_factory: async_sessionmaker[AsyncSession] | None = None,
         visibility: EventVisibilityPolicy | None = None,
     ) -> None:
         self.session_factory = session_factory or AsyncSessionLocal
+        # Cross-tenant maintenance (purge). Defaults to AK5_DATABASE_ADMIN_URL engine;
+        # tests rebind this to the same factory as session_factory.
+        self.admin_session_factory = admin_session_factory or AsyncSessionLocalAdmin
         self.visibility: EventVisibilityPolicy = visibility or build_visibility_policy()
+
+    @asynccontextmanager
+    async def _open_admin_session(self) -> AsyncIterator[AsyncSession]:
+        """Open a maintenance session and enable RLS bypass on PostgreSQL."""
+        from ak5.server.rls import set_bypass_rls_context
+
+        async with self.admin_session_factory() as session:
+            await set_bypass_rls_context(session, True)
+            yield session
 
     async def start(self) -> None:
         """No-op: server no longer runs a background exec listener (events.md §0)."""
@@ -599,7 +614,7 @@ class SubscriptionService:
         from ak5.server.rls import set_workspace_rls_context
 
         # Retention purge is cross-tenant; keep it off the request-scoped session.
-        async with open_admin_session() as admin_session:
+        async with self._open_admin_session() as admin_session:
             await self.purge_expired_events(admin_session)
             await admin_session.commit()
 
@@ -680,7 +695,7 @@ class SubscriptionService:
         limit = max(1, min(int(limit), 100))
         since = max(0, int(since))
         # Purge on an admin session so request RLS context is not switched to bypass.
-        async with open_admin_session() as admin_session:
+        async with self._open_admin_session() as admin_session:
             await self.purge_expired_events(admin_session)
             await admin_session.commit()
         await self.ensure_cursor_valid(session, since, workspace_id=workspace_id)
