@@ -65,6 +65,49 @@ def hosted_profile() -> bool:
     return get_deploy_profile() == "hosted"
 
 
+ALLOWED_NOTIFY_MODES = frozenset({"inproc", "poll", "pg", "redis"})
+
+
+def get_notify_mode() -> str:
+    """Return AK5_NOTIFY mode (deployment.md §3, #108).
+
+    Legacy: ``LONG_POLL_USE_INPROCESS_NOTIFY=false`` with default ``inproc``
+    behaves as ``poll`` so existing serverless env still works.
+    """
+    raw = (settings.NOTIFY or "inproc").strip().lower()
+    if raw not in ALLOWED_NOTIFY_MODES:
+        allowed = ", ".join(sorted(ALLOWED_NOTIFY_MODES))
+        raise ValueError(f"Invalid AK5_NOTIFY={settings.NOTIFY!r}. Allowed: {allowed}.")
+    if raw == "inproc" and not settings.LONG_POLL_USE_INPROCESS_NOTIFY:
+        return "poll"
+    return raw
+
+
+def notify_poll_interval_seconds() -> float:
+    """Wait slice for ``poll`` mode (AK5_NOTIFY_POLL_MS)."""
+    return max(0.05, float(settings.NOTIFY_POLL_MS) / 1000.0)
+
+
+def validate_notify_config() -> None:
+    """Fail closed on unsupported or invalid notify combinations (deployment.md §7)."""
+    mode = get_notify_mode()
+    if mode == "redis":
+        raise ValueError(
+            "AK5_NOTIFY=redis is not implemented yet; use inproc, poll, or pg."
+        )
+    if mode == "pg":
+        url = (settings.DATABASE_URL or "").lower()
+        if "sqlite" in url or not any(
+            x in url for x in ("postgres", "postgresql")
+        ):
+            raise ValueError("AK5_NOTIFY=pg requires a PostgreSQL DATABASE_URL.")
+    if mode == "inproc" and int(settings.INSTANCES) > 1:
+        raise ValueError(
+            "AK5_NOTIFY=inproc is incompatible with AK5_INSTANCES>1; "
+            "use poll or pg for multi-instance deployments."
+        )
+
+
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AK5"
     VERSION: str = _pkg_version
@@ -121,7 +164,22 @@ class Settings(BaseSettings):
     LONG_POLL_DB_POLL_INTERVAL: float = 1.0
     # Local/integrated mode: wake waiters via in-process event_bus notify.
     # Serverless / multi-worker: set False to rely on DB polling only.
+    # Prefer AK5_NOTIFY=poll|pg (deployment.md §3); this flag maps inproc→poll when False.
     LONG_POLL_USE_INPROCESS_NOTIFY: bool = True
+    # Cross-instance wake-up (deployment.md §3, #108): inproc | poll | pg | redis
+    NOTIFY: str = Field(
+        default="inproc",
+        validation_alias=AliasChoices("AK5_NOTIFY", "NOTIFY"),
+    )
+    NOTIFY_POLL_MS: int = Field(
+        default=1000,
+        validation_alias=AliasChoices("AK5_NOTIFY_POLL_MS", "NOTIFY_POLL_MS"),
+    )
+    # Declared replica count for start-time guards (deployment.md §7).
+    INSTANCES: int = Field(
+        default=1,
+        validation_alias=AliasChoices("AK5_INSTANCES", "INSTANCES"),
+    )
     EVENT_RETENTION_DAYS: int = 7
     # Min seconds between lazy retention purges in one process (SQLite write lock).
     EVENT_PURGE_MIN_INTERVAL_SECONDS: float = 60.0

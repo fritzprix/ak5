@@ -22,7 +22,6 @@ from ak5.server.config import settings
 from ak5.server.database import AsyncSessionLocal, AsyncSessionLocalAdmin
 from ak5.server.models.event import Event
 from ak5.server.models.subscription import Subscription
-from ak5.server.services.event_bus import event_bus
 from ak5.server.services.event_context import (
     matches_agent_filter,
     matches_event_filter,
@@ -648,17 +647,13 @@ class SubscriptionService:
             return [], effective_cursor
 
         deadline = time.monotonic() + wait
-        use_notify = settings.LONG_POLL_USE_INPROCESS_NOTIFY
-        poll_interval = max(0.05, settings.LONG_POLL_DB_POLL_INTERVAL)
+        from ak5.server.services.notify import wait_for_wake, wake_wait_slice
 
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            if use_notify:
-                await event_bus.wait_for_notify(min(remaining, poll_interval))
-            else:
-                await asyncio.sleep(min(remaining, poll_interval))
+            await wait_for_wake(wake_wait_slice(remaining))
 
             async with self.session_factory() as session:
                 await set_workspace_rls_context(session, sub.workspace_id)

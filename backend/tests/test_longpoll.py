@@ -629,7 +629,7 @@ async def test_sse_starts_at_tip_without_last_event_id(
     async def _cancel_wait(_timeout: float = 0) -> bool:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _cancel_wait)
     token = create_access_token("user_pm", "human")
     resp = await client.get(
         "/api/v1/events/stream",
@@ -680,7 +680,7 @@ async def test_sse_resync_on_cursor_expired(
         raise asyncio.CancelledError
 
     monkeypatch.setattr(subscription_service, "poll_events", _poll_then_expire)
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _cancel_wait)
 
     token = create_access_token("user_pm", "human")
     resp = await client.get(
@@ -852,7 +852,7 @@ async def test_sse_stream_filters_by_board_id(
     async def _cancel_wait(_timeout: float = 0) -> bool:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _cancel_wait)
     token = create_access_token("user_pm", "human")
     resp = await client.get(
         "/api/v1/events/stream?board_id=proj-core-engine",
@@ -970,7 +970,7 @@ async def test_board_move_transition_visible_on_origin_board_sse(
     async def _cancel_wait(_timeout: float = 0) -> bool:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _cancel_wait)
 
     token = create_access_token("user_pm", "human")
     resp = await client.get(
@@ -1005,7 +1005,7 @@ async def test_sse_last_event_id_query_param_resumes(
     async def _cancel_wait(_timeout: float = 0) -> bool:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _cancel_wait)
     token = create_access_token("user_pm", "human")
     resp = await client.get(
         "/api/v1/events/stream",

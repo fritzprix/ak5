@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.background import BackgroundTask
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
-from ak5.server.config import settings
+from ak5.server.config import get_notify_mode, settings
 from ak5.server.connection_limit import ConnectionLimitExceeded, connection_limiter
 from ak5.server.database import get_db
 from ak5.server.inbox import resolve_board_alias
@@ -18,7 +18,7 @@ from ak5.server.models.actor import Actor
 from ak5.server.models.board import Board
 from ak5.server.routers.auth import get_auth_workspace_id, get_current_actor
 from ak5.server.schemas.event import EventOut, EventsPollOut
-from ak5.server.services.event_bus import event_bus
+from ak5.server.services.notify import wait_for_wake, wake_wait_slice
 from ak5.server.services.subscription_service import SubscriptionServiceError, subscription_service
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -149,12 +149,13 @@ async def sse_event_stream(
                                 ),
                             }
                             # Wait for new events at the tip; do not tight-loop RESYNC.
+                            mode = get_notify_mode()
                             timeout = (
-                                settings.LONG_POLL_DB_POLL_INTERVAL
-                                if not settings.LONG_POLL_USE_INPROCESS_NOTIFY
+                                wake_wait_slice(15.0)
+                                if mode == "poll"
                                 else max(settings.LONG_POLL_DB_POLL_INTERVAL, 15.0)
                             )
-                            await event_bus.wait_for_notify(timeout)
+                            await wait_for_wake(timeout)
                             continue
                         raise
 
@@ -172,12 +173,13 @@ async def sse_event_stream(
                 if next_cursor > last_seq:
                     last_seq = next_cursor
 
+                mode = get_notify_mode()
                 timeout = (
-                    settings.LONG_POLL_DB_POLL_INTERVAL
-                    if not settings.LONG_POLL_USE_INPROCESS_NOTIFY
+                    wake_wait_slice(15.0)
+                    if mode == "poll"
                     else max(settings.LONG_POLL_DB_POLL_INTERVAL, 15.0)
                 )
-                await event_bus.wait_for_notify(timeout)
+                await wait_for_wake(timeout)
         except asyncio.CancelledError:
             return
         finally:

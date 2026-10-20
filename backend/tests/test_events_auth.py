@@ -37,7 +37,7 @@ async def test_sse_stream_rejects_invalid_token(anon_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_sse_stream_accepts_bearer(anon_client: AsyncClient, monkeypatch):
     monkeypatch.setattr("ak5.routers.events.subscription_service.poll_events", _empty_poll)
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _cancel_wait)
     token = create_access_token("user_pm", "human")
     resp = await anon_client.get(
         "/api/v1/events/stream",
@@ -53,7 +53,7 @@ async def test_sse_stream_accepts_bearer(anon_client: AsyncClient, monkeypatch):
 async def test_sse_stream_rejects_access_token_query(anon_client: AsyncClient, monkeypatch):
     """#81: tokens never travel in the URL — a valid JWT in ?access_token= is refused."""
     monkeypatch.setattr("ak5.routers.events.subscription_service.poll_events", _empty_poll)
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _cancel_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _cancel_wait)
     token = create_access_token("user_pm", "human")
     resp = await anon_client.get(f"/api/v1/events/stream?access_token={token}", timeout=5.0)
     assert resp.status_code == 401

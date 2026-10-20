@@ -185,7 +185,7 @@ async def test_sse_stream_acquire_and_release_lifecycle(client: AsyncClient, mon
             connected_observed = True
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("ak5.server.routers.events.event_bus.wait_for_notify", _check_and_cancel)
+    monkeypatch.setattr("ak5.server.routers.events.wait_for_wake", _check_and_cancel)
 
     assert connection_limiter.active_connections == 0
     resp = await client.get("/api/v1/events/stream")
