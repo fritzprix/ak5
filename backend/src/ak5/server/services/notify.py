@@ -15,6 +15,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from ak5.server.config import get_notify_mode, notify_poll_interval_seconds, settings
 from ak5.server.services.event_bus import event_bus
 
@@ -24,18 +28,44 @@ PG_NOTIFY_CHANNEL = "ak5_events"
 
 _listener_task: asyncio.Task[None] | None = None
 _listener_stop: asyncio.Event | None = None
+_pending_wake_tasks: set[asyncio.Task[Any]] = set()
 
 
-def _asyncpg_dsn(database_url: str) -> str:
-    """Convert SQLAlchemy URL to an asyncpg DSN (postgresql://…)."""
-    url = database_url.strip()
-    for prefix in ("postgresql+asyncpg://", "postgres+asyncpg://"):
-        if url.startswith(prefix):
-            url = "postgresql://" + url[len(prefix) :]
-            break
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://") :]
-    return url
+def _notify_engine() -> AsyncEngine:
+    """App DB engine (pool) used for ``pg_notify`` — overridden in tests."""
+    from ak5.server.database import engine
+
+    return engine
+
+
+def _asyncpg_connect_kwargs(database_url: str) -> dict[str, Any]:
+    """Build asyncpg.connect kwargs from a SQLAlchemy URL (keeps ssl query hints)."""
+    u = make_url(database_url)
+    kwargs: dict[str, Any] = {
+        "host": u.host,
+        "port": u.port or 5432,
+        "user": u.username,
+        "password": u.password,
+        "database": u.database,
+    }
+    query = {str(k).lower(): v for k, v in u.query.items()}
+    sslmode = query.get("sslmode")
+    if sslmode in ("require", "verify-ca", "verify-full"):
+        kwargs["ssl"] = True
+    elif sslmode == "disable":
+        kwargs["ssl"] = False
+    return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _schedule_local_wake() -> None:
+    """Wake in-process waiters; keep a strong ref until the task finishes."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(event_bus.notify())
+    _pending_wake_tasks.add(task)
+    task.add_done_callback(_pending_wake_tasks.discard)
 
 
 async def publish_wake(*, event_type: str = "", data: dict[str, Any] | None = None) -> None:
@@ -71,38 +101,27 @@ def wake_wait_slice(remaining: float) -> float:
 
 
 async def _pg_notify() -> None:
+    """Signal other instances via the shared SQLAlchemy pool (no per-event TCP connect)."""
     try:
-        import asyncpg
-    except ImportError:
-        logger.warning("asyncpg not installed; skipping pg_notify")
-        return
-
-    dsn = _asyncpg_dsn(settings.DATABASE_URL)
-    try:
-        conn = await asyncpg.connect(dsn)
-    except Exception:
-        logger.exception("pg_notify connect failed")
-        return
-    try:
-        await conn.execute(f"SELECT pg_notify('{PG_NOTIFY_CHANNEL}', '')")
+        eng = _notify_engine()
+        async with eng.connect() as conn:
+            await conn.execute(
+                text("SELECT pg_notify(:ch, '')"),
+                {"ch": PG_NOTIFY_CHANNEL},
+            )
+            await conn.commit()
     except Exception:
         logger.exception("pg_notify failed")
-    finally:
-        await conn.close()
 
 
 async def _pg_listen_loop(stop: asyncio.Event) -> None:
-    try:
-        import asyncpg
-    except ImportError:
-        logger.error("AK5_NOTIFY=pg requires asyncpg")
-        return
+    import asyncpg
 
-    dsn = _asyncpg_dsn(settings.DATABASE_URL)
+    connect_kwargs = _asyncpg_connect_kwargs(settings.DATABASE_URL)
     while not stop.is_set():
         conn = None
         try:
-            conn = await asyncpg.connect(dsn)
+            conn = await asyncpg.connect(**connect_kwargs)
 
             def _on_notify(
                 _connection: object,
@@ -110,7 +129,7 @@ async def _pg_listen_loop(stop: asyncio.Event) -> None:
                 _channel: str,
                 _payload: str,
             ) -> None:
-                asyncio.get_running_loop().create_task(event_bus.notify())
+                _schedule_local_wake()
 
             await conn.add_listener(PG_NOTIFY_CHANNEL, _on_notify)
             logger.info("PostgreSQL LISTEN on %s", PG_NOTIFY_CHANNEL)

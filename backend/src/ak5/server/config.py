@@ -101,6 +101,13 @@ def validate_notify_config() -> None:
             x in url for x in ("postgres", "postgresql")
         ):
             raise ValueError("AK5_NOTIFY=pg requires a PostgreSQL DATABASE_URL.")
+        try:
+            import asyncpg  # noqa: F401
+        except ImportError as exc:
+            raise ValueError(
+                "AK5_NOTIFY=pg requires the asyncpg package "
+                "(install ak5 with the server/postgres extra)."
+            ) from exc
     if mode == "inproc" and int(settings.INSTANCES) > 1:
         raise ValueError(
             "AK5_NOTIFY=inproc is incompatible with AK5_INSTANCES>1; "

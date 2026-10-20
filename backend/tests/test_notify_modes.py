@@ -43,6 +43,34 @@ def test_validate_rejects_pg_on_sqlite(monkeypatch: pytest.MonkeyPatch):
         validate_notify_config()
 
 
+def test_validate_pg_requires_asyncpg(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "NOTIFY", "pg")
+    monkeypatch.setattr(settings, "LONG_POLL_USE_INPROCESS_NOTIFY", True)
+    monkeypatch.setattr(
+        settings, "DATABASE_URL", "postgresql+asyncpg://u:p@localhost:5432/ak5"
+    )
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name: str, globals=None, locals=None, fromlist=(), level=0):
+        if name == "asyncpg" or name.startswith("asyncpg."):
+            raise ImportError("asyncpg missing")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    with pytest.raises(ValueError, match="asyncpg"):
+        validate_notify_config()
+
+
+def test_asyncpg_connect_kwargs_honors_sslmode():
+    kwargs = notify_mod._asyncpg_connect_kwargs(
+        "postgresql+asyncpg://u:p@db.example:5432/ak5?sslmode=require"
+    )
+    assert kwargs["host"] == "db.example"
+    assert kwargs["ssl"] is True
+
+
 def test_validate_rejects_inproc_multi_instance(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "NOTIFY", "inproc")
     monkeypatch.setattr(settings, "LONG_POLL_USE_INPROCESS_NOTIFY", True)
@@ -97,16 +125,21 @@ async def test_missed_signal_still_recovers_via_poll(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_live_postgres_pg_notify_cross_bus(monkeypatch: pytest.MonkeyPatch):
-    """Two EventBus waiters: LISTEN on B wakes when A publishes via pg_notify."""
+    """LISTEN on bus B wakes when A signals via pooled pg_notify."""
     pg_url = os.environ.get("AK5_TEST_POSTGRES_URL") or os.environ.get("AK5_POSTGRES_URL")
     if not pg_url:
         pytest.skip("AK5_TEST_POSTGRES_URL is not set")
+
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     monkeypatch.setattr(settings, "NOTIFY", "pg")
     monkeypatch.setattr(settings, "LONG_POLL_USE_INPROCESS_NOTIFY", True)
     monkeypatch.setattr(settings, "DATABASE_URL", pg_url)
     monkeypatch.setattr(settings, "INSTANCES", 1)
     validate_notify_config()
+
+    pg_engine = create_async_engine(pg_url, future=True)
+    monkeypatch.setattr(notify_mod, "_notify_engine", lambda: pg_engine)
 
     bus_b = EventBus()
     monkeypatch.setattr(notify_mod, "event_bus", bus_b)
@@ -127,3 +160,4 @@ async def test_live_postgres_pg_notify_cross_bus(monkeypatch: pytest.MonkeyPatch
     listener.cancel()
     with pytest.raises(asyncio.CancelledError):
         await listener
+    await pg_engine.dispose()
