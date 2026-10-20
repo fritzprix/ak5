@@ -69,13 +69,116 @@ def _wait_ready(base: str, proc: subprocess.Popen[str], attempts: int = 40, dela
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
         time.sleep(delay)
-    out = ""
-    if proc.stdout is not None:
-        # Non-blocking-ish: process may still be running; terminate for log drain below.
-        pass
     raise SystemExit(f"readyz not ready: {last!r}")
 
 
+def _plant_ticket_and_attachment(base: str, server_env: dict[str, str]) -> tuple[str, str]:
+    """Create one ticket + attachment on the live source instance; return ids."""
+    plant = r"""
+import io, json, os
+import httpx
+from ak5.server.routers.auth import create_access_token
+
+base = os.environ["REHEARSAL_BASE"].rstrip("/")
+token = create_access_token("user_pm", "human")
+headers = {"Authorization": f"Bearer {token}"}
+with httpx.Client(base_url=base, timeout=60.0) as client:
+    boards = client.get("/api/v1/boards", headers=headers)
+    boards.raise_for_status()
+    board_id = next(b["board_id"] for b in boards.json() if b.get("kind") != "inbox")
+    detail = client.get(f"/api/v1/boards/{board_id}", headers=headers)
+    detail.raise_for_status()
+    column_id = detail.json()["columns"][0]["column_id"]
+    t = client.post(
+        "/api/v1/tickets",
+        headers=headers,
+        json={
+            "title": "rehearsal restore fixture",
+            "board_id": board_id,
+            "column_id": column_id,
+            "acceptance_criteria": ["restored"],
+            "spec": "ops#119",
+        },
+    )
+    t.raise_for_status()
+    ticket_id = t.json()["ticket_id"]
+    up = client.post(
+        f"/api/v1/tickets/{ticket_id}/attachments",
+        headers=headers,
+        files={"file": ("rehearsal.txt", io.BytesIO(b"rehearsal-blob"), "text/plain")},
+    )
+    up.raise_for_status()
+    attachment_id = up.json()["attachment_id"]
+print(json.dumps({"ticket_id": ticket_id, "attachment_id": attachment_id}))
+"""
+    env = {**server_env, "REHEARSAL_BASE": base}
+    proc = subprocess.run(
+        [sys.executable, "-c", plant],
+        cwd=BACKEND,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"plant fixture failed:\n{proc.stdout}\n{proc.stderr}")
+    line = proc.stdout.strip().splitlines()[-1]
+    data = json.loads(line)
+    return str(data["ticket_id"]), str(data["attachment_id"])
+
+
+def _verify_restored_skew(
+    base: str,
+    ticket_id: str,
+    attachment_id: str,
+    attachments_dir: Path,
+    server_env: dict[str, str],
+) -> None:
+    """After import without blobs: list ticket OK, download → ATTACHMENT_MISSING."""
+    for path in attachments_dir.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    verify = r"""
+import os
+import httpx
+from ak5.server.routers.auth import create_access_token
+
+base = os.environ["REHEARSAL_BASE"].rstrip("/")
+ticket_id = os.environ["REHEARSAL_TICKET_ID"]
+attachment_id = os.environ["REHEARSAL_ATTACHMENT_ID"]
+token = create_access_token("user_pm", "human")
+headers = {"Authorization": f"Bearer {token}"}
+with httpx.Client(base_url=base, timeout=60.0) as client:
+    boards = client.get("/api/v1/boards", headers=headers)
+    boards.raise_for_status()
+    assert any(b.get("board_id") for b in boards.json()), "no boards after restore"
+    detail = client.get(f"/api/v1/tickets/{ticket_id}", headers=headers)
+    detail.raise_for_status()
+    atts = detail.json().get("attachments") or []
+    assert any(a.get("attachment_id") == attachment_id for a in atts), atts
+    dl = client.get(f"/api/v1/tickets/{ticket_id}/attachments/{attachment_id}", headers=headers)
+    assert dl.status_code == 404, dl.text
+    body = dl.json()
+    assert body["error"]["code"] == "ATTACHMENT_MISSING", body
+    assert "storage_path" not in body["error"].get("details", {}), body
+print("skew_ok")
+"""
+    env = {
+        **server_env,
+        "REHEARSAL_BASE": base,
+        "REHEARSAL_TICKET_ID": ticket_id,
+        "REHEARSAL_ATTACHMENT_ID": attachment_id,
+    }
+    proc = subprocess.run(
+        [sys.executable, "-c", verify],
+        cwd=BACKEND,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or "skew_ok" not in proc.stdout:
+        raise SystemExit(f"restore skew verify failed:\n{proc.stdout}\n{proc.stderr}")
 def _stop(proc: subprocess.Popen[str]) -> str:
     if proc.poll() is not None:
         return proc.stdout.read() if proc.stdout else ""
@@ -140,9 +243,13 @@ def main() -> int:
     env["ATTACHMENTS_DIR"] = str(attachments_src)
     # Must match canonical store under AK5_DATA_DIR.
     env["DATABASE_URL"] = f"sqlite+aiosqlite:///{src_db.as_posix()}"
+    # Stable secret so plant/verify subprocess JWTs match the servers.
+    env["AK5_JWT_SECRET"] = "rehearsal-jwt-secret-not-for-production"
 
     print(f"work dir: {work}")
 
+    ticket_id = ""
+    attachment_id = ""
     ak5 = _ak5_cmd()
     upgrade = subprocess.run(
         [*ak5, "db", "upgrade", "--database-url", env["DATABASE_URL"]],
@@ -162,6 +269,8 @@ def main() -> int:
         code, meta = _http_json(f"{base}/meta")
         if code != 200:
             raise SystemExit(f"/meta failed: {code} {meta!r}")
+        ticket_id, attachment_id = _plant_ticket_and_attachment(base, env)
+        print(f"planted ticket={ticket_id} attachment={attachment_id}")
         print("source instance ready; exporting…")
 
         export = subprocess.run(
@@ -197,6 +306,7 @@ def main() -> int:
         return imp.returncode or 1
     print(imp.stdout.strip() or "import ok")
 
+    # Intentionally do not copy source blobs — restore skew must surface ATTACHMENT_MISSING.
     proc2 = _serve(restore_env, port)
     ok = False
     try:
@@ -206,6 +316,8 @@ def main() -> int:
         if code != 200:
             raise SystemExit(f"post-restore /meta failed: {code} {meta!r}")
         print("smoke /meta ok")
+        _verify_restored_skew(base, ticket_id, attachment_id, attachments_restore, restore_env)
+        print("ATTACHMENT_MISSING skew verified")
         print("RECOVERY_REHEARSAL_OK")
         ok = True
         return 0

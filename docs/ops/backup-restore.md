@@ -21,9 +21,10 @@ operations.md §5 · issue #119. **RPO ≤ 5분** (관리형 PITR), **RTO ≤ 1�
 - 추가 오프사이트 복사:
 
 ```bash
-# 예: 일 단위 rsync (서비스 중지 없이 WAL 체크포인트 후 복사 권장)
-sqlite3 "$AK5_DATA_DIR/ak5.db" "PRAGMA wal_checkpoint(FULL);"
-cp "$AK5_DATA_DIR/ak5.db" "/offsite/ak5-$(date -u +%Y%m%dT%H%M%SZ).db"
+# 일관된 온라인 스냅샷: `.backup` (쓰기가 있어도 찢어지지 않음). 단순 `cp`는 쓰지 않는다.
+OUT="/offsite/ak5-$(date -u +%Y%m%dT%H%M%SZ).db"
+sqlite3 "$AK5_DATA_DIR/ak5.db" ".backup '$OUT'"
+# 대안: sqlite3 "$AK5_DATA_DIR/ak5.db" "VACUUM INTO '$OUT';"
 rsync -a "$AK5_DATA_DIR/attachments/" "/offsite/attachments/"
 ```
 
@@ -31,7 +32,8 @@ rsync -a "$AK5_DATA_DIR/attachments/" "/offsite/attachments/"
 
 ```bash
 # cron 예: 매 15분 (PITR이 RPO를 담당; export는 이식·감사 보조)
-0,15,30,45 * * * * cd /opt/ak5 && \
+# export 파일에 사용자 데이터가 들어가므로 디렉터리 권한 제한 (umask 077 / mode 0700)
+0,15,30,45 * * * * umask 077; mkdir -p -m 700 /backup && cd /opt/ak5 && \
   uv run --directory backend --extra server --extra postgres \
   ak5 db export "/backup/ak5-$(date -u +\%Y\%m\%dT\%H\%M\%SZ).jsonl"
 ```

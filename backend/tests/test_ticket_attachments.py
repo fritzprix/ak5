@@ -173,6 +173,8 @@ async def test_download_attachment_missing_blob_returns_attachment_missing(
     assert dl.status_code == 404
     body = dl.json()
     assert body["error"]["code"] == "ATTACHMENT_MISSING"
+    assert "storage_path" not in body["error"].get("details", {})
+    assert body["error"]["details"].get("attachment_id") == attachment_id
 
     detail = await client.get(f"/api/v1/tickets/{ticket_id}")
     assert detail.status_code == 200

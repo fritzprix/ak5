@@ -1115,6 +1115,12 @@ async def download_attachment(
     store = get_blob_store()
     if not await store.exists(attachment.storage_path):
         # operations.md §5 / #119 — DB↔blob restore skew must not crash the ticket
+        logger.warning(
+            "ATTACHMENT_MISSING ticket_id=%s attachment_id=%s storage_path=%s",
+            ticket_id,
+            attachment_id,
+            attachment.storage_path,
+        )
         return JSONResponse(
             status_code=HTTP_STATUS[ErrorCode.ATTACHMENT_MISSING],
             content=error_body(
@@ -1123,7 +1129,6 @@ async def download_attachment(
                 details={
                     "ticket_id": ticket_id,
                     "attachment_id": attachment_id,
-                    "storage_path": attachment.storage_path,
                 },
             ),
         )
