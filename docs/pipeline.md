@@ -56,9 +56,11 @@ Run against the tree produced by merging the PR into its base (gatekeeper / revi
 ```bash
 python scripts/pipeline_status.py
 python scripts/pipeline_status.py --json
+python scripts/pipeline_pick.py          # next ready candidate + suggested commands
+python scripts/pipeline_pick.py --json
 ```
 
-Reads open issues + `pipeline:*` / `v2` labels, parses `## 의존`, and prints inferred readiness. Does **not** change labels or start agents.
+Reads open issues + `pipeline:*` / `v2` labels, parses `## 의존`, and prints inferred readiness / one pick. Does **not** change labels or start agents. Skips epic (#22) and release (#36).
 
 ## Concurrency & ownership (manual rules until automation)
 
@@ -75,5 +77,5 @@ Reads open issues + `pipeline:*` / `v2` labels, parses `## 의존`, and prints i
 
 ## Remaining automation (#38)
 
-- Full runner: ready判定 → worktree + agent → label transitions + issue comments
+- Full runner: `pipeline_pick` → worktree + agent → label transitions + issue comments
 - File-ownership conflict detection beyond the manual rules above
