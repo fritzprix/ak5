@@ -172,19 +172,21 @@ async def test_reset_writes_skip_marker_and_snapshot_message():
     from ak5.config import settings
     from ak5.models.ticket import Ticket
     from ak5.seed import seed_initial_data
+    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
     from ak5.services.db_safety import skip_auto_restore_marker
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await seed_initial_data()
 
-    todo_col = f"{settings.DEFAULT_BOARD_ID}_todo"
+    backlog_col = f"{settings.DEFAULT_BOARD_ID}_backlog"
     async with AsyncSessionLocal() as db:
         db.add(
             Ticket(
                 ticket_id="TK-RESET-SNAP",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id=settings.DEFAULT_BOARD_ID,
-                column_id=todo_col,
+                column_id=backlog_col,
                 title="Snap me",
                 priority="medium",
                 rank="a",
