@@ -1,8 +1,8 @@
 # v2 릴리스 체크리스트 (발췌)
 
 정본 조율은 [#36](https://github.com/fritzprix/ak5/issues/36) (사람/오케스트레이터; agent 미위임).  
-에픽 [#22](https://github.com/fritzprix/ak5/issues/22): Wave 7·8·pipeline MVP는 `feat/workflow-v2`에 착지. 남은 오픈 이슈는 실질적으로 **#36** (+ 에픽 트래킹).
-
+에픽 [#22](https://github.com/fritzprix/ak5/issues/22): Wave 7·8·pipeline runner는 `feat/workflow-v2`에 착지.  
+남은 사람 게이트: [#174](https://github.com/fritzprix/ak5/pull/174) launch harden 머지 → 그다음 **#36** (+ 에픽 트래킹). 워커는 PR을 머지하지 않는다.
 ## 릴리스 (#36)
 
 - [ ] 대상 브랜치 결정 (`dev/2.0.x` 등) 후 `feat/workflow-v2` squash
