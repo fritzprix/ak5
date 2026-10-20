@@ -206,6 +206,7 @@ async def _idempotent(
     op: str,
     response_builder,
     ticket_id: str | None = None,
+    workspace_id: str | None = None,
     body: Any = None,
 ) -> tuple[Any, bool]:
     """Run ``response_builder`` once per Idempotency-Key.
@@ -229,8 +230,17 @@ async def _idempotent(
             payload = result
         else:
             payload = {"ok": True}
+        ws = workspace_id
+        if ws is None and ticket_id:
+            ticket_row = await db.get(Ticket, ticket_id)
+            ws = ticket_row.workspace_id if ticket_row is not None else None
+        if ws is None and hasattr(result, "workspace_id"):
+            ws = getattr(result, "workspace_id", None)
+        if ws is None:
+            raise RuntimeError("idempotency store requires workspace_id")
         await wf.store_idempotent_response(
             db,
+            workspace_id=ws,
             key=key,
             actor_id=actor_id,
             op=op,
@@ -312,6 +322,7 @@ async def create_ticket(
             op="ticket.create",
             response_builder=_run,
             ticket_id=None,
+            workspace_id=workspace_id,
             body=req.model_dump(mode="json"),
         )
         if not from_cache:

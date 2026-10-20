@@ -547,6 +547,7 @@ async def _move_ticket(
 async def _write_audit(
     db: AsyncSession,
     *,
+    workspace_id: str,
     actor_id: str,
     ticket_id: str,
     op: str,
@@ -568,6 +569,7 @@ async def _write_audit(
         payload.update(extra)
     db.add(
         AuditLog(
+            workspace_id=workspace_id,
             actor_id=actor_id,
             action="TRANSITION",
             target_type="ticket",
@@ -680,6 +682,7 @@ async def _finish_transition(
 ) -> Ticket:
     await _write_audit(
         db,
+        workspace_id=ticket.workspace_id,
         actor_id=actor.actor_id,
         ticket_id=ticket.ticket_id,
         op=op,
@@ -822,6 +825,7 @@ async def reclaim_expired_leases(
             op = "lease_expire_t20"
         await _write_audit(
             db,
+            workspace_id=ticket.workspace_id,
             actor_id=system_actor_id,
             ticket_id=ticket.ticket_id,
             op=op,
@@ -874,6 +878,7 @@ async def clear_assignees_without_claim(db: AsyncSession) -> int:
             stage_val = None
         await _write_audit(
             db,
+            workspace_id=ticket.workspace_id,
             actor_id=SYSTEM_ACTOR_ID,
             ticket_id=ticket.ticket_id,
             op="clear_stale_assignee",
@@ -971,6 +976,7 @@ async def get_idempotent_response(
 async def store_idempotent_response(
     db: AsyncSession,
     *,
+    workspace_id: str,
     key: str,
     actor_id: str,
     op: str,
@@ -980,6 +986,7 @@ async def store_idempotent_response(
     envelope = {_IDEM_FP_KEY: fingerprint, _IDEM_BODY_KEY: response}
     db.add(
         IdempotencyKey(
+            workspace_id=workspace_id,
             key=key,
             actor=actor_id,
             op=op,
@@ -1144,6 +1151,7 @@ async def create_direct(
     await db.flush()
 
     revision = TicketRevision(
+        workspace_id=ticket.workspace_id,
         ticket_id=ticket_id,
         spec=spec,
         author=actor.actor_id,
@@ -1457,9 +1465,10 @@ async def _create_auto_board(
     db: AsyncSession,
     actor: Actor,
     *,
+    workspace_id: str,
     name: str,
     template: str,
-    description: str,
+    description: str | None,
 ) -> Board:
     count = (
         await db.execute(select(func.count()).select_from(Board).where(Board.auto_created.is_(True)))
@@ -1477,12 +1486,10 @@ async def _create_auto_board(
     if tmpl.name == "inbox":
         raise WorkflowError(ErrorCode.SYSTEM_BOARD, "Cannot auto-create the inbox template")
 
-    from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
-
     board_id = f"auto_{uuid.uuid4().hex[:10]}"
     board = Board(
         board_id=board_id,
-        workspace_id=LOCAL_WORKSPACE_ID,
+        workspace_id=workspace_id,
         name=name,
         description=description,
         created_by=actor.actor_id,
@@ -1495,7 +1502,7 @@ async def _create_auto_board(
         db.add(
             Column(
                 column_id=f"{board_id}_{def_col['stage']}",
-                workspace_id=LOCAL_WORKSPACE_ID,
+                workspace_id=workspace_id,
                 board_id=board_id,
                 name=def_col["name"],
                 stage=def_col["stage"],
@@ -1503,7 +1510,14 @@ async def _create_auto_board(
                 wip_limit=def_col["wip_limit"],
             )
         )
-    db.add(BoardMember(board_id=board_id, actor_id=actor.actor_id, role="admin"))
+    db.add(
+        BoardMember(
+            board_id=board_id,
+            workspace_id=workspace_id,
+            actor_id=actor.actor_id,
+            role="admin",
+        )
+    )
     await db.flush()
     return board
 
@@ -1566,6 +1580,7 @@ async def route_ticket(
         board = await _create_auto_board(
             db,
             actor,
+            workspace_id=ticket.workspace_id,
             name=plan.target.create_board.name,
             template=plan.target.create_board.template,
             description=plan.target.create_board.description,
@@ -1595,6 +1610,7 @@ async def route_ticket(
         latest = await _latest_revision(db, ticket.ticket_id)
         criteria = list(latest.acceptance_criteria) if (latest and latest.acceptance_criteria) else []
     revision = TicketRevision(
+        workspace_id=ticket.workspace_id,
         ticket_id=ticket.ticket_id,
         spec=refined_spec,
         author=actor.actor_id,
@@ -1656,6 +1672,7 @@ async def verdict(
                     "approve verdict requires all findings to pass",
                 )
             review = TicketReview(
+                workspace_id=ticket.workspace_id,
                 ticket_id=ticket.ticket_id,
                 stage=stage.value,
                 decision="approve",
@@ -1683,6 +1700,7 @@ async def verdict(
         # reject
         if body.misrouted:
             review = TicketReview(
+                workspace_id=ticket.workspace_id,
                 ticket_id=ticket.ticket_id,
                 stage=stage.value,
                 decision="reject",
@@ -1716,6 +1734,7 @@ async def verdict(
                 "reject verdict requires at least one fail finding",
             )
         review = TicketReview(
+            workspace_id=ticket.workspace_id,
             ticket_id=ticket.ticket_id,
             stage=stage.value,
             decision="reject",
@@ -1754,6 +1773,7 @@ async def verdict(
             if is_claim_valid(ticket):
                 _clear_claim(ticket)
             review = TicketReview(
+                workspace_id=ticket.workspace_id,
                 ticket_id=ticket.ticket_id,
                 stage=stage.value,
                 decision="approve",
@@ -1782,6 +1802,7 @@ async def verdict(
         if not (body.reason or "").strip():
             raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "human reject requires reason")
         review = TicketReview(
+            workspace_id=ticket.workspace_id,
             ticket_id=ticket.ticket_id,
             stage=stage.value,
             decision="reject",
@@ -1849,6 +1870,7 @@ async def submit_postmortem(
     ).scalar_one_or_none()
 
     revision = TicketRevision(
+        workspace_id=ticket.workspace_id,
         ticket_id=ticket.ticket_id,
         spec=body.revised_spec,
         author=actor.actor_id,
@@ -1860,6 +1882,7 @@ async def submit_postmortem(
     await db.flush()
 
     pm = TicketPostmortem(
+        workspace_id=ticket.workspace_id,
         ticket_id=ticket.ticket_id,
         what_went_wrong=body.what_went_wrong,
         root_cause=body.root_cause,
@@ -1907,6 +1930,7 @@ async def reopen(
     if stage != Stage.DONE:
         raise WorkflowError(ErrorCode.INVALID_TRANSITION, "reopen requires done stage")
     review = TicketReview(
+        workspace_id=ticket.workspace_id,
         ticket_id=ticket.ticket_id,
         stage=stage.value,
         decision="reject",
@@ -2108,6 +2132,7 @@ async def unblock_ticket(
                 "resolution is required to unblock needs_human / escalation",
             )
         rev = TicketRevision(
+            workspace_id=ticket.workspace_id,
             ticket_id=ticket.ticket_id,
             spec=ticket.description or "",
             author=actor.actor_id,
@@ -2300,6 +2325,7 @@ async def move_ticket_constrained(
 
     await _write_audit(
         db,
+        workspace_id=ticket.workspace_id,
         actor_id=actor.actor_id,
         ticket_id=ticket.ticket_id,
         op="move",
