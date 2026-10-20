@@ -50,16 +50,8 @@ def get_engine_options(url_str: str) -> tuple[str, dict[str, Any], dict[str, Any
 
     if "sqlite" in normalized:
         connect_args["timeout"] = settings.SQLITE_BUSY_TIMEOUT / 1000.0
-        try:
-            url = make_url(normalized)
-            if url.database and url.database != ":memory:":
-                Path(url.database).parent.mkdir(parents=True, exist_ok=True)
-        except (ValueError, OSError) as e:
-            logger.warning(
-                "Failed to create SQLite database parent directory for %s: %s",
-                normalized,
-                e,
-            )
+        # Do not mkdir here — import of ak5.server.database must stay side-effect
+        # free (deployment.md §4 / #110). Call ensure_sqlite_parent_dir from lifespan.
     elif "postgresql" in normalized:
         engine_kwargs["pool_size"] = settings.AK5_DB_POOL_SIZE
         engine_kwargs["max_overflow"] = settings.AK5_DB_MAX_OVERFLOW
@@ -70,6 +62,24 @@ def get_engine_options(url_str: str) -> tuple[str, dict[str, Any], dict[str, Any
         )
 
     return normalized, connect_args, engine_kwargs
+
+
+def ensure_sqlite_parent_dir(database_url: str | None = None) -> None:
+    """Create the parent directory for a file-backed SQLite DATABASE_URL (startup only)."""
+    url_str = database_url if database_url is not None else settings.DATABASE_URL
+    normalized = normalize_database_url(url_str)
+    if "sqlite" not in normalized:
+        return
+    try:
+        url = make_url(normalized)
+        if url.database and url.database != ":memory:":
+            Path(url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    except (ValueError, OSError) as e:
+        logger.warning(
+            "Failed to create SQLite database parent directory for %s: %s",
+            normalized,
+            e,
+        )
 
 
 _normalized_db_url, connect_args, _engine_kwargs = get_engine_options(settings.DATABASE_URL)

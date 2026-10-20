@@ -549,3 +549,16 @@ uv run ak5 serve --ui --reload
 
 - 웹 UI hot reload: 터미널 A `uv run ak5 serve --reload`, 터미널 B `cd frontend && npm run dev` (`http://localhost:3000`, `/api/*`를 서버로 프록시).
 - 실서버·CLI·daemon 전체 확인: `uv run python .agents/skills/ak5-live-test/scripts/run_live_test.py` ([skill](../.agents/skills/ak5-live-test/SKILL.md)).
+
+---
+
+## 12. 배포 (로컬 컨테이너 · Vercel+Neon)
+
+정본은 [deployment.md](spec/deployment.md)이다. 요약만 적는다.
+
+| 대상 | 진입점 | 참고 |
+|---|---|---|
+| 로컬 / VM | `ak5 serve` 또는 `uvicorn ak5.server.app:app` | `docker-compose.yml` (SQLite), `docker-compose.postgres.yml` |
+| Vercel + Neon | `api/index.py` → `create_app()` | [deploy/vercel-neon.md](deploy/vercel-neon.md) |
+
+서버리스에서는 `AK5_AUTO_MIGRATE=0`으로 두고 스키마는 `ak5 db upgrade`로 따로 올린다. import 시 DB·디렉터리·시드가 돌지 않는지는 `tests/test_create_app_import_side_effects.py`로 지킨다.
