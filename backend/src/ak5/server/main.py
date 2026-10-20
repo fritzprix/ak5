@@ -91,12 +91,15 @@ async def lifespan(app: FastAPI):
 
     get_deploy_profile()
     from ak5.server.config import validate_notify_config
+    from ak5.server.security import validate_hosted_jwt_secret_config
     from ak5.server.web_auth import validate_hosted_client_ip_config
 
     validate_notify_config()
     # Hosted client-IP trust must be entry-point agnostic (#125): api/index.py /
     # raw uvicorn skip ``ak5 serve``'s assert_safe_bind.
     validate_hosted_client_ip_config()
+    # Hosted must not mint a per-instance JWT key on ephemeral FS (#165).
+    validate_hosted_jwt_secret_config()
     # One source of truth before create_all/seed — covers raw `uvicorn ak5.server.app:app`
     # (Docker/harness) which never passes through `ak5 serve` / `ak5 web` CLI gates.
     # Daemon is never started here (events.md §4.5 / cli.md §4.1): use `ak5 serve --daemon`.

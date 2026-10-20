@@ -69,6 +69,37 @@ def _env_or_settings_jwt() -> str:
     return ""
 
 
+def validate_hosted_jwt_secret_config() -> None:
+    """Hosted must not auto-generate per-instance JWT keys (#165).
+
+    Require ``AK5_JWT_SECRET`` / ``JWT_SECRET`` / settings, or a non-empty
+    ``AK5_JWT_SECRET_FILE``. Auto-persist under ``AK5_DATA_DIR`` is local-only.
+    """
+    from ak5.server.config import hosted_profile
+
+    if not hosted_profile():
+        return
+    if _env_or_settings_jwt():
+        return
+    override = os.environ.get("AK5_JWT_SECRET_FILE", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        try:
+            if path.is_file() and path.read_text(encoding="utf-8").strip():
+                return
+        except OSError as exc:
+            raise ValueError(
+                f"AK5_DEPLOY_PROFILE=hosted: cannot read AK5_JWT_SECRET_FILE ({path}): {exc}"
+            ) from exc
+        raise ValueError(
+            "AK5_DEPLOY_PROFILE=hosted requires a non-empty AK5_JWT_SECRET_FILE "
+            f"(missing or empty: {path})"
+        )
+    raise ValueError(
+        "AK5_DEPLOY_PROFILE=hosted requires AK5_JWT_SECRET (or AK5_JWT_SECRET_FILE)"
+    )
+
+
 def resolve_jwt_secret() -> str:
     """Resolve JWT signing secret: env → settings → persisted file → generate."""
     from_env = _env_or_settings_jwt()
@@ -83,6 +114,14 @@ def resolve_jwt_secret() -> str:
                 return stored
     except OSError as exc:
         logger.warning("Could not read JWT secret file %s: %s", path, exc)
+
+    from ak5.server.config import hosted_profile
+
+    if hosted_profile():
+        # Belt-and-suspenders if called before lifespan validate (#165).
+        raise ValueError(
+            "AK5_DEPLOY_PROFILE=hosted requires AK5_JWT_SECRET (or AK5_JWT_SECRET_FILE)"
+        )
 
     generated = secrets.token_urlsafe(48)
     try:

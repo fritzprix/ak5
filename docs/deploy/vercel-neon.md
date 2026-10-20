@@ -59,7 +59,7 @@ pip install -e "./backend[server,postgres,vercel]"
 | `AK5_DEPLOY_PROFILE` | 예 | `hosted` |
 | `DATABASE_URL` | 예 | 앱 역할 URL (`NOBYPASSRLS` 권장) |
 | `AK5_DATABASE_ADMIN_URL` | 권장 | **BYPASSRLS**(또는 superuser) 역할. seed / purge / retention / blob GC·migrate에 필요. 미설정 시 `DATABASE_URL` + GUC로 동작하나 프로덕션에서는 분리 권장 |
-| `AK5_JWT_SECRET` | **예 (hosted)** | JWT 서명 비밀. 미설정 시 인스턴스별 임시 키를 파일에 만들어 쓰므로 서버리스에서 토큰이 인스턴스 간에 검증되지 않음 — 반드시 고정 시크릿을 넣는다 (기동 거부는 #165) |
+| `AK5_JWT_SECRET` | **예 (hosted)** | JWT 서명 비밀. hosted에서 비우면 **기동 거부** (#165). `AK5_JWT_SECRET_FILE`로 마운트해도 됨 |
 | `AK5_AUTO_MIGRATE` | 예 | `0` (서버리스). 스키마는 파이프라인에서 `ak5 db upgrade` |
 | `AK5_BLOB_BACKEND` | 예 | `vercel-blob` 또는 `s3` |
 | `AK5_NOTIFY` | 예 | `poll` |
