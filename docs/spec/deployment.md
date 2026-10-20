@@ -56,9 +56,10 @@
 
 identity.md §7에 따라 Postgres에서는 `workspace_id`를 가진 테이블에 RLS를 건다.
 
-- 요청마다 트랜잭션 시작 시 `SET LOCAL ak5.workspace_id = '<ws>'`.
-- 정책: `USING (workspace_id = current_setting('ak5.workspace_id', true))`.
-- 애플리케이션 쿼리 범위 강제가 **1차**, RLS는 **2차**(버그가 있어도 누수되지 않도록)다. 마이그레이션·관리 작업용 역할은 RLS를 우회한다.
+- 요청마다 트랜잭션 시작 시 `SET LOCAL ak5.workspace_id = '<ws>'` (`set_config(..., true)`; commit 후에도 `after_begin`으로 재적용).
+- 정책: `USING (ak5.bypass_rls = on OR workspace_id = current_setting('ak5.workspace_id', true))` (+ 동일 `WITH CHECK`).
+- 애플리케이션 쿼리 범위 강제가 **1차**, RLS는 **2차**(버그가 있어도 누수되지 않도록)다.
+- **역할 분리 (권장)**: `DATABASE_URL`은 `NOBYPASSRLS` 앱 역할, `AK5_DATABASE_ADMIN_URL`은 마이그레이션·seed·retention·blob GC용 `BYPASSRLS`(또는 superuser) 역할. 미설정 시 admin 세션은 `DATABASE_URL` + `ak5.bypass_rls` GUC로 동작한다 — GUC는 SQL 실행 권한이 있으면 켜질 수 있으므로 프로덕션에서는 admin URL 분리를 권장한다.
 - SQLite에는 적용하지 않는다(단일 사용자 가정).
 
 ## 2. 첨부 파일 (Blob)

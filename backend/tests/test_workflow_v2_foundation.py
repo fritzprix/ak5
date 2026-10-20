@@ -283,7 +283,6 @@ async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
     monkeypatch.setenv("AK5_DATA_DIR", str(data_dir))
 
     from ak5 import database as dbmod
-    from ak5 import seed as seedmod
 
     engine = create_async_engine(url, future=True)
 
@@ -298,7 +297,7 @@ async def test_migrate_v1_sqlite_schema_to_v2(tmp_path, monkeypatch):
         bind=engine, class_=AsyncSession, expire_on_commit=False
     )
     monkeypatch.setattr(dbmod, "AsyncSessionLocal", session_factory)
-    monkeypatch.setattr(seedmod, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(dbmod, "AsyncSessionLocalAdmin", session_factory)
 
     ticket_count = await _build_v1_sqlite_db(engine)
 
@@ -427,7 +426,6 @@ async def test_fresh_db_seed_creates_inbox(tmp_path, monkeypatch):
 
     # Rebind seed session factory to this fresh engine.
     from ak5 import database as dbmod
-    from ak5 import seed as seedmod
 
     engine = create_async_engine(url, future=True)
     monkeypatch.setattr(dbmod, "engine", engine)
@@ -435,7 +433,7 @@ async def test_fresh_db_seed_creates_inbox(tmp_path, monkeypatch):
         bind=engine, class_=AsyncSession, expire_on_commit=False
     )
     monkeypatch.setattr(dbmod, "AsyncSessionLocal", session_factory)
-    monkeypatch.setattr(seedmod, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(dbmod, "AsyncSessionLocalAdmin", session_factory)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -676,7 +674,6 @@ async def test_claimless_in_progress_repair_writes_audit_and_comment(
     monkeypatch.setenv("DATABASE_URL", url)
 
     from ak5 import database as dbmod
-    from ak5 import seed as seedmod
 
     engine = create_async_engine(url, future=True)
 
@@ -691,7 +688,7 @@ async def test_claimless_in_progress_repair_writes_audit_and_comment(
         bind=engine, class_=AsyncSession, expire_on_commit=False
     )
     monkeypatch.setattr(dbmod, "AsyncSessionLocal", session_factory)
-    monkeypatch.setattr(seedmod, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(dbmod, "AsyncSessionLocalAdmin", session_factory)
 
     await _build_v1_sqlite_db(engine)
     async with engine.begin() as conn:

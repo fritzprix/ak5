@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -17,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ak5.contracts.errors import ErrorCode
 from ak5.server.config import settings
-from ak5.server.database import AsyncSessionLocal
+from ak5.server.database import AsyncSessionLocal, AsyncSessionLocalAdmin
 from ak5.server.models.event import Event
 from ak5.server.models.subscription import Subscription
 from ak5.server.services.event_bus import event_bus
@@ -143,10 +145,23 @@ class SubscriptionService:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        admin_session_factory: async_sessionmaker[AsyncSession] | None = None,
         visibility: EventVisibilityPolicy | None = None,
     ) -> None:
         self.session_factory = session_factory or AsyncSessionLocal
+        # Cross-tenant maintenance (purge). Defaults to AK5_DATABASE_ADMIN_URL engine;
+        # tests rebind this to the same factory as session_factory.
+        self.admin_session_factory = admin_session_factory or AsyncSessionLocalAdmin
         self.visibility: EventVisibilityPolicy = visibility or build_visibility_policy()
+
+    @asynccontextmanager
+    async def _open_admin_session(self) -> AsyncIterator[AsyncSession]:
+        """Open a maintenance session and enable RLS bypass on PostgreSQL."""
+        from ak5.server.rls import set_bypass_rls_context
+
+        async with self.admin_session_factory() as session:
+            await set_bypass_rls_context(session, True)
+            yield session
 
     async def start(self) -> None:
         """No-op: server no longer runs a background exec listener (events.md §0)."""
@@ -256,6 +271,7 @@ class SubscriptionService:
         * Throttled per-process unless force=True.
         * Events with NULL workspace_id or workspaces missing from the workspaces table
           use default retention.
+        * Cross-workspace: enables ``ak5.bypass_rls`` on PostgreSQL for this session.
         """
         global _last_purge_mono
         interval = max(0.0, float(settings.EVENT_PURGE_MIN_INTERVAL_SECONDS))
@@ -266,6 +282,9 @@ class SubscriptionService:
         from ak5.server.models.subscription import Subscription
         from ak5.server.models.workspace import Workspace
         from ak5.server.quota import HOSTED_QUOTA_DEFAULTS, hosted_profile
+        from ak5.server.rls import set_bypass_rls_context
+
+        await set_bypass_rls_context(session, True)
 
         workspaces = (await session.execute(select(Workspace))).scalars().all()
         ws_map = {w.workspace_id: w for w in workspaces}
@@ -592,15 +611,21 @@ class SubscriptionService:
         wait = max(0, min(int(wait), settings.LONG_POLL_MAX_WAIT))
         limit = max(1, min(int(limit), 100))
 
+        from ak5.server.rls import set_workspace_rls_context
+
+        # Retention purge is cross-tenant; keep it off the request-scoped session.
+        async with self._open_admin_session() as admin_session:
+            await self.purge_expired_events(admin_session)
+            await admin_session.commit()
+
         async with self.session_factory() as session:
+            await set_workspace_rls_context(session, sub.workspace_id)
             db_sub = await session.get(Subscription, sub.subscription_id)
             if db_sub is None:
                 raise SubscriptionServiceError(
                     ErrorCode.SUBSCRIPTION_NOT_FOUND,
                     f"Subscription '{sub.subscription_id}' not found",
                 )
-            await self.purge_expired_events(session)
-            await session.commit()
 
             await self.acquire_consumer_lease(session, db_sub, consumer_id)
 
@@ -636,6 +661,7 @@ class SubscriptionService:
                 await asyncio.sleep(min(remaining, poll_interval))
 
             async with self.session_factory() as session:
+                await set_workspace_rls_context(session, sub.workspace_id)
                 db_sub = await session.get(Subscription, sub.subscription_id)
                 if db_sub is None:
                     raise SubscriptionServiceError(
@@ -668,7 +694,10 @@ class SubscriptionService:
         """One-shot event log poll without a subscription (``GET /events``)."""
         limit = max(1, min(int(limit), 100))
         since = max(0, int(since))
-        await self.purge_expired_events(session)
+        # Purge on an admin session so request RLS context is not switched to bypass.
+        async with self._open_admin_session() as admin_session:
+            await self.purge_expired_events(admin_session)
+            await admin_session.commit()
         await self.ensure_cursor_valid(session, since, workspace_id=workspace_id)
         rows, next_cursor = await self.fetch_events_since(
             session,

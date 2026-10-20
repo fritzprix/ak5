@@ -206,12 +206,22 @@ def recover_live_db_if_wiped(
     return result
 
 
+def _database_url_is_postgres(database_url: str | None) -> bool:
+    if not database_url or not database_url.strip():
+        return False
+    lowered = database_url.strip().lower()
+    return lowered.startswith(("postgresql:", "postgres:", "postgresql+", "postgres+"))
+
+
 def prepare_database_for_use(database_url: str | None = None, *, force: bool = False) -> Path:
     """**The** DB safety gate: dual-DB reconcile → wipe recover → URL SOU check.
 
     Must run from lifespan / ``ak5 serve`` / ``ak5 web`` / ``ak5 reset`` before
     serving or wiping data. Idempotent within a process unless ``force=True``.
     Must **not** run at ``ak5.database`` import time (would block migrate-legacy).
+
+    SQLite-only: dual-DB / wipe-recover / canonical-file assert. PostgreSQL URLs
+    skip those gates (deployment.md §1.2) so lifespan can start on managed PG.
     """
     global _prepared
     from ak5.paths import (
@@ -221,8 +231,12 @@ def prepare_database_for_use(database_url: str | None = None, *, force: bool = F
         resolve_legacy_cwd_db_conflict,
     )
 
+    live = get_canonical_db_path()
+    if _database_url_is_postgres(database_url):
+        _prepared = True
+        return live
+
     if _prepared and not force:
-        live = get_canonical_db_path()
         if database_url is not None:
             assert_database_url_matches_canonical(database_url)
         return live
@@ -233,7 +247,6 @@ def prepare_database_for_use(database_url: str | None = None, *, force: bool = F
     else:
         resolve_legacy_cwd_db_conflict()
 
-    live = get_canonical_db_path()
     recover_live_db_if_wiped(live)
     if database_url is not None:
         assert_database_url_matches_canonical(database_url)

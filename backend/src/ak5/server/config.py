@@ -71,7 +71,16 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     DATABASE_URL: str = Field(default_factory=get_default_database_url)
+    # Optional admin/migration URL (BYPASSRLS role). When empty, admin sessions use
+    # DATABASE_URL plus the ak5.bypass_rls GUC (deployment.md §1.5 / #106).
+    DATABASE_ADMIN_URL: str = Field(
+        default="",
+        validation_alias=AliasChoices("AK5_DATABASE_ADMIN_URL", "DATABASE_ADMIN_URL"),
+    )
     SQLITE_BUSY_TIMEOUT: int = 5000
+    AK5_DB_POOL_SIZE: int = 5
+    AK5_DB_MAX_OVERFLOW: int = 10
+    AK5_DB_POOL_TIMEOUT: float = 30.0
 
     # Prefer AK5_JWT_SECRET env. Empty → auto-generate/persist under app local storage (jwt_secret).
     JWT_SECRET: str = ""

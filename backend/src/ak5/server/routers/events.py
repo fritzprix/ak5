@@ -123,6 +123,9 @@ async def sse_event_stream(
 
                 async with subscription_service.session_factory() as session:
                     try:
+                        from ak5.server.rls import set_workspace_rls_context
+
+                        await set_workspace_rls_context(session, workspace_id)
                         rows, next_cursor = await subscription_service.poll_events(
                             session,
                             board_id=board_id,

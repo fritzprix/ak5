@@ -116,6 +116,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
     )
 
     subscription_service.session_factory = TestAsyncSessionLocal
+    subscription_service.admin_session_factory = TestAsyncSessionLocal
     reset_purge_throttle_for_tests()
 
     # Seed initial test data

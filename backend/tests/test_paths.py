@@ -380,6 +380,19 @@ def test_assert_database_url_matches_canonical(tmp_path, monkeypatch):
     assert paths.assert_database_url_matches_canonical(bad_url) == other.resolve()
 
 
+def test_sqlite_file_from_database_url_ignores_postgres():
+    """PostgreSQL DB names must not be treated as SQLite file paths (#106 / #155)."""
+    import ak5.paths as paths
+
+    assert (
+        paths.sqlite_file_from_database_url("postgresql+asyncpg://u:p@localhost:5432/ak5") is None
+    )
+    assert paths.sqlite_file_from_database_url("postgresql://u:p@localhost/ak5") is None
+    assert paths.assert_database_url_matches_canonical(
+        "postgresql+asyncpg://u:p@localhost:5432/ak5"
+    ) is None
+
+
 def test_replace_sqlite_database_drops_stale_wal(tmp_path):
     import ak5.paths as paths
 

@@ -156,6 +156,7 @@ async def provision_inbox_board(
         db.add(
             Column(
                 column_id=f"{board_id}_{col.stage}",
+                workspace_id=workspace_id,
                 board_id=board_id,
                 name=col.name,
                 stage=col.stage,
@@ -197,6 +198,8 @@ async def ensure_user_actor(db: AsyncSession, user: User) -> str:
 async def create_workspace(
     db: AsyncSession, *, name: str, owner: User
 ) -> tuple[Workspace, str]:
+    from ak5.server.rls import set_workspace_rls_context
+
     workspace_id = f"ws_{uuid.uuid4().hex[:12]}"
     ws = Workspace(
         workspace_id=workspace_id,
@@ -213,6 +216,9 @@ async def create_workspace(
             role="owner",
         )
     )
+    # Request auth sets RLS to the caller's current workspace; switch to the
+    # new tenant before inserting boards/columns (FORCE RLS WITH CHECK).
+    await set_workspace_rls_context(db, workspace_id)
     inbox_id = await provision_inbox_board(
         db, workspace_id=workspace_id, created_by=owner.user_id
     )

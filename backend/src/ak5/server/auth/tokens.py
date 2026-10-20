@@ -289,7 +289,11 @@ async def get_current_principal(
             detail="Authorization header missing",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return await verify_access_token(credentials.credentials, db)
+    principal = await verify_access_token(credentials.credentials, db)
+    from ak5.server.rls import set_workspace_rls_context
+
+    await set_workspace_rls_context(db, principal.workspace_id)
+    return principal
 
 
 def _presence_from_claims(payload: dict[str, Any]) -> datetime | None:

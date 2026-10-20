@@ -1,6 +1,7 @@
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -32,30 +33,55 @@ LEGACY_SUBSCRIPTIONS_EXPORT_KEYS = (
 # reset → seed) must not refuse dual-DB before `ak5 migrate-legacy` can run.
 # Safety gate lives in lifespan + `ak5 serve` / `ak5 web` (see main.py).
 
-# Configure SQLite async engine with WAL mode and busy_timeout
-connect_args = {}
-if "sqlite" in settings.DATABASE_URL:
-    connect_args["timeout"] = settings.SQLITE_BUSY_TIMEOUT / 1000.0
-    try:
-        url = make_url(settings.DATABASE_URL)
-        if url.database and url.database != ":memory:":
-            Path(url.database).parent.mkdir(parents=True, exist_ok=True)
-    except (ValueError, OSError) as e:
-        logger.warning(
-            "Failed to create SQLite database parent directory for %s: %s",
-            settings.DATABASE_URL,
-            e,
+def normalize_database_url(url_str: str) -> str:
+    """Normalize DATABASE_URL for SQLAlchemy async drivers (deployment.md §1.1)."""
+    if url_str.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url_str[len("postgresql://") :]
+    if url_str.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url_str[len("postgres://") :]
+    return url_str
+
+
+def get_engine_options(url_str: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Return (normalized_url, connect_args, engine_kwargs) based on dialect scheme."""
+    normalized = normalize_database_url(url_str)
+    connect_args: dict[str, Any] = {}
+    engine_kwargs: dict[str, Any] = {"echo": False, "future": True}
+
+    if "sqlite" in normalized:
+        connect_args["timeout"] = settings.SQLITE_BUSY_TIMEOUT / 1000.0
+        try:
+            url = make_url(normalized)
+            if url.database and url.database != ":memory:":
+                Path(url.database).parent.mkdir(parents=True, exist_ok=True)
+        except (ValueError, OSError) as e:
+            logger.warning(
+                "Failed to create SQLite database parent directory for %s: %s",
+                normalized,
+                e,
+            )
+    elif "postgresql" in normalized:
+        engine_kwargs["pool_size"] = settings.AK5_DB_POOL_SIZE
+        engine_kwargs["max_overflow"] = settings.AK5_DB_MAX_OVERFLOW
+        engine_kwargs["pool_timeout"] = settings.AK5_DB_POOL_TIMEOUT
+    else:
+        raise RuntimeError(
+            f"Unsupported DATABASE_URL scheme in '{url_str}'. Only SQLite and PostgreSQL are supported."
         )
 
+    return normalized, connect_args, engine_kwargs
+
+
+_normalized_db_url, connect_args, _engine_kwargs = get_engine_options(settings.DATABASE_URL)
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
+    _normalized_db_url,
     connect_args=connect_args,
-    future=True,
+    **_engine_kwargs,
 )
 
 # Apply SQLite pragmas for WAL mode, busy timeout, and foreign key enforcement
-if "sqlite" in settings.DATABASE_URL:
+if "sqlite" in _normalized_db_url:
 
     @event.listens_for(engine.sync_engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):
@@ -73,6 +99,50 @@ AsyncSessionLocal = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+# Admin / background engine: prefer AK5_DATABASE_ADMIN_URL (BYPASSRLS role).
+# When unset, reuse DATABASE_URL and rely on ak5.bypass_rls GUC for seed/purge.
+_admin_url_raw = (settings.DATABASE_ADMIN_URL or "").strip() or settings.DATABASE_URL
+_admin_normalized, _admin_connect_args, _admin_engine_kwargs = get_engine_options(_admin_url_raw)
+if _admin_normalized == _normalized_db_url:
+    admin_engine = engine
+else:
+    admin_engine = create_async_engine(
+        _admin_normalized,
+        connect_args=_admin_connect_args,
+        **_admin_engine_kwargs,
+    )
+    if "sqlite" in _admin_normalized:
+
+        @event.listens_for(admin_engine.sync_engine, "connect")
+        def set_admin_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute(f"PRAGMA busy_timeout={settings.SQLITE_BUSY_TIMEOUT};")
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            cursor.close()
+
+AsyncSessionLocalAdmin = async_sessionmaker(
+    bind=admin_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+
+@asynccontextmanager
+async def open_admin_session() -> AsyncIterator[AsyncSession]:
+    """Open a session for seed / retention / maintenance (RLS bypass on PostgreSQL)."""
+    from ak5.server.rls import set_bypass_rls_context
+
+    async with AsyncSessionLocalAdmin() as session:
+        await set_bypass_rls_context(session, True)
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
 
 
 def _sqlite_blocked_by_has_ticket_fk(sync_conn: Connection) -> bool:
