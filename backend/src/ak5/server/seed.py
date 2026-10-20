@@ -91,6 +91,7 @@ async def backfill_standard_board_stages(db: AsyncSession) -> None:
             db.add(
                 Column(
                     column_id=col_id,
+                    workspace_id=board.workspace_id,
                     board_id=board.board_id,
                     name=spec.name,
                     stage=spec.stage,
@@ -162,6 +163,7 @@ async def repair_claimless_in_progress_tickets(db: AsyncSession) -> None:
 
         db.add(
             AuditLog(
+                workspace_id=ticket.workspace_id,
                 actor_id="user_pm",
                 action="MOVED",
                 target_type="ticket",
@@ -179,6 +181,7 @@ async def repair_claimless_in_progress_tickets(db: AsyncSession) -> None:
         db.add(
             TicketComment(
                 comment_id=f"cmt_{uuid.uuid4().hex[:12]}",
+                workspace_id=ticket.workspace_id,
                 ticket_id=ticket.ticket_id,
                 actor_id="user_pm",
                 content=_CLAIMLESS_IN_PROGRESS_REASON,
@@ -527,6 +530,7 @@ async def seed_initial_data() -> None:
                 db.add(
                     Column(
                         column_id=f"{INBOX_BOARD_ID}_{col.stage}",
+                        workspace_id=LOCAL_WORKSPACE_ID,
                         board_id=INBOX_BOARD_ID,
                         name=col.name,
                         stage=col.stage,
@@ -538,6 +542,7 @@ async def seed_initial_data() -> None:
                 db.add(
                     BoardMember(
                         board_id=INBOX_BOARD_ID,
+                        workspace_id=LOCAL_WORKSPACE_ID,
                         actor_id=actor_id,
                         role="admin" if actor_id == "user_pm" else "agent",
                     )
@@ -566,6 +571,7 @@ async def seed_initial_data() -> None:
                 db.add(
                     Column(
                         column_id=f"{settings.DEFAULT_BOARD_ID}_{col.stage}",
+                        workspace_id=LOCAL_WORKSPACE_ID,
                         board_id=settings.DEFAULT_BOARD_ID,
                         name=col.name,
                         stage=col.stage,
@@ -585,6 +591,7 @@ async def seed_initial_data() -> None:
                 db.add(
                     BoardMember(
                         board_id=settings.DEFAULT_BOARD_ID,
+                        workspace_id=LOCAL_WORKSPACE_ID,
                         actor_id=actor_id,
                         role="admin" if actor_id == "user_pm" else "agent",
                     )

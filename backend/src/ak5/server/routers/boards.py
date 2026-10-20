@@ -414,6 +414,7 @@ async def create_board(
     db.add(
         BoardMember(
             board_id=board_id,
+            workspace_id=workspace_id,
             actor_id=current_actor.actor_id,
             role="admin",
         )
@@ -426,6 +427,7 @@ async def create_board(
         db.add(
             BoardMember(
                 board_id=board_id,
+                workspace_id=workspace_id,
                 actor_id=owner.actor_id,
                 role="admin",
             )
@@ -698,6 +700,7 @@ async def claim_board(
         db.add(
             BoardMember(
                 board_id=board_id,
+                workspace_id=board.workspace_id,
                 actor_id=current_actor.actor_id,
                 role="admin",
             )

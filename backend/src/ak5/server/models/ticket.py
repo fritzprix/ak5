@@ -22,7 +22,6 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ak5.server.models.base import Base, TimestampMixin
-from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 if TYPE_CHECKING:
     from ak5.server.models.actor import Actor
@@ -46,7 +45,7 @@ class Ticket(Base, TimestampMixin):
 
     ticket_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+        String(128), nullable=False, index=True
     )
     board_id: Mapped[str] = mapped_column(
         String(128),
@@ -85,7 +84,7 @@ class Ticket(Base, TimestampMixin):
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    # workflow.md §9 — claim / lease / blocked overlay / attempt tracking
+    # workflow.md §9 ??claim / lease / blocked overlay / attempt tracking
     original_request: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
@@ -192,7 +191,7 @@ class TicketComment(Base):
 
     comment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+        String(128), nullable=False, index=True
     )
     ticket_id: Mapped[str] = mapped_column(
         String(64),
@@ -224,7 +223,7 @@ class TicketAttachment(Base):
 
     attachment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+        String(128), nullable=False, index=True
     )
     ticket_id: Mapped[str] = mapped_column(
         String(64),

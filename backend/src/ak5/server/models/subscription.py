@@ -4,7 +4,6 @@ from sqlalchemy import DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base
-from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 
 class Subscription(Base):
@@ -12,10 +11,10 @@ class Subscription(Base):
 
     subscription_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+        String(128), nullable=False, index=True
     )
     board_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    # Filter fields (events.md §2) — no server-side exec_command.
+    # Filter fields (events.md §2) ??no server-side exec_command.
     events: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated
     role: Mapped[str | None] = mapped_column(String(64), nullable=True)
     capabilities: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
@@ -28,7 +27,7 @@ class Subscription(Base):
         server_default=func.now(),
         nullable=False,
     )
-    # events.md §2 — server stores filter + ack cursor only
+    # events.md §2 ??server stores filter + ack cursor only
     ack_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     consumer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     consumer_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
