@@ -15,6 +15,7 @@ from ak5.server.metrics import (
     registry,
     workflow_transitions_total,
 )
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -262,7 +263,7 @@ async def test_event_log_lag_seconds_metric(test_db: AsyncSession, monkeypatch: 
         assert "ak5_event_log_lag_seconds 0.0" in resp.text
 
         # Case 2: Subscription exists with ack_cursor = 0, but no events exist -> lag 0.0
-        sub1 = Subscription(subscription_id="sub-1", ack_cursor=0)
+        sub1 = Subscription(subscription_id="sub-1", workspace_id=LOCAL_WORKSPACE_ID, ack_cursor=0)
         test_db.add(sub1)
         await test_db.commit()
 
@@ -273,6 +274,7 @@ async def test_event_log_lag_seconds_metric(test_db: AsyncSession, monkeypatch: 
         past_time = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=30)
         ev1 = Event(
             event_id="ev-1",
+            workspace_id=LOCAL_WORKSPACE_ID,
             type="TICKET_CREATED",
             created_at=past_time,
         )
@@ -303,7 +305,7 @@ async def test_event_log_lag_seconds_metric(test_db: AsyncSession, monkeypatch: 
         # Case 5 (#149): Dead consumer (lease expired minutes ago) continues to report growing lag,
         # and is excluded from the gauge only once it exceeds the abandonment window (24h).
         past_time_2 = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=50)
-        ev2 = Event(event_id="ev-2", type="TICKET_UPDATED", created_at=past_time_2)
+        ev2 = Event(event_id="ev-2", workspace_id=LOCAL_WORKSPACE_ID, type="TICKET_UPDATED", created_at=past_time_2)
         test_db.add(ev2)
         # Sub1 lease expired 10 seconds ago: consumer is dead, but within the 24h abandonment window
         sub1.consumer_lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=10)
@@ -343,10 +345,11 @@ async def test_route_ticket_missing_claim_token_does_not_increment_conflicts(tes
 
     await ensure_local_tenancy(test_db)
 
-    board = Board(board_id="b1", name="Test Board", created_by=LOCAL_USER_ID)
-    col = Column(column_id="c1", board_id="b1", stage="unclassified", name="Inbox")
+    board = Board(board_id="b1", workspace_id=LOCAL_WORKSPACE_ID, name="Test Board", created_by=LOCAL_USER_ID)
+    col = Column(column_id="c1", workspace_id=LOCAL_WORKSPACE_ID, board_id="b1", stage="unclassified", name="Inbox")
     ticket = Ticket(
         ticket_id="t1",
+        workspace_id=LOCAL_WORKSPACE_ID,
         board_id="b1",
         column_id="c1",
         title="Test Ticket",

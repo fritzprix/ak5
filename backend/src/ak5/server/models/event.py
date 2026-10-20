@@ -7,7 +7,6 @@ from sqlalchemy import DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base
-from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 
 
 class Event(Base):
@@ -26,7 +25,7 @@ class Event(Base):
     event_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default=LOCAL_WORKSPACE_ID, index=True
+        String(128), nullable=False, index=True
     )
     board_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

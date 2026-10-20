@@ -32,6 +32,7 @@ from ak5.server.config import settings  # noqa: E402
 from ak5.server.database import get_db  # noqa: E402
 from ak5.server.main import app  # noqa: E402
 from ak5.server.models.base import Base  # noqa: E402
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID  # noqa: E402
 from ak5.server.routers.auth import create_access_token  # noqa: E402
 from ak5.server.security import reset_secret_caches  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
@@ -160,6 +161,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
 
         board = Board(
             board_id="proj-core-engine",
+            workspace_id=LOCAL_WORKSPACE_ID,
             name="Core Engine",
             description="Test board",
             created_by="user_pm",
@@ -169,6 +171,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
         )
         inbox = Board(
             board_id="inbox",
+            workspace_id=LOCAL_WORKSPACE_ID,
             name="Global Inbox",
             description="System inbox",
             created_by="user_pm",
@@ -179,9 +182,24 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
         session.add_all([board, inbox])
 
         members = [
-            BoardMember(board_id="proj-core-engine", actor_id="user_pm", role="admin"),
-            BoardMember(board_id="proj-core-engine", actor_id="agent_image_worker", role="agent"),
-            BoardMember(board_id="inbox", actor_id="user_pm", role="admin"),
+            BoardMember(
+                board_id="proj-core-engine",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                actor_id="user_pm",
+                role="admin",
+            ),
+            BoardMember(
+                board_id="proj-core-engine",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                actor_id="agent_image_worker",
+                role="agent",
+            ),
+            BoardMember(
+                board_id="inbox",
+                workspace_id=LOCAL_WORKSPACE_ID,
+                actor_id="user_pm",
+                role="admin",
+            ),
         ]
         session.add_all(members)
 
@@ -191,6 +209,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
         cols = [
             Column(
                 column_id="col_todo",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="proj-core-engine",
                 name="Backlog",
                 stage="backlog",
@@ -199,6 +218,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             ),
             Column(
                 column_id="col_in_progress",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="proj-core-engine",
                 name="In Progress",
                 stage="in_progress",
@@ -207,6 +227,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             ),
             Column(
                 column_id="col_review",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="proj-core-engine",
                 name="Agent Review",
                 stage="agent_review",
@@ -215,6 +236,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             ),
             Column(
                 column_id="col_postmortem_pending",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="proj-core-engine",
                 name="Postmortem Pending",
                 stage="postmortem_pending",
@@ -223,6 +245,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             ),
             Column(
                 column_id="col_human_review",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="proj-core-engine",
                 name="Human Review",
                 stage="human_review",
@@ -231,6 +254,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             ),
             Column(
                 column_id="col_done",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="proj-core-engine",
                 name="Done",
                 stage="done",
@@ -239,6 +263,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
             ),
             Column(
                 column_id="inbox_unclassified",
+                workspace_id=LOCAL_WORKSPACE_ID,
                 board_id="inbox",
                 name="Unclassified",
                 stage="unclassified",

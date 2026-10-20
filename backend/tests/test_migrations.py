@@ -208,3 +208,12 @@ async def test_migration_0005_blob_gc_upgrade_and_downgrade(tmp_path: Path):
     finally:
         await engine.dispose()
 
+
+def test_migration_graph_has_exactly_one_head():
+    """#160: parallel PRs revising the same parent must not leave multiple Alembic heads."""
+    from alembic.script import ScriptDirectory
+
+    heads = ScriptDirectory.from_config(mig.alembic_config()).get_heads()
+    assert len(heads) == 1, f"expected one Alembic head, got {heads!r}"
+    assert heads[0] == mig.head_revision()
+

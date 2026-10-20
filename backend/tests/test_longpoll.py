@@ -11,6 +11,7 @@ from ak5.contracts.errors import ErrorCode
 from ak5.contracts.events import EventType
 from ak5.models.event import Event
 from ak5.models.subscription import Subscription
+from ak5.server.models.workspace import LOCAL_WORKSPACE_ID
 from ak5.services.event_log import record_event
 from ak5.services.subscription_service import (
     CommitLagVisibilityPolicy,
@@ -584,6 +585,7 @@ async def test_acquire_consumer_lease_is_atomic(test_db: AsyncSession, monkeypat
     monkeypatch.setattr(settings, "CONSUMER_LEASE_SECONDS", 60)
     sub = Subscription(
         subscription_id="sub-atomic-lease",
+        workspace_id=LOCAL_WORKSPACE_ID,
         board_id="proj-core-engine",
         events="TICKET_CREATED",
         created_by="user_pm",
