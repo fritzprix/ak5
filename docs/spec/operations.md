@@ -35,7 +35,10 @@ hosted 다중 사용자 배포 전에 필요한 **운영 기본기**를 정의�
 | workspace | `workspace_id` | 한 tenant가 서버를 독점하는 것 방지 |
 | client IP | 신뢰한 프록시 기준의 원 IP | **인증 전** 엔드포인트(login, device grant, 초대 수락) |
 
-IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 신뢰한다. 설정이 없으면 소켓 peer 주소를 쓴다.
+IP 신뢰는 둘 중 하나다.
+
+1. **`AK5_TRUSTED_PROXIES`(CIDR 목록)**: 소켓 peer가 그 목록에 속할 때만 `X-Forwarded-For`를 오른쪽부터 걸어 원 IP를 고른다. 설정이 없으면 소켓 peer를 쓴다.
+2. **`AK5_CLIENT_IP_HEADER`(플랫폼 보증 헤더)**: Vercel 등 엣지가 덮어쓰는 헤더(`x-real-ip`, `x-vercel-forwarded-for`, `cf-connecting-ip`)만 허용한다. 외부에서 위조 가능한 환경에서는 금지. CIDR을 알 수 없는 serverless에서 사용한다(#125).
 
 ### 2.2 알고리즘과 저장
 
@@ -194,13 +197,14 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 |---|---|---|
 | `AK5_DEPLOY_PROFILE` | `local` | `hosted` (아래 기본값 묶음 선택; 2.0에서는 `AK5_PROFILE=hosted|local`을 deprecated fallback으로 지원) |
 | `AK5_RATE_LIMITS` | 비활성 | §2.3 표 |
-| `AK5_TRUSTED_PROXIES` | 비어 있음 | 배포 환경에 맞게 필수 |
+| `AK5_TRUSTED_PROXIES` | 비어 있음 | CIDR 목록 **또는** 아래 헤더 모드 중 하나 필수 |
+| `AK5_CLIENT_IP_HEADER` | 비어 있음 | `x-real-ip` / `x-vercel-forwarded-for` / `cf-connecting-ip` (플랫폼 엣지 전용) |
 | `AK5_MAX_CONNECTIONS` | 무제한 | 500 |
 | `AK5_QUOTA_CEILING` | 없음 | 서버 상한 JSON |
 | `AK5_LOG_FORMAT` / `AK5_LOG_LEVEL` | `text` / `INFO` | `json` / `INFO` |
 | `AK5_METRICS_ENABLED` / `AK5_METRICS_TOKEN` | 꺼짐 | 선택 |
 
-`AK5_DEPLOY_PROFILE=hosted`(또는 레거시 fallback `AK5_PROFILE=hosted`)인데 `AK5_TRUSTED_PROXIES`가 비어 있고 비-loopback bind면 시작을 거부한다(IP 단위 한도가 무의미해지므로).
+`AK5_DEPLOY_PROFILE=hosted`(또는 레거시 fallback `AK5_PROFILE=hosted`)인데 `AK5_TRUSTED_PROXIES`와 `AK5_CLIENT_IP_HEADER`가 모두 비어 있으면 **진입점과 무관하게**(app lifespan · `ak5 serve`) 시작을 거부한다(IP 단위 한도가 무의미해지므로, #125).
 
 ## 8. 구현 순서 (확정 시 이슈 분할 제안)
 

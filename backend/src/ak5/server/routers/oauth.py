@@ -39,7 +39,7 @@ from ak5.server.auth.sessions import (
 from ak5.server.auth.tokens import issue_access_token
 from ak5.server.database import get_db
 from ak5.server.models.workspace import LOCAL_WORKSPACE_ID, Membership
-from ak5.server.web_auth import client_ip_from_headers
+from ak5.server.web_auth import resolve_client_ip
 
 router = APIRouter(tags=["oauth"])
 
@@ -55,9 +55,9 @@ def _oauth_error(error: str, *, status_code: int = 400, interval: int | None = N
 
 
 def _client_key(request: Request) -> str:
-    return client_ip_from_headers(
-        request.headers.get("x-forwarded-for"),
-        request.headers.get("x-real-ip"),
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    return resolve_client_ip(
+        headers,
         request.client.host if request.client else "127.0.0.1",
     )
 

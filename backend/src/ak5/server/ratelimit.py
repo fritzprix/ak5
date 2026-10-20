@@ -36,7 +36,7 @@ from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
 from ak5.server.config import hosted_profile
 from ak5.server.metrics import rate_limited_total, safe_inc
 from ak5.server.models.rate_counter import RateCounter
-from ak5.server.web_auth import client_ip_from_headers
+from ak5.server.web_auth import resolve_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +255,4 @@ class RateLimitMiddleware:
 def _client_ip(scope: Scope) -> str:
     headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
     client = scope.get("client")
-    return client_ip_from_headers(
-        headers.get("x-forwarded-for"), headers.get("x-real-ip"), client[0] if client else "127.0.0.1"
-    )
+    return resolve_client_ip(headers, client[0] if client else "127.0.0.1")

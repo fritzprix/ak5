@@ -26,11 +26,11 @@ from ak5.server.web_auth import (
     COOKIE_NAME,
     SESSION_MAX_AGE_SECONDS,
     check_rate_limit,
-    client_ip_from_headers,
     credentials_match,
     get_web_auth_config,
     record_failed_attempt,
     record_successful_attempt,
+    resolve_client_ip,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,9 +44,9 @@ class LoginBody(BaseModel):
 
 
 def _client_ip(request: Request) -> str:
-    return client_ip_from_headers(
-        request.headers.get("x-forwarded-for"),
-        request.headers.get("x-real-ip"),
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    return resolve_client_ip(
+        headers,
         request.client.host if request.client else "127.0.0.1",
     )
 

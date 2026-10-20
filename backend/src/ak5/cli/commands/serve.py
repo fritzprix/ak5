@@ -85,17 +85,19 @@ def assert_safe_bind(
     if not exposed:
         return
     from ak5.server.config import hosted_profile
+    from ak5.server.web_auth import hosted_client_ip_config_ok
 
-    if hosted_profile() and not os.environ.get(
-        "AK5_TRUSTED_PROXIES", ""
-    ).strip():
+    if hosted_profile() and not hosted_client_ip_config_ok():
         # Without it every request would share the proxy's IP (or let callers pick their own
-        # bucket), which makes per-IP limits meaningless (operations.md §7).
+        # bucket), which makes per-IP limits meaningless (operations.md §7 / #125).
         console.print(
             "[bold red]✗ Refusing AK5_DEPLOY_PROFILE=hosted on an exposed bind without "
-            "AK5_TRUSTED_PROXIES.[/bold red]\n"
-            "  Set [cyan]AK5_TRUSTED_PROXIES[/cyan] to the reverse proxy IPs/CIDRs in front of "
-            "this server\n  (operations.md §2.1), or unset AK5_DEPLOY_PROFILE."
+            "a client-IP trust strategy.[/bold red]\n"
+            "  Set [cyan]AK5_TRUSTED_PROXIES[/cyan] (CIDR list) or "
+            "[cyan]AK5_CLIENT_IP_HEADER[/cyan]\n"
+            "  (e.g. [cyan]x-real-ip[/cyan] / [cyan]x-vercel-forwarded-for[/cyan] on "
+            "platform edges; operations.md §2.1),\n"
+            "  or unset AK5_DEPLOY_PROFILE."
         )
         raise SystemExit(1)
     if auth_is_configured():

@@ -154,6 +154,53 @@ def record_successful_attempt(ip: str) -> None:
         _attempts.pop(ip, None)
 
 
+# Platform-guaranteed client IP headers (deployment.md / #125). Only enable when
+# the platform overwrites the header at the edge — never on open internet hops.
+ALLOWED_CLIENT_IP_HEADERS = frozenset(
+    {
+        "x-real-ip",
+        "x-vercel-forwarded-for",
+        "cf-connecting-ip",
+    }
+)
+
+
+def configured_client_ip_header() -> str | None:
+    """``AK5_CLIENT_IP_HEADER`` if set (lowercased), else None."""
+    raw = (os.environ.get("AK5_CLIENT_IP_HEADER") or "").strip().lower()
+    return raw or None
+
+
+def hosted_client_ip_config_ok() -> bool:
+    """True when hosted profile has proxies and/or a platform client-IP header."""
+    has_proxies = bool((os.environ.get("AK5_TRUSTED_PROXIES") or "").strip())
+    return has_proxies or configured_client_ip_header() is not None
+
+
+def validate_hosted_client_ip_config() -> None:
+    """Fail closed for hosted without a client-IP trust strategy (#125).
+
+    Entry-point agnostic (lifespan): covers ``api/index.py`` / raw uvicorn, not
+    only ``ak5 serve``'s ``assert_safe_bind``.
+    """
+    from ak5.server.config import hosted_profile
+
+    if not hosted_profile():
+        return
+    header = configured_client_ip_header()
+    if header is not None and header not in ALLOWED_CLIENT_IP_HEADERS:
+        allowed = ", ".join(sorted(ALLOWED_CLIENT_IP_HEADERS))
+        raise ValueError(
+            f"Invalid AK5_CLIENT_IP_HEADER={header!r}. Allowed values: {allowed}."
+        )
+    if not hosted_client_ip_config_ok():
+        raise ValueError(
+            "AK5_DEPLOY_PROFILE=hosted requires AK5_TRUSTED_PROXIES (CIDR list) "
+            "or AK5_CLIENT_IP_HEADER (platform-guaranteed header, e.g. "
+            "x-real-ip / x-vercel-forwarded-for). See operations.md §2.1 / #125."
+        )
+
+
 def trusted_proxy_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     """``AK5_TRUSTED_PROXIES``: comma-separated IPs / CIDRs of reverse proxies we sit behind."""
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
@@ -180,6 +227,23 @@ def _is_trusted(value: str, networks: list[ipaddress.IPv4Network | ipaddress.IPv
     return ip is not None and any(ip in net for net in networks)
 
 
+def resolve_client_ip(headers: dict[str, str], fallback: str) -> str:
+    """Resolve client IP from a lowercased header map + socket peer (#122, #125)."""
+    header_mode = configured_client_ip_header()
+    if header_mode:
+        raw = headers.get(header_mode)
+        if raw:
+            first = raw.split(",")[0].strip()
+            if _ip_or_none(first) is not None:
+                return first
+        return fallback
+    return client_ip_from_headers(
+        headers.get("x-forwarded-for"),
+        headers.get("x-real-ip"),
+        fallback,
+    )
+
+
 def client_ip_from_headers(x_forwarded_for: str | None, x_real_ip: str | None, fallback: str) -> str:
     """The caller's IP, for per-IP limits (#122, operations.md §2.1).
 
@@ -187,7 +251,21 @@ def client_ip_from_headers(x_forwarded_for: str | None, x_real_ip: str | None, f
     configured trusted proxy** (``AK5_TRUSTED_PROXIES``); otherwise anyone could pick their own
     rate-limit bucket by sending ``X-Forwarded-For``. With a trusted peer, ``X-Forwarded-For`` is
     walked from the right and the first hop that is not itself a trusted proxy is the client.
+
+    When ``AK5_CLIENT_IP_HEADER`` is set, prefer :func:`resolve_client_ip` with the full
+    header map (platform-guaranteed header mode, #125).
     """
+    header_mode = configured_client_ip_header()
+    if header_mode == "x-real-ip" and x_real_ip and _ip_or_none(x_real_ip) is not None:
+        return x_real_ip.strip()
+    if header_mode == "x-forwarded-for" and x_forwarded_for:
+        first = x_forwarded_for.split(",")[0].strip()
+        if _ip_or_none(first) is not None:
+            return first
+    if header_mode:
+        # Other platform headers need the full map via resolve_client_ip.
+        return fallback
+
     networks = trusted_proxy_networks()
     if not networks or not _is_trusted(fallback, networks):
         return fallback
