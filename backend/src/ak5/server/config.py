@@ -1,3 +1,5 @@
+import logging
+import os
 from importlib.metadata import PackageNotFoundError, version
 
 from pydantic import AliasChoices, Field
@@ -9,6 +11,58 @@ try:
     _pkg_version = version("ak5")
 except PackageNotFoundError:
     _pkg_version = "1.0.3"
+
+logger = logging.getLogger(__name__)
+
+ALLOWED_DEPLOY_PROFILES = frozenset({"local", "hosted"})
+_legacy_deploy_profile_warned = False
+
+
+def get_deploy_profile() -> str:
+    """Return the server deployment profile ('local' or 'hosted').
+
+    Precedence (operations.md §7, #156):
+    1. AK5_DEPLOY_PROFILE: explicit server deployment profile ('local' or 'hosted').
+       Unknown values raise ``ValueError`` (fail-closed; never treated as local).
+    2. Deprecated fallback: AK5_PROFILE if set to 'hosted' or 'local'.
+       Logs a one-time ``logger.warning`` per process.
+       Note: If AK5_PROFILE is set to anything else (such as a CLI profile name 'worker-1'),
+       the server does not fallback and defaults to 'local'.
+    3. Default: 'local'.
+    """
+    global _legacy_deploy_profile_warned
+
+    deploy_profile = os.environ.get("AK5_DEPLOY_PROFILE")
+    if deploy_profile is not None and deploy_profile.strip():
+        val = deploy_profile.strip().lower()
+        if val not in ALLOWED_DEPLOY_PROFILES:
+            allowed = ", ".join(sorted(ALLOWED_DEPLOY_PROFILES))
+            raise ValueError(
+                f"Invalid AK5_DEPLOY_PROFILE={deploy_profile!r}. Allowed values: {allowed}."
+            )
+        return val
+
+    legacy_profile = os.environ.get("AK5_PROFILE")
+    if legacy_profile is not None and legacy_profile.strip():
+        val = legacy_profile.strip().lower()
+        if val in ALLOWED_DEPLOY_PROFILES:
+            if not _legacy_deploy_profile_warned:
+                logger.warning(
+                    "AK5_PROFILE=%r is deprecated for server deployment profile. "
+                    "Use AK5_DEPLOY_PROFILE instead. "
+                    "Note: If your CLI profile name is 'hosted' or 'local', "
+                    "set AK5_DEPLOY_PROFILE explicitly.",
+                    legacy_profile,
+                )
+                _legacy_deploy_profile_warned = True
+            return val
+
+    return "local"
+
+
+def hosted_profile() -> bool:
+    """Return True if the active server deployment profile is 'hosted'."""
+    return get_deploy_profile() == "hosted"
 
 
 class Settings(BaseSettings):

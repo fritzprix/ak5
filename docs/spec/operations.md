@@ -192,7 +192,7 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 
 | 변수 | local 기본 | hosted 기본 |
 |---|---|---|
-| `AK5_PROFILE` | `local` | `hosted` (아래 기본값 묶음 선택) |
+| `AK5_DEPLOY_PROFILE` | `local` | `hosted` (아래 기본값 묶음 선택; 2.0에서는 `AK5_PROFILE=hosted|local`을 deprecated fallback으로 지원) |
 | `AK5_RATE_LIMITS` | 비활성 | §2.3 표 |
 | `AK5_TRUSTED_PROXIES` | 비어 있음 | 배포 환경에 맞게 필수 |
 | `AK5_MAX_CONNECTIONS` | 무제한 | 500 |
@@ -200,7 +200,7 @@ IP는 `AK5_TRUSTED_PROXIES`(CIDR 목록)에 속한 hop의 `X-Forwarded-For`만 �
 | `AK5_LOG_FORMAT` / `AK5_LOG_LEVEL` | `text` / `INFO` | `json` / `INFO` |
 | `AK5_METRICS_ENABLED` / `AK5_METRICS_TOKEN` | 꺼짐 | 선택 |
 
-`AK5_PROFILE=hosted`인데 `AK5_TRUSTED_PROXIES`가 비어 있고 비-loopback bind면 시작을 거부한다(IP 단위 한도가 무의미해지므로).
+`AK5_DEPLOY_PROFILE=hosted`(또는 레거시 fallback `AK5_PROFILE=hosted`)인데 `AK5_TRUSTED_PROXIES`가 비어 있고 비-loopback bind면 시작을 거부한다(IP 단위 한도가 무의미해지므로).
 
 ## 8. 구현 순서 (확정 시 이슈 분할 제안)
 

@@ -413,7 +413,7 @@ agent가 **서버와 같은 OS 사용자**로 돌면 DB 파일과 서명 키를 
 | `AK5_ENABLE_MCP` | 서버 | `1`이면 `/mcp` 마운트 (`ak5[mcp]` 필요) |
 | `AK5_DEV_INSECURE_IDENTIFY` | 서버 | `1`이면 loopback에서 v1 self-identify 허용 (개발 전용) |
 | `AK5_AUTO_MIGRATE` | 서버 | `0`이면 시작 시 스키마를 자동 변경하지 않고 head인지만 확인 (서버리스 권장). `ak5 db upgrade`로 직접 적용 |
-| `AK5_PROFILE` | 서버 | `hosted`이면 요청 한도 기본값을 켠다(§7.6). 기본 `local`은 한도 없음. `hosted` + 외부 bind + `AK5_TRUSTED_PROXIES` 없음이면 시작을 거부한다 |
+| `AK5_DEPLOY_PROFILE` | 서버 | `hosted`이면 요청 한도 기본값을 켠다(§7.6). 기본 `local`은 한도 없음. `hosted` + 외부 bind + `AK5_TRUSTED_PROXIES` 없음이면 시작을 거부한다 (2.0에서는 `AK5_PROFILE=hosted|local` 레거시 fallback 지원) |
 | `AK5_RATE_LIMITS` | 서버 | 규칙별 분당 한도 JSON (`{"write_principal": 60, "login_ip": 0}`, `0` = 끔). `local`에서도 켤 수 있다 |
 | `AK5_TRUSTED_PROXIES` | 서버 | 앞단 리버스 프록시의 IP/CIDR. **여기 적힌 프록시가 보낸 `X-Forwarded-For`만 믿고** IP별 한도·잠금에 쓴다 (기본: 헤더 무시, 소켓 주소 사용) |
 | `AK5_LOG_FORMAT`, `AK5_LOG_LEVEL` | 서버 | `json`이면 한 줄에 JSON 하나(`ts`,`level`,`msg`,`request_id`,…). 기본 `text`는 로깅 설정을 바꾸지 않는다 |
@@ -429,7 +429,7 @@ agent가 **서버와 같은 OS 사용자**로 돌면 DB 파일과 서명 키를 
 
 ### 7.6 요청 한도
 
-`AK5_PROFILE=hosted`(또는 `AK5_RATE_LIMITS`)이면 분당 고정 윈도우로 요청을 센다. 카운터는 DB(`rate_counters`)에 있어 인스턴스가 여럿이어도 한도를 공유한다.
+`AK5_DEPLOY_PROFILE=hosted`(또는 `AK5_RATE_LIMITS`)이면 분당 고정 윈도우로 요청을 센다. 카운터는 DB(`rate_counters`)에 있어 인스턴스가 여럿이어도 한도를 공유한다.
 
 | 규칙 | hosted 기본 | 대상 |
 |---|---|---|
