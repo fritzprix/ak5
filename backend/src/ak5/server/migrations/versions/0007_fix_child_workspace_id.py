@@ -1,7 +1,7 @@
 """Backfill mismatched child workspace_id from parent board/ticket (#158).
 
-Revision ID: 0006_fix_child_workspace_id
-Revises: 0005_blob_gc
+Revision ID: 0007_fix_child_workspace_id
+Revises: 0006_postgres_rls
 Create Date: 2026-10-20
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0006_fix_child_workspace_id"
-down_revision = "0005_blob_gc"
+revision = "0007_fix_child_workspace_id"
+down_revision = "0006_postgres_rls"
 branch_labels = None
 depends_on = None
 
