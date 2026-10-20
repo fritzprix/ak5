@@ -15,6 +15,9 @@ export const ErrorCode = {
   PAYLOAD_INVALID: "PAYLOAD_INVALID",
   SYSTEM_BOARD: "SYSTEM_BOARD",
 
+  // operations.md §5 — DB row present but blob missing after restore skew
+  ATTACHMENT_MISSING: "ATTACHMENT_MISSING",
+
   // events.md §5
   CURSOR_EXPIRED: "CURSOR_EXPIRED",
   CONSUMER_CONFLICT: "CONSUMER_CONFLICT",
@@ -43,6 +46,7 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.WIP_LIMIT]: 409,
   [ErrorCode.PAYLOAD_INVALID]: 422,
   [ErrorCode.SYSTEM_BOARD]: 403,
+  [ErrorCode.ATTACHMENT_MISSING]: 404,
   [ErrorCode.CURSOR_EXPIRED]: 410,
   [ErrorCode.CONSUMER_CONFLICT]: 409,
   [ErrorCode.SUBSCRIPTION_NOT_FOUND]: 404,
@@ -61,6 +65,7 @@ export const EXIT_CODE: Record<ErrorCode, number> = {
   [ErrorCode.ROLE_FORBIDDEN]: 4,
   [ErrorCode.SEPARATION_OF_DUTIES]: 4,
   [ErrorCode.SYSTEM_BOARD]: 4,
+  [ErrorCode.ATTACHMENT_MISSING]: 4,
   [ErrorCode.QUOTA_EXCEEDED]: 4,
   [ErrorCode.WIP_LIMIT]: 4,
   [ErrorCode.TICKET_BLOCKED]: 5,

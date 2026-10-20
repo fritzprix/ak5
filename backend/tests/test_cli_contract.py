@@ -61,6 +61,7 @@ def claims_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (ErrorCode.SYSTEM_BOARD, 4),
         (ErrorCode.WIP_LIMIT, 3),
         (ErrorCode.NOT_FOUND, 4),
+        (ErrorCode.ATTACHMENT_MISSING, 4),
         (ErrorCode.TICKET_BLOCKED, 5),
         (ErrorCode.VERSION_MISMATCH, 7),
         (ErrorCode.UNAUTHENTICATED, 8),

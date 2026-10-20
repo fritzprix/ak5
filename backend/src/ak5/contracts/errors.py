@@ -20,6 +20,8 @@ class ErrorCode(StrEnum):
     PAYLOAD_INVALID = "PAYLOAD_INVALID"
     SYSTEM_BOARD = "SYSTEM_BOARD"
     NOT_FOUND = "NOT_FOUND"
+    # operations.md §5 — DB row present but blob missing after restore skew
+    ATTACHMENT_MISSING = "ATTACHMENT_MISSING"
 
     # events.md §5
     CURSOR_EXPIRED = "CURSOR_EXPIRED"
@@ -54,6 +56,7 @@ HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.PAYLOAD_INVALID: 422,
     ErrorCode.SYSTEM_BOARD: 403,
     ErrorCode.NOT_FOUND: 404,
+    ErrorCode.ATTACHMENT_MISSING: 404,
     ErrorCode.CURSOR_EXPIRED: 410,
     ErrorCode.CONSUMER_CONFLICT: 409,
     ErrorCode.SUBSCRIPTION_NOT_FOUND: 404,
@@ -81,6 +84,7 @@ EXIT_CODE: dict[ErrorCode, int] = {
     ErrorCode.RATE_LIMITED: 3,  # cli.md §3.1 — retryable, honour Retry-After
     ErrorCode.CONNECTION_LIMIT: 3,  # cli.md §3.1 — retryable, honour Retry-After
     ErrorCode.NOT_FOUND: 4,
+    ErrorCode.ATTACHMENT_MISSING: 4,
     ErrorCode.TICKET_BLOCKED: 5,
     ErrorCode.VERSION_MISMATCH: 7,
     ErrorCode.UNAUTHENTICATED: 8,

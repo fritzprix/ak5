@@ -135,3 +135,48 @@ async def test_ticket_attachment_traversal_filename_confined(
     assert len(stored_files) == 1
     assert stored_files[0].is_relative_to(storage_dir.resolve())
 
+
+@pytest.mark.asyncio
+async def test_download_attachment_missing_blob_returns_attachment_missing(
+    client: AsyncClient, auth_headers, tmp_path, monkeypatch
+):
+    """operations.md §5 / #119 — DB row without blob must not break the ticket."""
+    storage_dir = tmp_path / "attachments"
+    monkeypatch.setattr(settings, "ATTACHMENTS_DIR", str(storage_dir))
+    headers = auth_headers("user_pm", "human")
+
+    t_resp = await client.post(
+        "/api/v1/tickets",
+        json={
+            "title": "Restore skew",
+            "board_id": "proj-core-engine",
+            "column_id": "col_todo",
+            "acceptance_criteria": ["done"],
+            "spec": "spec",
+        },
+        headers=headers,
+    )
+    ticket_id = t_resp.json()["ticket_id"]
+    upload = await client.post(
+        f"/api/v1/tickets/{ticket_id}/attachments",
+        files={"file": ("note.txt", io.BytesIO(b"hello"), "text/plain")},
+        headers=headers,
+    )
+    assert upload.status_code == 201, upload.text
+    attachment_id = upload.json()["attachment_id"]
+
+    for path in storage_dir.rglob("*"):
+        if path.is_file():
+            path.unlink()
+
+    dl = await client.get(f"/api/v1/tickets/{ticket_id}/attachments/{attachment_id}")
+    assert dl.status_code == 404
+    body = dl.json()
+    assert body["error"]["code"] == "ATTACHMENT_MISSING"
+    assert "storage_path" not in body["error"].get("details", {})
+    assert body["error"]["details"].get("attachment_id") == attachment_id
+
+    detail = await client.get(f"/api/v1/tickets/{ticket_id}")
+    assert detail.status_code == 200
+    assert len(detail.json()["attachments"]) == 1
+
