@@ -192,10 +192,31 @@ _DEVICE_PAGE = """<!DOCTYPE html>
 
 
 @router.get("/device", response_class=HTMLResponse)
-async def device_approval_page(code: str | None = None) -> HTMLResponse:
+async def device_approval_page(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    code: str | None = None,
+) -> HTMLResponse:
     """Minimal server-rendered approval page (identity.md §3.3 / #25)."""
+    from ak5.server.routers.oidc_auth import (
+        auto_create_local_web_session,
+        is_secure_request,
+        local_auto_login_enabled,
+        set_session_cookies,
+    )
+
     html = _DEVICE_PAGE.replace("__CODE__", (code or "").replace('"', ""))
-    return HTMLResponse(html)
+    response = HTMLResponse(html)
+    cookie = request.cookies.get(SESSION_COOKIE)
+    if await resolve_web_session(db, cookie) is None and local_auto_login_enabled(request):
+        _user, session_cookie, csrf = await auto_create_local_web_session(db)
+        set_session_cookies(
+            response,
+            session_cookie=session_cookie,
+            csrf_token=csrf,
+            secure=is_secure_request(request),
+        )
+    return response
 
 
 @router.post("/oauth/device_authorization")

@@ -26,6 +26,7 @@ from ak5.cli.commands.ticket import (
     move_shortcut,
     ticket_group,
 )
+from ak5.cli.commands.up import up_command
 from ak5.cli.commands.web import web_command
 from ak5.cli.commands.whoami import whoami_command
 from ak5.client.errors import ClientError
@@ -56,13 +57,24 @@ class AK5Group(click.Group):
     default=False,
     help="Emit JSON only on stdout (also: AK5_OUTPUT=json).",
 )
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Daemon profile to use for this command (also: AK5_PROFILE).",
+)
 @click.pass_context
-def cli(ctx: click.Context, json_output: bool) -> None:
+def cli(ctx: click.Context, json_output: bool, profile_name: str | None) -> None:
     """AK5 (Agent K5) - Agent-Orchestrated Kanban Command Line Interface.
 
     \b
+    Local quick start (zero-config):
+      ak5 up                                               # start Web UI + Daemon + default profiles
+      ak5 demo                                             # watch live multi-agent workflow on board
+
+    \b
     Agent happy path (pull model):
-      ak5 login --agent worker-1 --role worker --caps ..   # a human approves in the browser
+      ak5 login --agent worker-1 --role worker --caps ..   # or use `ak5 --profile worker ...` locally
       export AK5_PROFILE=worker-1
       # loop: ak5 next --wait 25 --json → ak5 ticket claim → work → ak5 ticket submit
       # or a wake hook: ak5 subscribe add --events WORK_AVAILABLE --exec '<curl or harness CLI>'
@@ -72,8 +84,20 @@ def cli(ctx: click.Context, json_output: bool) -> None:
     ctx.ensure_object(dict)
     env_json = os.environ.get("AK5_OUTPUT", "").strip().lower() == "json"
     ctx.obj["json"] = bool(json_output or env_json)
+    if profile_name:
+        prev_profile = os.environ.get("AK5_PROFILE")
+        os.environ["AK5_PROFILE"] = profile_name
+
+        def _restore_profile() -> None:
+            if prev_profile is None:
+                os.environ.pop("AK5_PROFILE", None)
+            else:
+                os.environ["AK5_PROFILE"] = prev_profile
+
+        ctx.call_on_close(_restore_profile)
 
 
+cli.add_command(up_command)
 cli.add_command(serve_command)
 cli.add_command(mcp_command)
 cli.add_command(board_command)

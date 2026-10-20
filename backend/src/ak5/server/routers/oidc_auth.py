@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -78,8 +79,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oidc-auth"])
 
 
-def _is_secure(request: Request) -> bool:
+def is_secure_request(request: Request) -> bool:
     return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+_is_secure = is_secure_request
 
 
 def _client_key(request: Request) -> str:
@@ -99,7 +103,7 @@ def _too_many_pending(exc: PendingLimitError) -> JSONResponse:
     )
 
 
-def _set_session_cookies(
+def set_session_cookies(
     response: Response,
     *,
     session_cookie: str,
@@ -124,6 +128,9 @@ def _set_session_cookies(
         path="/",
         max_age=60 * 60 * 24 * 14,
     )
+
+
+_set_session_cookies = set_session_cookies
 
 
 def _clear_session_cookies(response: Response, *, secure: bool) -> None:
@@ -434,15 +441,52 @@ async def oidc_logout(
     return response
 
 
-@router.get("/auth/me")
+def local_auto_login_enabled(request: Request) -> bool:
+    """True when ``AK5_LOCAL_AUTO_LOGIN=1`` (set by ``ak5 up``) on unguarded loopback."""
+    flag = os.environ.get("AK5_LOCAL_AUTO_LOGIN", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return False
+    if oidc_providers_configured() or local_owner_configured():
+        return False
+    return is_loopback_client(request)
+
+
+async def auto_create_local_web_session(db: AsyncSession) -> tuple[User, str, str]:
+    """Mint a loopback owner web session so local browser UI works without a login step."""
+    user = await ensure_local_owner_user(db)
+    session_cookie, csrf = await create_web_session_tokens(db, user.user_id)
+    await db.commit()
+    return user, session_cookie, csrf
+
+
+@router.get("/auth/me", response_model=None)
 async def auth_me(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     cookie = request.cookies.get(SESSION_COOKIE)
     resolved = await resolve_web_session(db, cookie)
     providers = [{"id": p.id, "issuer": p.issuer} for p in load_oidc_providers()]
     if resolved is None:
+        if local_auto_login_enabled(request):
+            user, session_cookie, csrf = await auto_create_local_web_session(db)
+            response = JSONResponse(
+                {
+                    "authenticated": True,
+                    "user_id": user.user_id,
+                    "display_name": user.display_name,
+                    "oidc_configured": oidc_providers_configured(),
+                    "local_owner_configured": local_owner_configured(),
+                    "providers": providers,
+                }
+            )
+            _set_session_cookies(
+                response,
+                session_cookie=session_cookie,
+                csrf_token=csrf,
+                secure=_is_secure(request),
+            )
+            return response
         return {
             "authenticated": False,
             "user_id": None,
@@ -475,11 +519,18 @@ async def mint_session_access_token(
     """
     cookie = request.cookies.get(SESSION_COOKIE)
     resolved = await resolve_web_session(db, cookie)
+    auto_cookies: tuple[str, str] | None = None
     if resolved is None:
-        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
-    user_id, csrf_hash = resolved
-    if not require_csrf_header(request.headers, csrf_hash):
-        return JSONResponse(status_code=403, content={"error": "CSRF validation failed"})
+        if local_auto_login_enabled(request):
+            user, session_cookie, csrf = await auto_create_local_web_session(db)
+            user_id = user.user_id
+            auto_cookies = (session_cookie, csrf)
+        else:
+            return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    else:
+        user_id, csrf_hash = resolved
+        if not require_csrf_header(request.headers, csrf_hash):
+            return JSONResponse(status_code=403, content={"error": "CSRF validation failed"})
 
     requested = (body.workspace_id if body else None) or None
     membership = None
@@ -521,13 +572,23 @@ async def mint_session_access_token(
     )
     ttl = session_token_ttl()
     token = issue_access_token(principal, ttl=ttl)
-    return SessionTokenOut(
+    out = SessionTokenOut(
         access_token=token,
         expires_in=int(ttl.total_seconds()),
         workspace_id=workspace_id,
         user_id=user_id,
         membership_role=membership.role if membership else None,
     )
+    if auto_cookies is not None:
+        response = JSONResponse(out.model_dump())
+        _set_session_cookies(
+            response,
+            session_cookie=auto_cookies[0],
+            csrf_token=auto_cookies[1],
+            secure=_is_secure(request),
+        )
+        return response
+    return out
 
 
 @router.post("/auth/csrf-check")

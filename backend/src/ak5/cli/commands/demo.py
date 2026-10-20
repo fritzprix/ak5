@@ -1,235 +1,378 @@
+"""``ak5 demo`` — interactive v2 multi-agent collaboration simulation."""
+
+from __future__ import annotations
+
 import asyncio
+from typing import Any
 
 import click
 import httpx
 from ak5.cli.config import get_api_url
+from ak5.daemon.credentials import load_credential
 from rich.console import Console
 from rich.panel import Panel
 
 console = Console()
 
+_DEMO_ACTORS: tuple[dict[str, Any], ...] = (
+    {
+        "profile": "me",
+        "id": "user_pm",
+        "type": "human",
+        "name": "David (PM)",
+        "role": "human",
+        "caps": ["planning"],
+    },
+    {
+        "profile": "triage",
+        "id": "agent_triage",
+        "type": "agent",
+        "name": "Triage Agent",
+        "role": "triage",
+        "caps": ["triage", "routing"],
+    },
+    {
+        "profile": "worker",
+        "id": "agent_image_worker",
+        "type": "agent",
+        "name": "Image Worker",
+        "role": "worker",
+        "caps": ["image-resize", "webp"],
+    },
+    {
+        "profile": "gatekeeper",
+        "id": "agent_code_reviewer",
+        "type": "agent",
+        "name": "Gatekeeper Reviewer",
+        "role": "gatekeeper",
+        "caps": ["code-review", "security"],
+    },
+)
 
-async def run_collaboration_simulation(api_url: str) -> None:
-    """Run E2E autonomous multi-agent collaboration scenario.
 
-    1. Human PM creates a feature ticket: "Profile Image Optimization System"
-    2. Orchestrator Agent inspects ticket, discovers available agents via capability search
-    3. Orchestrator delegates Subtask 1 to @agent_image_worker ("WebP Conversion Routine")
-    4. Orchestrator delegates Subtask 2 to @agent_code_reviewer ("Review & Security Audit")
-    5. @agent_image_worker moves subtask to In Progress, writes execution context, moves to Done
-    6. @agent_code_reviewer reviews subtask, signs off with comment, moves to Done
-    7. Orchestrator verifies all subtasks are done, closes parent ticket to Done.
+async def _resolve_demo_tokens(
+    client: httpx.AsyncClient,
+) -> dict[str, tuple[str, str]]:
+    """Return ``{profile_key: (token, actor_label)}`` using local profiles or /auth/identify."""
+    from ak5.security import identify_headers_from_env
+
+    id_headers = identify_headers_from_env()
+    resolved: dict[str, tuple[str, str]] = {}
+
+    for spec in _DEMO_ACTORS:
+        profile_name = spec["profile"]
+        cred = load_credential(profile_name)
+        if cred is not None and cred.status == "active" and cred.access_token:
+            # Verify token works against the running server
+            probe = await client.get(
+                "/boards",
+                headers={"Authorization": f"Bearer {cred.access_token}"},
+            )
+            if probe.status_code == 200:
+                actor_label = cred.actor_id or profile_name
+                resolved[profile_name] = (cred.access_token, actor_label)
+                console.print(
+                    f"  ✓ Profile [cyan]{profile_name}[/cyan] active "
+                    f"([dim]@{actor_label}, role={spec['role']}[/dim])"
+                )
+                continue
+
+        resp = await client.post(
+            "/auth/identify",
+            json={
+                "actor_id": spec["id"],
+                "actor_type": spec["type"],
+                "name": spec["name"],
+                "role": spec["role"],
+                "capabilities": spec["caps"],
+            },
+            headers=id_headers,
+        )
+        resp.raise_for_status()
+        token = resp.json()["access_token"]
+        resolved[profile_name] = (token, spec["id"])
+        console.print(
+            f"  ✓ Actor [cyan]@{spec['id']}[/cyan] active "
+            f"([dim]role={spec['role']}[/dim])"
+        )
+
+    return resolved
+
+
+async def run_collaboration_simulation(
+    api_url: str,
+    *,
+    board_id: str = "proj-core-engine",
+    auto_approve: bool = False,
+    step_delay: float = 1.0,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, Any]:
+    """Run E2E v2 autonomous multi-agent workflow scenario.
+
+    1. Human PM drops a request into the workspace Inbox (`unclassified`).
+    2. Triage Agent claims the Inbox item and routes it to ``board_id`` (`backlog`).
+    3. Worker Agent claims the ticket (`in_progress`), posts progress, and submits (`agent_review`).
+    4. Gatekeeper Agent claims the review and approves (`human_review`).
+    5. (Optional ``--auto-approve``) Human PM approves the ticket to `done`.
     """
-    console.print(Panel.fit(
-        "[bold cyan]AK5 Autonomous Multi-Agent Collaboration Simulation[/bold cyan]\n"
-        "[dim]Human PM ➔ Orchestrator Agent ➔ Image Worker Agent & Reviewer Agent[/dim]",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel.fit(
+            "[bold cyan]AK5 v2 Multi-Agent Workflow Simulation[/bold cyan]\n"
+            "[dim]Inbox (Human) ➔ Route (Triage) ➔ Execute (Worker) ➔ Verdict (Gatekeeper) ➔ Human Review[/dim]",
+            border_style="cyan",
+        )
+    )
 
-    async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
-        # Step 0: Ensure actors
-        console.print("\n[bold yellow][Phase 0] Registering Actors...[/bold yellow]")
-        from ak5.security import identify_headers_from_env
+    async with httpx.AsyncClient(
+        base_url=api_url, timeout=30.0, transport=transport
+    ) as client:
+        console.print("\n[bold yellow][Phase 0] Resolving Local Profiles & Actors...[/bold yellow]")
+        tokens = await _resolve_demo_tokens(client)
+        pm_token, _pm_id = tokens["me"]
+        triage_token, triage_id = tokens["triage"]
+        worker_token, worker_id = tokens["worker"]
+        gk_token, gk_id = tokens["gatekeeper"]
 
-        id_headers = identify_headers_from_env()
-        for actor in [
-            {"id": "user_pm", "type": "human", "name": "David (PM)", "role": "PM", "caps": ["planning"]},
-            {"id": "agent_orchestrator", "type": "agent", "name": "Orchestrator Agent", "role": "Lead Architect", "caps": ["orchestration", "breakdown"]},
-            {"id": "agent_image_worker", "type": "agent", "name": "Image Worker", "role": "Media Specialist", "caps": ["image-resize", "webp"]},
-            {"id": "agent_code_reviewer", "type": "agent", "name": "Code Reviewer", "role": "Senior Reviewer", "caps": ["code-review", "security"]},
-        ]:
-            resp = await client.post("/auth/identify", json={
-                "actor_id": actor["id"],
-                "actor_type": actor["type"],
-                "name": actor["name"],
-                "role": actor["role"],
-                "capabilities": actor["caps"],
-            }, headers=id_headers)
-            resp.raise_for_status()
-            token = resp.json()["access_token"]
-            if actor["id"] == "user_pm":
-                pm_token = token
-            elif actor["id"] == "agent_orchestrator":
-                orch_token = token
-            elif actor["id"] == "agent_image_worker":
-                worker_token = token
-            elif actor["id"] == "agent_code_reviewer":
-                reviewer_token = token
-            console.print(f"  ✓ Actor @{actor['id']} active [{actor['type']}]")
-
-        board_id = "proj-core-engine"
-        board_resp = await client.get(f"/boards/{board_id}")
-        board_resp.raise_for_status()
-        board_data = board_resp.json()
-        col_map = {c["stage"]: c["column_id"] for c in board_data["columns"]}
-
-        # Step 1: Human PM registers master ticket
-        console.print("\n[bold yellow][Step 1] Human PM registers master ticket...[/bold yellow]")
-        t_resp = await client.post(
+        # Step 1: Human creates an Inbox request
+        console.print("\n[bold yellow][Step 1] Human drops a request into Inbox...[/bold yellow]")
+        create_resp = await client.post(
             "/tickets",
             json={
                 "title": "Profile Image Optimization System",
-                "description": "Implement automated avatar resizing to 200x200 WebP format with security audit.",
-                "board_id": board_id,
-                "column_id": col_map["open"],
-                "priority": "high",
-                "labels": ["avatar", "optimization"],
+                "description": (
+                    "Implement automated avatar resizing to 200x200 WebP format "
+                    "with decompression-bomb protection."
+                ),
             },
             headers={"Authorization": f"Bearer {pm_token}"},
         )
-        t_resp.raise_for_status()
-        parent_ticket = t_resp.json()
-        parent_id = parent_ticket["ticket_id"]
-        console.print(f"  ✓ Created Parent Ticket: [cyan]{parent_id}[/cyan] ('{parent_ticket['title']}')")
-        await asyncio.sleep(1)
-
-        # Step 2: Orchestrator agent picks up ticket & moves to In Progress
-        console.print("\n[bold yellow][Step 2] Orchestrator analyzes requirements & searches capabilities...[/bold yellow]")
-        await client.patch(
-            f"/tickets/{parent_id}/move",
-            json={"target_column_id": col_map["in_progress"]},
-            headers={"Authorization": f"Bearer {orch_token}"},
+        create_resp.raise_for_status()
+        ticket = create_resp.json()
+        ticket_id = ticket["ticket_id"]
+        console.print(
+            f"  ✓ Created Inbox Ticket: [cyan]{ticket_id}[/cyan] "
+            f"(stage=[magenta]{ticket.get('stage')}[/magenta])"
         )
-        console.print(f"  ✓ Ticket {parent_id} moved to [yellow]In Progress[/yellow] by @agent_orchestrator")
+        if step_delay > 0:
+            await asyncio.sleep(step_delay)
 
-        # Discovery query: find image worker
-        disc_img = (await client.get("/actors/discovery?capability=image-resize")).json()
-        image_agent_id = disc_img[0]["actor_id"]
-        console.print(f"  ✓ Discovered specialist agent for image optimization: [magenta]@{image_agent_id}[/magenta]")
+        # Step 2: Triage agent claims and routes to target board backlog
+        console.print(
+            f"\n[bold yellow][Step 2] Triage Agent (@{triage_id}) routes ticket to {board_id}...[/bold yellow]"
+        )
+        triage_claim_resp = await client.post(
+            f"/tickets/{ticket_id}/claim",
+            headers={"Authorization": f"Bearer {triage_token}"},
+        )
+        triage_claim_resp.raise_for_status()
+        triage_claim = triage_claim_resp.json()["claim_token"]
 
-        # Discovery query: find reviewer
-        disc_rev = (await client.get("/actors/discovery?capability=code-review")).json()
-        reviewer_agent_id = disc_rev[0]["actor_id"]
-        console.print(f"  ✓ Discovered specialist agent for review: [magenta]@{reviewer_agent_id}[/magenta]")
-        await asyncio.sleep(1)
-
-        # Step 3: Orchestrator delegates Subtask 1 to Image Worker
-        console.print("\n[bold yellow][Step 3] Orchestrator delegates Subtask 1 to Worker...[/bold yellow]")
-        del1_resp = await client.post(
-            f"/tickets/{parent_id}/delegate",
+        route_resp = await client.post(
+            f"/tickets/{ticket_id}/route",
             json={
-                "target_actor_id": image_agent_id,
-                "subtask_title": "Implement WebP Converter Routine",
-                "subtask_description": "Convert raw PNG/JPEG buffer to 200x200 WebP with 85% quality factor.",
-                "priority": "high",
-                "labels": ["worker", "webp"],
+                "claim_token": triage_claim,
+                "plan": {
+                    "target": {"board_id": board_id},
+                    "refined_title": "Profile Image Optimization System (WebP 200x200)",
+                    "refined_spec": (
+                        "Convert avatar uploads to 200x200 WebP format at 85% quality "
+                        "and reject images larger than 4096x4096 pixels."
+                    ),
+                    "acceptance_criteria": [
+                        "Convert avatar uploads to 200x200 WebP (85% quality)",
+                        "Enforce 4096px max input dimension guard",
+                    ],
+                },
             },
-            headers={"Authorization": f"Bearer {orch_token}"},
+            headers={"Authorization": f"Bearer {triage_token}"},
         )
-        sub1 = del1_resp.json()
-        sub1_id = sub1["ticket_id"]
-        console.print(f"  ✓ Subtask [cyan]{sub1_id}[/cyan] delegated to [magenta]@{image_agent_id}[/magenta]")
-        await asyncio.sleep(1)
+        route_resp.raise_for_status()
+        ticket = route_resp.json()
+        console.print(
+            f"  ✓ Ticket [cyan]{ticket_id}[/cyan] routed to [cyan]{board_id}[/cyan] "
+            f"➔ stage=[yellow]{ticket.get('stage')}[/yellow]"
+        )
+        if step_delay > 0:
+            await asyncio.sleep(step_delay)
 
-        # Step 4: Worker processes Subtask 1
-        console.print("\n[bold yellow][Step 4] Image Worker processes Subtask 1...[/bold yellow]")
-        await client.patch(
-            f"/tickets/{sub1_id}/move",
-            json={"target_column_id": col_map["in_progress"]},
+        # Step 3: Worker claims ticket from backlog -> in_progress
+        console.print(
+            f"\n[bold yellow][Step 3] Worker Agent (@{worker_id}) claims & executes work...[/bold yellow]"
+        )
+        worker_claim_resp = await client.post(
+            f"/tickets/{ticket_id}/claim",
             headers={"Authorization": f"Bearer {worker_token}"},
         )
-        console.print(f"  ✓ {sub1_id} status ➔ [yellow]In Progress[/yellow]")
+        worker_claim_resp.raise_for_status()
+        claim_data = worker_claim_resp.json()
+        worker_claim = claim_data["claim_token"]
+        ticket = claim_data["ticket"]
+        console.print(
+            f"  ✓ {ticket_id} claimed by @{worker_id} "
+            f"➔ stage=[yellow]{ticket.get('stage')}[/yellow]"
+        )
+        if step_delay > 0:
+            await asyncio.sleep(step_delay)
 
         await client.post(
-            f"/tickets/{sub1_id}/comments",
+            f"/tickets/{ticket_id}/comments",
             json={
-                "content": "Generated PIL image transform logic; benchmarked at 12ms per 1024x1024 input.",
+                "content": (
+                    "Implemented Pillow WebP transform routine; benchmarked at 12ms "
+                    "per 1024x1024 frame with 78% size reduction."
+                ),
                 "is_internal": True,
-                "metadata": {"execution_time_ms": 12, "compression_ratio": "78%"},
             },
             headers={"Authorization": f"Bearer {worker_token}"},
         )
 
-        await client.patch(
-            f"/tickets/{sub1_id}/move",
-            json={"target_column_id": col_map["done"]},
+        # Step 4: Worker submits deliverable -> agent_review
+        console.print(
+            f"\n[bold yellow][Step 4] Worker Agent (@{worker_id}) submits deliverable...[/bold yellow]"
+        )
+        submit_resp = await client.post(
+            f"/tickets/{ticket_id}/submit",
+            json={
+                "claim_token": worker_claim,
+                "deliverable": {
+                    "summary": (
+                        "Added 200x200 WebP converter with 85% quality factor and "
+                        "4096px max-dimension check."
+                    ),
+                    "artifacts": [
+                        {
+                            "kind": "text",
+                            "ref": "Benchmark: 12ms/image, 78% compression ratio, CVE-2023-4863 guard enabled.",
+                        }
+                    ],
+                },
+            },
             headers={"Authorization": f"Bearer {worker_token}"},
         )
-        console.print(f"  ✓ {sub1_id} status ➔ [green]Done[/green] with artifact context")
-        await asyncio.sleep(1)
+        submit_resp.raise_for_status()
+        ticket = submit_resp.json()
+        console.print(
+            f"  ✓ Deliverable submitted by @{worker_id} "
+            f"➔ stage=[cyan]{ticket.get('stage')}[/cyan]"
+        )
+        if step_delay > 0:
+            await asyncio.sleep(step_delay)
 
-        # Step 5: Orchestrator delegates Subtask 2 to Code Reviewer
-        console.print("\n[bold yellow][Step 5] Orchestrator delegates Subtask 2 for Review...[/bold yellow]")
-        del2_resp = await client.post(
-            f"/tickets/{parent_id}/delegate",
+        # Step 5: Gatekeeper claims review and approves -> human_review
+        console.print(
+            f"\n[bold yellow][Step 5] Gatekeeper Agent (@{gk_id}) audits deliverable...[/bold yellow]"
+        )
+        gk_claim_resp = await client.post(
+            f"/tickets/{ticket_id}/claim",
+            headers={"Authorization": f"Bearer {gk_token}"},
+        )
+        gk_claim_resp.raise_for_status()
+        gk_claim = gk_claim_resp.json()["claim_token"]
+
+        verdict_resp = await client.post(
+            f"/tickets/{ticket_id}/verdict",
             json={
-                "target_actor_id": reviewer_agent_id,
-                "subtask_title": "Security & Boundary Review for WebP Converter",
-                "subtask_description": "Audit buffer overflow checks and decompression bomb protection.",
-                "priority": "urgent",
-                "labels": ["security", "audit"],
+                "claim_token": gk_claim,
+                "verdict": {
+                    "decision": "approve",
+                    "reason": (
+                        "LGTM! Verified 4096px decompression-bomb guard and WebP "
+                        "buffer bounds."
+                    ),
+                    "findings": [
+                        {
+                            "criterion": "Convert avatar uploads to 200x200 WebP (85% quality)",
+                            "pass": True,
+                            "note": "Verified 200x200 output dimensions and quality factor.",
+                        },
+                        {
+                            "criterion": "Enforce 4096px max input dimension guard",
+                            "pass": True,
+                            "note": "Verified CVE-2023-4863 pixel bound check.",
+                        },
+                    ],
+                },
             },
-            headers={"Authorization": f"Bearer {orch_token}"},
+            headers={"Authorization": f"Bearer {gk_token}"},
         )
-        sub2 = del2_resp.json()
-        sub2_id = sub2["ticket_id"]
-        console.print(f"  ✓ Subtask [cyan]{sub2_id}[/cyan] delegated to [magenta]@{reviewer_agent_id}[/magenta]")
-        await asyncio.sleep(1)
-
-        # Step 6: Code Reviewer processes Subtask 2
-        console.print("\n[bold yellow][Step 6] Code Reviewer audits implementation...[/bold yellow]")
-        await client.patch(
-            f"/tickets/{sub2_id}/move",
-            json={"target_column_id": col_map["in_progress"]},
-            headers={"Authorization": f"Bearer {reviewer_token}"},
+        verdict_resp.raise_for_status()
+        ticket = verdict_resp.json()
+        console.print(
+            f"  ✓ Gatekeeper approved {ticket_id} "
+            f"➔ stage=[green]{ticket.get('stage')}[/green]"
         )
 
-        await client.post(
-            f"/tickets/{sub2_id}/comments",
-            json={
-                "content": "LGTM! Input pixel limit set to 4096 to prevent memory denial-of-service. Approved.",
-                "is_internal": False,
-                "metadata": {"approved": True, "cve_checked": ["CVE-2023-4863"]},
-            },
-            headers={"Authorization": f"Bearer {reviewer_token}"},
-        )
+        if auto_approve:
+            if step_delay > 0:
+                await asyncio.sleep(step_delay)
+            console.print(
+                "\n[bold yellow][Step 6] Human PM approves final sign-off...[/bold yellow]"
+            )
+            rev_resp = await client.post(
+                f"/tickets/{ticket_id}/verdict",
+                json={
+                    "verdict": {
+                        "decision": "approve",
+                        "reason": "Approved for production release.",
+                    }
+                },
+                headers={"Authorization": f"Bearer {pm_token}"},
+            )
+            rev_resp.raise_for_status()
+            ticket = rev_resp.json()
+            console.print(
+                f"  ✓ Ticket [cyan]{ticket_id}[/cyan] signed off "
+                f"➔ stage=[bold green]{ticket.get('stage')}[/bold green]"
+            )
 
-        await client.patch(
-            f"/tickets/{sub2_id}/move",
-            json={"target_column_id": col_map["done"]},
-            headers={"Authorization": f"Bearer {reviewer_token}"},
-        )
-        console.print(f"  ✓ {sub2_id} status ➔ [green]Done[/green]")
-        await asyncio.sleep(1)
+        if auto_approve:
+            next_hint = f"Ticket [cyan]{ticket_id}[/cyan] is now in [bold green]Done[/bold green]!"
+        else:
+            next_hint = (
+                f"Ticket [cyan]{ticket_id}[/cyan] is now in [bold green]Human Review[/bold green]!\n"
+                f"👉 Approve it in the Web Dashboard or run:\n"
+                f"   [cyan]ak5 ticket verdict {ticket_id} --approve --reason \"Ship it\"[/cyan]"
+            )
 
-        # Step 7: Orchestrator closes Parent Ticket
-        console.print("\n[bold yellow][Step 7] Orchestrator closes Parent Ticket...[/bold yellow]")
-        final_check = (await client.get(f"/tickets/{parent_id}")).json()
-        console.print(f"  Subtasks completion status: [green]{final_check['subtask_done_count']}/{final_check['subtask_count']} Done[/green]")
-
-        await client.patch(
-            f"/tickets/{parent_id}/move",
-            json={"target_column_id": col_map["done"]},
-            headers={"Authorization": f"Bearer {orch_token}"},
+        console.print(
+            Panel.fit(
+                "[bold green]🎉 v2 Multi-Agent Simulation Completed![/bold green]\n"
+                f"{next_hint}",
+                border_style="green",
+            )
         )
-        await client.post(
-            f"/tickets/{parent_id}/comments",
-            json={
-                "content": "All subtasks (implementation + security review) successfully completed. Closing ticket.",
-                "is_internal": False,
-            },
-            headers={"Authorization": f"Bearer {orch_token}"},
-        )
-        console.print(f"  ✓ Master Ticket [cyan]{parent_id}[/cyan] successfully resolved and moved to [green]Done[/green]!")
-
-        console.print(Panel.fit(
-            "[bold green]🎉 E2E Collaboration Simulation Completed Successfully![/bold green]\n"
-            f"View live board: [cyan]ak5 board --board-id {board_id}[/cyan]",
-            border_style="green",
-        ))
+        return ticket
 
 
 @click.command("demo")
-def demo_command() -> None:
-    """Run automated autonomous multi-agent collaboration demonstration."""
+@click.option(
+    "--board",
+    "board_id",
+    default="proj-core-engine",
+    show_default=True,
+    help="Target board ID for routing the demo ticket",
+)
+@click.option(
+    "--auto-approve",
+    is_flag=True,
+    help="Also run the final human sign-off step to move the ticket to Done",
+)
+def demo_command(board_id: str, auto_approve: bool) -> None:
+    """Run an interactive v2 multi-agent collaboration demo on your local board."""
     api_url = get_api_url()
     try:
-        asyncio.run(run_collaboration_simulation(api_url))
+        asyncio.run(
+            run_collaboration_simulation(
+                api_url,
+                board_id=board_id,
+                auto_approve=auto_approve,
+            )
+        )
     except httpx.ConnectError:
         console.print(f"[bold red]✗ Cannot connect to AK5 Gateway at {api_url}[/bold red]")
         console.print(
-            "Please start the backend server in another terminal:\n"
-            "  [yellow]uv run uvicorn ak5.server.app:app[/yellow]"
+            "Start the local AK5 environment first in another terminal:\n"
+            "  [bold cyan]ak5 up[/bold cyan]"
         )
-    except Exception as e:
-        console.print(f"[bold red]✗ Simulation failed:[/bold red] {e}")
+    except Exception as exc:
+        console.print(f"[bold red]✗ Simulation failed:[/bold red] {exc}")

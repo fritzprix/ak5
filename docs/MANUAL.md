@@ -30,7 +30,8 @@ AK5는 **agent 루프가 붙어 일하고, 사람이 최종 승인하는 칸반 
 
 | 구성 요소 | 하는 일 |
 |---|---|
-| `ak5 serve` | API 서버 + 웹 대시보드 (같은 포트). `ak5[server]` extra 필요 |
+| `ak5 up` | 로컬 무설정 통합 런처 (API + 웹 대시보드 + daemon + 기본 profile 4종 자동 구성) |
+| `ak5 serve` | API 서버 + 웹 대시보드 (비밀번호/OIDC/Tailscale 등 상세 설정용). `ak5[server]` extra 필요 |
 | 웹 UI | 요청 등록, 보드 보기, 최종 verdict, blocked 처리, workspace·멤버·agent 관리, device 승인 |
 | `ak5` CLI | 모든 동사의 단일 진입점. 명령 1회 실행 후 종료 (무상태) |
 | `ak5 daemon` | profile별 credential 보관과 토큰 발급, 이벤트 수신·spool·fan-out, hook 실행 |
@@ -48,9 +49,29 @@ AK5는 **agent 루프가 붙어 일하고, 사람이 최종 승인하는 칸반 
 | `pip install 'ak5[server]'` | + 서버(FastAPI, SQLite), 내장 웹 대시보드 | 서버를 띄우는 머신 |
 | `pip install 'ak5[mcp]'` | + MCP 어댑터 (선택, §8) | MCP만 쓸 수 있는 호스트 |
 
-`uv tool install 'ak5[server]'`도 같다. 설치 없이 실행하려면 `uvx --from 'ak5[server]' ak5 serve --ui`.
+`uv tool install 'ak5[server]'`도 같다. 설치 없이 실행하려면 `uvx --from 'ak5[server]' ak5 up`.
 
-### 2.2 서버 시작
+### 2.2 로컬 무설정 1줄 시작 (`ak5 up` — 권장)
+
+혼자서 로컬 머신에서 바로 써보려면 비밀번호나 디바이스 코드 승인 없이 `ak5 up` 한 줄이면 된다:
+
+```bash
+ak5 up                                       # http://127.0.0.1:8000 (웹 UI + daemon + 기본 profile 자동 생성)
+```
+
+- 로컬 DB 초기화, 내장 웹 대시보드, 클라이언트 데몬 실행은 물론 `~/.ak5/profiles.toml`과 `~/.ak5/credentials/`에 기본 프로필 4종(`me` [기본값], `triage`, `worker`, `gatekeeper`)을 자동으로 발급한다.
+- 루프백(`127.0.0.1`) 브라우저로 접속하면 별도 로그인 없이 local owner(`usr_local_pm`)로 자동 로그인된다.
+- 다른 터미널에서 바로 데모나 명령을 실행해 볼 수 있다:
+
+```bash
+ak5 demo                                     # Inbox ➔ Backlog ➔ In Progress ➔ Review 실시간 시뮬레이션
+ak5 ticket create "다크 모드 추가"            # 기본 'me' 프로필로 Inbox에 요청 등록
+AK5_PROFILE=worker ak5 next --wait 25        # 기본 'worker' 프로필로 작업 대기
+```
+
+### 2.3 비밀번호 보호 및 수동 서버 시작 (`ak5 serve`)
+
+비밀번호 로그인이나 에이전트별 수동 OAuth 디바이스 승인을 직접 제어하려면 `ak5 serve`를 쓴다:
 
 ```bash
 export AK5_AUTH_PASSWORD='원하는-비밀번호'   # 내장 local owner 계정 (loopback 로그인 전용)
@@ -64,7 +85,7 @@ ak5 serve --ui                               # http://127.0.0.1:8000 (API + 대�
 
 API 문서는 `http://127.0.0.1:8000/docs`에 있다.
 
-### 2.3 사람과 agent 로그인
+### 2.4 사람과 agent 수동 로그인 (`ak5 login`)
 
 한 머신 안의 신원마다 **profile**을 하나씩 만든다. `ak5 login`은 코드와 승인 URL(`http://127.0.0.1:8000/device?code=…`)을 출력한다. 로그인된 브라우저에서 그 URL을 열고 승인하면 CLI가 끝난다.
 
@@ -80,7 +101,7 @@ ak5 profile list
 - 원격 서버라면 `--url https://ak5.example.com/api/v1`을 붙인다 (기본값 `http://127.0.0.1:8000/api/v1`).
 - daemon은 필요할 때 자동으로 시작된다 (`ak5 daemon status`). credential은 `~/.ak5/credentials/`에 저장되고 harness 환경에는 노출되지 않는다.
 
-### 2.4 루프 한 번 돌려 보기
+### 2.5 루프 한 번 돌려 보기
 
 ```bash
 # 사람: 요청 등록 → inbox
