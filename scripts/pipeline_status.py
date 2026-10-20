@@ -32,14 +32,19 @@ PIPELINE_LABELS = (
     "pipeline:escalated",
 )
 
+_LIST_LIMIT = 100
+
 _DEP_SECTION = re.compile(
     r"##\s*의존\s*\n(.*?)(?=\n##\s|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
 _ISSUE_REF = re.compile(r"#(\d+)\b")
 
+# Module-level cache: issue number → state ("OPEN" / "CLOSED" / "MISSING")
+_issue_state_cache: dict[int, str] = {}
 
-def _gh_json(args: list[str]) -> Any:
+
+def _gh_json(args: list[str], *, allow_fail: bool = False) -> Any:
     proc = subprocess.run(
         ["gh", *args],
         capture_output=True,
@@ -51,6 +56,8 @@ def _gh_json(args: list[str]) -> Any:
     )
     if proc.returncode != 0:
         err = (proc.stderr or "").strip()
+        if allow_fail:
+            return None
         raise SystemExit(err or f"gh failed: {' '.join(args)}")
     out = proc.stdout or ""
     return json.loads(out) if out.strip() else None
@@ -71,13 +78,21 @@ def _dep_numbers(body: str) -> list[int]:
 
 
 def _issue_states(numbers: list[int]) -> dict[int, str]:
-    if not numbers:
-        return {}
-    # Batch via gh issue view is N calls; use search for open set + per-id fallback.
+    """Resolve states with a process-wide cache; skip missing numbers with a warning."""
     out: dict[int, str] = {}
     for num in numbers:
-        data = _gh_json(["issue", "view", str(num), "--json", "state"])
-        out[num] = str(data["state"])
+        if num in _issue_state_cache:
+            out[num] = _issue_state_cache[num]
+            continue
+        data = _gh_json(["issue", "view", str(num), "--json", "state"], allow_fail=True)
+        if data is None or "state" not in data:
+            print(f"warning: skipping dependency #{num} (missing or unreadable)", file=sys.stderr)
+            _issue_state_cache[num] = "MISSING"
+            out[num] = "MISSING"
+            continue
+        state = str(data["state"]).upper()
+        _issue_state_cache[num] = state
+        out[num] = state
     return out
 
 
@@ -89,11 +104,17 @@ def collect() -> list[dict[str, Any]]:
             "--state",
             "open",
             "--limit",
-            "100",
+            str(_LIST_LIMIT),
             "--json",
             "number,title,labels,body",
         ]
     )
+    if isinstance(issues, list) and len(issues) >= _LIST_LIMIT:
+        print(
+            f"warning: open issue list hit --limit {_LIST_LIMIT}; "
+            "results may be truncated",
+            file=sys.stderr,
+        )
     rows: list[dict[str, Any]] = []
     for issue in issues or []:
         labels = [lab["name"] for lab in issue.get("labels") or []]
@@ -102,7 +123,7 @@ def collect() -> list[dict[str, Any]]:
             continue
         deps = _dep_numbers(issue.get("body") or "")
         dep_states = _issue_states(deps)
-        open_deps = [n for n, st in dep_states.items() if st.upper() == "OPEN"]
+        open_deps = [n for n, st in dep_states.items() if st == "OPEN"]
         inferred = "blocked" if open_deps else "ready"
         rows.append(
             {
