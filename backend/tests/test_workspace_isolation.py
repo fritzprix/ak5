@@ -554,7 +554,7 @@ async def test_sse_stream_is_scoped_to_caller_workspace(
         headers=auth_headers("user_pm", "human"),
     )
     assert made.status_code == 201, made.text
-    monkeypatch.setattr("ak5.routers.events.event_bus.wait_for_notify", _stop_wait)
+    monkeypatch.setattr("ak5.routers.events.wait_for_wake", _stop_wait)
 
     def bearer(principal: Principal) -> dict[str, str]:
         return {"Authorization": f"Bearer {issue_access_token(principal)}"}

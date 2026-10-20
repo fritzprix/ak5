@@ -90,6 +90,9 @@ async def lifespan(app: FastAPI):
     from ak5.server.config import get_deploy_profile
 
     get_deploy_profile()
+    from ak5.server.config import validate_notify_config
+
+    validate_notify_config()
     # One source of truth before create_all/seed — covers raw `uvicorn ak5.server.app:app`
     # (Docker/harness) which never passes through `ak5 serve` / `ak5 web` CLI gates.
     # Daemon is never started here (events.md §4.5 / cli.md §4.1): use `ak5 serve --daemon`.
@@ -120,7 +123,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to snapshot live database on startup")
     # Server no longer starts a background exec listener (events.md §0 / #11).
-    yield
+    from ak5.server.services.notify import notify_lifespan
+
+    async with notify_lifespan():
+        yield
     # Shutdown engine
     await engine.dispose()
 

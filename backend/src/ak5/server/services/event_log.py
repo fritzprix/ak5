@@ -39,22 +39,18 @@ def _bus_payload(ev: Event) -> dict[str, Any]:
 
 def _schedule_bus_publish(event_type: str, data: dict[str, Any]) -> None:
     try:
-        from ak5.server.services.event_bus import event_bus
-    except Exception:
-        logger.exception("event_bus import failed; skipping notify")
-        return
-
-    try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        logger.debug("No running loop for event_bus notify (type=%s)", event_type)
+        logger.debug("No running loop for event wake notify (type=%s)", event_type)
         return
 
     async def _publish() -> None:
         try:
-            await event_bus.publish(event_type, data)
+            from ak5.server.services.notify import publish_wake
+
+            await publish_wake(event_type=event_type, data=data)
         except Exception:
-            logger.exception("event_bus.publish failed for type=%s", event_type)
+            logger.exception("publish_wake failed for type=%s", event_type)
 
     loop.create_task(_publish())
 
