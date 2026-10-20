@@ -10,6 +10,7 @@ from ak5.server.auth.principal import Principal
 from ak5.server.auth.tokens import issue_access_token
 from ak5.server.models.actor import Actor
 from ak5.server.models.board import Board
+from ak5.server.models.column import Column
 from ak5.server.models.workspace import (
     LOCAL_WORKSPACE_ID,
     Membership,
@@ -91,6 +92,14 @@ async def test_create_workspace_provisions_inbox(
     assert board is not None
     assert board.kind == "inbox"
     assert board.workspace_id == body["workspace_id"]
+
+    cols = (
+        await test_db.execute(
+            select(Column).where(Column.board_id == body["inbox_board_id"])
+        )
+    ).scalars().all()
+    assert cols, "inbox must provision at least one column"
+    assert all(c.workspace_id == body["workspace_id"] for c in cols)
 
 
 @pytest.mark.asyncio

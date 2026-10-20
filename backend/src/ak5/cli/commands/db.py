@@ -197,12 +197,12 @@ def maintenance_cmd(
     if reconcile_usage:
         import asyncio
 
-        from ak5.server.database import AsyncSessionLocal, ensure_database_schema
+        from ak5.server.database import ensure_database_schema, open_admin_session
         from ak5.server.quota import reconcile_attachment_bytes
 
         async def _reconcile() -> dict[str, int]:
             await ensure_database_schema()
-            async with AsyncSessionLocal() as session, session.begin():
+            async with open_admin_session() as session, session.begin():
                 return await reconcile_attachment_bytes(session)
 
         reconciled = asyncio.run(_reconcile())
@@ -212,13 +212,13 @@ def maintenance_cmd(
         import asyncio
 
         from ak5.server.blob import get_blob_store
-        from ak5.server.database import AsyncSessionLocal, ensure_database_schema
+        from ak5.server.database import ensure_database_schema, open_admin_session
         from ak5.server.services.blob_gc import sweep_blob_gc as run_sweep_blob_gc
 
         async def _sweep() -> dict[str, int]:
             await ensure_database_schema()
             store = get_blob_store()
-            async with AsyncSessionLocal() as session:
+            async with open_admin_session() as session:
                 return await run_sweep_blob_gc(session, store)
 
         stats = asyncio.run(_sweep())
@@ -229,12 +229,12 @@ def maintenance_cmd(
     if purge_events:
         import asyncio
 
-        from ak5.server.database import AsyncSessionLocal, ensure_database_schema
+        from ak5.server.database import ensure_database_schema, open_admin_session
         from ak5.server.services.subscription_service import subscription_service
 
         async def _run_purge():
             await ensure_database_schema()
-            async with AsyncSessionLocal() as session:
+            async with open_admin_session() as session:
                 deleted = await subscription_service.purge_expired_events(session, force=True)
                 await session.commit()
                 return deleted
