@@ -16,9 +16,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ _REPO = _SCRIPTS.parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from pipeline_lib import load_sibling  # noqa: E402
+from pipeline_lib import gh_run, load_sibling  # noqa: E402
 
 
 def _find_agent() -> str | None:
@@ -42,15 +44,60 @@ def _agent_argv(agent_bin: str, prompt: str, worktree: Path) -> list[str]:
     base = Path(agent_bin).name.lower()
     if base in {"cursor", "cursor.exe"}:
         return [agent_bin, "agent", "-p", prompt, "--workspace", str(worktree)]
-    # `agent` CLI
     return [agent_bin, "-p", prompt, "--workspace", str(worktree)]
 
 
 def _build_prompt(number: int, title: str) -> str:
     return (
-        f"Implement GitHub issue #{number}: {title}\n"
-        f"Base branch: feat/workflow-v2. Open a PR with Closes #{number}.\n"
+        f"Implement GitHub issue #{number}: {title}. "
+        f"Base branch: feat/workflow-v2. Open a PR with Closes #{number}. "
         "Follow docs/pipeline.md worker conventions. Do not merge."
+    )
+
+
+def _fmt_cmd(argv: list[str]) -> str:
+    return shlex.join(argv)
+
+
+def _post_issue_comment(number: int, body: str) -> None:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        suffix=".md",
+        delete=False,
+    ) as handle:
+        handle.write(body)
+        path = handle.name
+    try:
+        proc = gh_run(
+            ["issue", "comment", str(number), "--body-file", path],
+            allow_fail=True,
+        )
+        if proc.returncode != 0:
+            print(
+                f"warning: failed to comment on #{number}: {(proc.stderr or '').strip()}",
+                file=sys.stderr,
+            )
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _result_comment(plan: dict[str, Any], *, mode: str) -> str:
+    agent_exit = plan.get("agent_exit")
+    agent_line = _fmt_cmd([str(x) for x in plan["agent"]])
+    status = "ok"
+    if mode == "worktree+agent" and agent_exit not in (0, None):
+        status = f"agent_exit={agent_exit}"
+    return (
+        f"## pipeline_launch ({mode})\n\n"
+        f"- status: `{status}`\n"
+        f"- branch: `{plan['branch']}`\n"
+        f"- worktree: `{plan['worktree']}`\n"
+        f"- agent: `{agent_line}`\n"
+        f"- agent_found: `{plan['agent_found']}`\n"
     )
 
 
@@ -73,6 +120,11 @@ def main() -> int:
         default=None,
         help="Force issue number instead of pipeline_pick",
     )
+    parser.add_argument(
+        "--no-comment",
+        action="store_true",
+        help="Skip posting an issue comment after --worktree / --launch-agent",
+    )
     args = parser.parse_args()
     if args.launch_agent and not args.worktree:
         raise SystemExit("--launch-agent requires --worktree")
@@ -83,7 +135,6 @@ def main() -> int:
     if args.issue is not None:
         chosen = next((r for r in rows if int(r["number"]) == args.issue), None)
         if chosen is None:
-            # Allow forced issue even if not in status list
             chosen = {
                 "number": args.issue,
                 "title": f"issue-{args.issue}",
@@ -116,6 +167,7 @@ def main() -> int:
         "title": title,
         "branch": branch,
         "worktree": str(wt),
+        "prompt": prompt,
         "fetch": ["git", "fetch", "origin", "feat/workflow-v2"],
         "branch_cmd": [
             "git",
@@ -128,6 +180,7 @@ def main() -> int:
         ],
         "agent": agent_cmd,
         "agent_found": agent_bin is not None,
+        "mode": "dry-run",
     }
 
     if args.worktree:
@@ -136,12 +189,17 @@ def main() -> int:
         subprocess.run(["git", "fetch", "origin", "feat/workflow-v2"], cwd=_REPO, check=True)
         subprocess.run(plan["branch_cmd"], cwd=_REPO, check=True)
         plan["worktree_created"] = True
+        plan["mode"] = "worktree"
         if args.launch_agent:
             if not agent_bin:
                 raise SystemExit("neither `agent` nor `cursor` found on PATH")
             env = {**os.environ, "AK5_PIPELINE_ISSUE": str(number)}
             proc = subprocess.run(agent_cmd, cwd=wt, env=env, check=False)
             plan["agent_exit"] = proc.returncode
+            plan["mode"] = "worktree+agent"
+        if not args.no_comment:
+            _post_issue_comment(number, _result_comment(plan, mode=str(plan["mode"])))
+            plan["commented"] = True
 
     if args.json:
         json.dump(plan, sys.stdout, ensure_ascii=False, indent=2)
@@ -150,14 +208,18 @@ def main() -> int:
         print(f"PICK #{number}  {title}")
         print(f"branch={branch}")
         print(f"worktree={wt}")
+        print(f"prompt={prompt!r}")
         print("commands:")
-        print(f"  $ {' '.join(plan['fetch'])}")
-        print(f"  $ {' '.join(plan['branch_cmd'])}")
-        print(f"  $ {' '.join(agent_cmd)}")
+        print(f"  $ {_fmt_cmd(plan['fetch'])}")
+        print(f"  $ {_fmt_cmd(plan['branch_cmd'])}")
+        print(f"  $ {_fmt_cmd([str(x) for x in agent_cmd])}")
         if not args.worktree:
             print("(dry-run; pass --worktree / --launch-agent to execute)")
-        elif args.launch_agent:
-            print(f"agent_exit={plan.get('agent_exit')}")
+        else:
+            if args.launch_agent:
+                print(f"agent_exit={plan.get('agent_exit')}")
+            if plan.get("commented"):
+                print(f"commented on #{number}")
     return 0
 
 
