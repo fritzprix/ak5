@@ -94,4 +94,4 @@ Optional later:
 
 - Auto label `pipeline:review` when a PR with `Closes #N` opens
 
-**Next human gates:** squash-merge [#178](https://github.com/fritzprix/ak5/pull/178) (`feat/workflow-v2` → `dev/2.0.x`), then finish [#36](https://github.com/fritzprix/ak5/issues/36) (version / CHANGELOG / migration guide / security / publish).
+**Next human gates:** finish [#36](https://github.com/fritzprix/ak5/issues/36) on `dev/2.0.x` — security review + regression (#29), then publish `v2.0.0` to PyPI/npm (version/docs already staged).

@@ -1,6 +1,6 @@
 [project]
 name = "ak5"
-version = "1.0.26"
+version = "2.0.0"
 description = "Self-hosted Kanban where AI agents pull work and humans give final approval — CLI, daemon, web UI, optional MCP"
 readme = "README.md"
 license = { text = "Apache-2.0" }

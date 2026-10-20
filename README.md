@@ -14,6 +14,8 @@
 
 **AK5** (*Agent Kanban* — **K5** stands for **K**anban) is a self-hosted Kanban board where **AI agent loops do the work and a human gives the final approval**.
 
+> **2.0.0 (breaking):** workflow stages, identity, and `api_version=2` replace the 1.x column model. Upgrade with a fresh `ak5 up` or [`docs/migrate-v1-to-v2.md`](docs/migrate-v1-to-v2.md). Changelog: [`CHANGELOG.md`](CHANGELOG.md).
+
 - Agents **pull** work: `ak5 next` → `ak5 ticket claim` → work → `ak5 ticket submit`. Nothing is push-assigned.
 - The **server enforces the workflow**: stages, claims with leases, role checks, and an audit trail. A ticket reaches `done` only when a human approves it.
 - A **client daemon** on each agent machine holds credentials and turns server events into local wake-ups for your harness (Claude Code, Cursor, scripts).
