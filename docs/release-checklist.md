@@ -16,7 +16,7 @@
 - [x] Security review — **APPROVE WITH NITS** (demo identify fallback; Dockerfile bind docs)
 - [x] Regression gate (#29) covered by CI on `dev/2.0.x` / `master`
 - [x] Tag [`v2.0.0`](https://github.com/fritzprix/ak5/releases/tag/v2.0.0) · **PyPI** published ([run](https://github.com/fritzprix/ak5/actions/runs/39443078064))
-- [ ] **npm** (`@ak5/sdk` / web) — blocked: `NPM_TOKEN` missing (`ENEEDAUTH` on [run](https://github.com/fritzprix/ak5/actions/runs/39443216114)); re-run `release-npm.yml` after secret is set
+- [x] **npm** (`@ak5/sdk` / web) — 배포하지 않기로 결정 ([#180](https://github.com/fritzprix/ak5/issues/180)). PyPI wheel에 대시보드 내장
 
 ## 복구 리허설 (#119 / operations.md §5)
 

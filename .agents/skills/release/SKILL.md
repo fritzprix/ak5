@@ -1,7 +1,7 @@
 ---
 name: release
 description: >-
-  Automate AK5 version bump and release workflows for PyPI and npm.
+  Automate AK5 version bump and release workflows for PyPI.
   Use when releasing a new version of AK5 (patch, minor, or major),
   running pre-flight linting and test suites, compiling embedded Web UI assets,
   synchronizing lockfiles, and pushing release git tags for automated CI/CD deployment.

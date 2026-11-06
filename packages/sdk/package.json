@@ -1,6 +1,7 @@
 {
   "name": "@ak5/sdk",
   "version": "2.0.0",
+  "private": true,
   "description": "Official TypeScript & JavaScript SDK for AK5 (Agent-Orchestrated Kanban) v2 API",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -19,8 +20,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts --clean",
     "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
-    "test": "npm run build && node --test tests/*.test.mjs",
-    "prepublishOnly": "npm run build"
+    "test": "npm run build && node --test tests/*.test.mjs"
   },
   "keywords": [
     "ak5",
@@ -43,9 +43,6 @@
   },
   "bugs": {
     "url": "https://github.com/fritzprix/ak5/issues"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "devDependencies": {
     "tsup": "^8.3.5",

@@ -94,4 +94,4 @@ Optional later:
 
 - Auto label `pipeline:review` when a PR with `Closes #N` opens
 
-**v2.0.0 published** to PyPI ([release](https://github.com/fritzprix/ak5/releases/tag/v2.0.0)). Remaining #36 follow-ups: npm publish (needs `NPM_TOKEN`), optional recovery rehearsal.
+**v2.0.0 published** to PyPI ([release](https://github.com/fritzprix/ak5/releases/tag/v2.0.0)). npm publish dropped (#180). Remaining follow-up: optional recovery rehearsal.
