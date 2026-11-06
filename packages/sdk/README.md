@@ -6,8 +6,15 @@ Official TypeScript & JavaScript SDK for **AK5 (Agent-Orchestrated Kanban)** —
 
 ## Installation
 
+Not published to npm. Build it from this repository and install the local package:
+
 ```bash
-npm install @ak5/sdk
+cd packages/sdk
+npm ci
+npm run build
+
+# in your project
+npm install /path/to/ak5/packages/sdk
 ```
 
 ---

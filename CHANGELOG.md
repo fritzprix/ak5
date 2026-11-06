@@ -5,6 +5,11 @@ All notable changes to AK5 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- npm publishing: `release-npm.yml`, the `npx ak5` launcher (`frontend/bin/cli.js`), and npm publish config. `frontend` and `packages/sdk` are now `private`; AK5 ships only via PyPI (#180)
+
 ## [2.0.0] — 2026-10-20
 
 Major release: agent-orchestrated workflow v2, identity rewrite, dual-DB (SQLite + Postgres), hosted deploy path, and zero-config local launcher.

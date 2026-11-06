@@ -1,10 +1,8 @@
 {
   "name": "ak5",
   "version": "2.0.0",
+  "private": true,
   "description": "AK5: Agent-Orchestrated Kanban Web Dashboard & Client SDK",
-  "bin": {
-    "ak5": "./bin/cli.js"
-  },
   "keywords": [
     "ak5",
     "kanban",
