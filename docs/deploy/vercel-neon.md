@@ -69,6 +69,13 @@ CI에서는 `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`를 환경 변�
 | `AK5_NOTIFY_POLL_MS` | 선택 | 기본 `1000` |
 | `AK5_CLIENT_IP_HEADER` | 예 | `x-vercel-forwarded-for` |
 | `BLOB_READ_WRITE_TOKEN` | vercel-blob 시 | Vercel Blob 토큰 |
+| `AK5_VERCEL_BLOB_ACCESS` | vercel-blob 시 권장 | 스토어 접근 모드 `private` 또는 `public` (기본 `public`, 2.0.0 동작). 스토어를 만들 때 고른 모드와 같아야 한다. `private`이면 읽기에도 토큰을 보내므로 URL을 알아도 인증 없이는 읽을 수 없다 |
+
+Blob 스토어 생성 (리포 루트에서 `vercel link` 후, 프로덕션에 `BLOB_READ_WRITE_TOKEN`이 추가된다):
+
+```bash
+vercel blob create-store ak5-attachments --access private --region icn1 -e production --yes
+```
 
 ```bash
 AK5_DEPLOY_PROFILE=hosted
@@ -77,6 +84,7 @@ AK5_DATABASE_ADMIN_URL=postgresql+asyncpg://ADMIN_BYPASSRLS:PASS@HOST/DB?sslmode
 AK5_JWT_SECRET=<long-random-secret>
 AK5_AUTO_MIGRATE=0
 AK5_BLOB_BACKEND=vercel-blob
+AK5_VERCEL_BLOB_ACCESS=private
 AK5_NOTIFY=poll
 AK5_NOTIFY_POLL_MS=1000
 AK5_CLIENT_IP_HEADER=x-vercel-forwarded-for

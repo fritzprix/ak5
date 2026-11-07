@@ -17,13 +17,15 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 
 from ak5.server.config import settings
 
 logger = logging.getLogger(__name__)
+
+VercelBlobAccess = Literal["public", "private"]
 
 CHUNK_SIZE = 1024 * 1024
 _KEY_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -337,10 +339,12 @@ class VercelBlobStore:
     """Store attachments via Vercel Blob REST API (deployment.md §2, #109).
 
     Vercel Blob architecture:
-    - PUT requests go to the management API (api_url, default https://blob.vercel-storage.com/<pathname>).
-      The PUT response returns a JSON payload with `url` and `downloadUrl`, which point to the store's
-      public edge host (e.g. https://<store-id>.public.blob.vercel-storage.com/<pathname>).
-    - Content reads (GET) and presence checks (HEAD) go to the public store URL.
+    - PUT requests go to the management API (api_url, default https://blob.vercel-storage.com/<pathname>)
+      with ``x-vercel-blob-access`` set to the store's access mode. The PUT response returns a JSON
+      payload with `url` and `downloadUrl` on the store host
+      (https://<store-id>.<access>.blob.vercel-storage.com/<pathname>).
+    - Content reads (GET) and presence checks (HEAD) go to the store host. Private stores require the
+      token as a bearer header there too; public stores are read anonymously.
     - Token format: `vercel_blob_rw_<storeId>_<secret>`. The store host is derived from storeId or
       from the PUT response payload.
     - Delete requests go to {api_url}/delete with body {"urls": [blob_url]}.
@@ -350,12 +354,14 @@ class VercelBlobStore:
         self,
         token: str,
         *,
+        access: VercelBlobAccess = "public",
         api_url: str = "https://blob.vercel-storage.com",
         base_url: str | None = None,
     ) -> None:
         self.token = token.strip()
         if not self.token:
             raise ValueError("VercelBlobStore requires a non-empty token")
+        self.access: VercelBlobAccess = access
         self.api_url = api_url.rstrip("/")
 
         if base_url:
@@ -364,7 +370,7 @@ class VercelBlobStore:
             match = re.match(r"^vercel_blob_rw_([A-Za-z0-9]+)_", self.token)
             if match:
                 store_id = match.group(1).lower()
-                self.base_url = f"https://{store_id}.public.blob.vercel-storage.com"
+                self.base_url = f"https://{store_id}.{access}.blob.vercel-storage.com"
             else:
                 raise ValueError(
                     "Invalid Vercel Blob token format; expected 'vercel_blob_rw_<storeId>_<secret>' or explicit base_url"
@@ -383,6 +389,11 @@ class VercelBlobStore:
         headers.update(extra)
         return headers
 
+    def _read_headers(self) -> dict[str, str]:
+        if self.access == "private":
+            return {"Authorization": f"Bearer {self.token}"}
+        return {}
+
     def _get_blob_url(self, key: str) -> str:
         if key in self._url_cache:
             return self._url_cache[key]
@@ -391,7 +402,7 @@ class VercelBlobStore:
     async def exists(self, key: str) -> bool:
         url = self._get_blob_url(key)
         async with httpx.AsyncClient() as client:
-            resp = await client.head(url)
+            resp = await client.head(url, headers=self._read_headers())
             return resp.status_code == 200
 
     async def check_ready(self) -> None:
@@ -426,6 +437,7 @@ class VercelBlobStore:
             **{
                 "Content-Type": content_type,
                 "x-add-random-suffix": "false",
+                "x-vercel-blob-access": self.access,
             }
         )
         async with httpx.AsyncClient() as client:
@@ -444,7 +456,7 @@ class VercelBlobStore:
         url = self._get_blob_url(key)
         client = httpx.AsyncClient()
         try:
-            req = client.build_request("GET", url)
+            req = client.build_request("GET", url, headers=self._read_headers())
             resp = await client.send(req, stream=True)
             if resp.status_code in (404, 403):
                 await resp.aclose()
@@ -475,6 +487,16 @@ def blob_backend_name() -> str:
     return (os.environ.get("AK5_BLOB_BACKEND") or "fs").strip().lower()
 
 
+def vercel_blob_access() -> VercelBlobAccess:
+    """Store access mode from ``AK5_VERCEL_BLOB_ACCESS`` (default ``public``, the 2.0.0 behaviour)."""
+    value = (os.environ.get("AK5_VERCEL_BLOB_ACCESS") or "public").strip().lower()
+    if value == "private":
+        return "private"
+    if value == "public":
+        return "public"
+    raise RuntimeError(f"Unsupported AK5_VERCEL_BLOB_ACCESS={value!r} (supported: 'public', 'private')")
+
+
 def get_blob_store() -> BlobStore:
     """Backend selected by ``AK5_BLOB_BACKEND`` (default ``fs``); resolved per call so
     ``settings.ATTACHMENTS_DIR`` overrides (tests, CLI) take effect."""
@@ -492,7 +514,7 @@ def get_blob_store() -> BlobStore:
         token = os.environ.get("BLOB_READ_WRITE_TOKEN")
         if not token:
             raise RuntimeError("AK5_BLOB_BACKEND=vercel-blob requires BLOB_READ_WRITE_TOKEN to be set")
-        return VercelBlobStore(token)
+        return VercelBlobStore(token, access=vercel_blob_access())
     raise RuntimeError(
         f"Unsupported AK5_BLOB_BACKEND={name!r} (supported: 'fs', 's3', 'vercel-blob')"
     )

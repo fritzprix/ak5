@@ -21,6 +21,7 @@ from ak5.server.blob import (
     VercelBlobStore,
     attachment_key,
     get_blob_store,
+    vercel_blob_access,
 )
 from helpers_workflow import board_ticket
 from httpx import AsyncClient
@@ -478,6 +479,122 @@ def test_vercel_blob_store_token_validation():
     with pytest.raises(ValueError, match="Invalid Vercel Blob token format"):
         VercelBlobStore("invalid_token")
 
+    private = VercelBlobStore("vercel_blob_rw_MyStore123_secret", access="private")
+    assert private.base_url == "https://mystore123.private.blob.vercel-storage.com"
+
+
+@pytest.mark.asyncio
+async def test_vercel_blob_private_store_authenticates_reads(monkeypatch: pytest.MonkeyPatch):
+    blobs: dict[str, tuple[bytes, str]] = {}
+    store_id = "privstore"
+    token = f"vercel_blob_rw_{store_id}_secretxyz"
+    private_host = f"{store_id}.private.blob.vercel-storage.com"
+    put_access: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == private_host:
+            if request.headers.get("authorization") != f"Bearer {token}":
+                return httpx.Response(403)
+            key = request.url.path.lstrip("/")
+            if request.method == "HEAD":
+                return httpx.Response(200 if key in blobs else 404)
+            if request.method == "GET" and key in blobs:
+                data, ct = blobs[key]
+                return httpx.Response(200, content=data, headers={"content-type": ct})
+            return httpx.Response(404)
+
+        assert request.headers.get("authorization") == f"Bearer {token}"
+        if request.method == "PUT":
+            put_access.append(request.headers.get("x-vercel-blob-access"))
+            key = request.url.path.lstrip("/")
+            blobs[key] = (request.read(), request.headers.get("content-type", "application/octet-stream"))
+            return httpx.Response(200, json={"url": f"https://{private_host}/{key}"})
+        if request.method == "POST" and request.url.path == "/delete":
+            for url in json.loads(request.read()).get("urls", []):
+                blobs.pop(url.split(f"https://{private_host}/")[-1], None)
+            return httpx.Response(200)
+        return httpx.Response(400)
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return orig_client(*args, **kwargs)
+
+    monkeypatch.setattr("ak5.server.blob.httpx.AsyncClient", mock_client)
+
+    key = "ws/ws_p/TK-1/att_private"
+    await VercelBlobStore(token, access="private").put(
+        key, _chunks(b"secret bytes"), content_type="text/plain", max_bytes=100
+    )
+    assert put_access == ["private"]
+
+    fresh = VercelBlobStore(token, access="private")
+    assert await fresh.exists(key)
+    assert await _read(fresh, key) == b"secret bytes"
+
+    # A public-mode client cannot read the private store: no credentials leave on reads.
+    public_client = VercelBlobStore(token, base_url=f"https://{private_host}")
+    assert not await public_client.exists(key)
+    with pytest.raises(BlobNotFoundError):
+        await _read(public_client, key)
+
+    await fresh.delete(key)
+    assert not await fresh.exists(key)
+
+
+@pytest.mark.asyncio
+async def test_vercel_blob_public_store_reads_anonymously(monkeypatch: pytest.MonkeyPatch):
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.headers.get("authorization"), request.headers.get("x-vercel-blob-access")))
+        if request.method == "PUT":
+            return httpx.Response(200, json={})
+        return httpx.Response(200, content=b"x")
+
+    orig_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return orig_client(*args, **kwargs)
+
+    monkeypatch.setattr("ak5.server.blob.httpx.AsyncClient", mock_client)
+    store = VercelBlobStore("vercel_blob_rw_pub_secret")
+    await store.put("ws/a/TK-1/att_x", _chunks(b"x"), content_type="text/plain", max_bytes=10)
+    assert await store.exists("ws/a/TK-1/att_x")
+    assert seen[0] == ("PUT", "Bearer vercel_blob_rw_pub_secret", "public")
+    assert seen[1] == ("HEAD", None, None)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, "public"), ("", "public"), ("public", "public"), (" Private ", "private")],
+)
+def test_vercel_blob_access_env(monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: str):
+    if raw is None:
+        monkeypatch.delenv("AK5_VERCEL_BLOB_ACCESS", raising=False)
+    else:
+        monkeypatch.setenv("AK5_VERCEL_BLOB_ACCESS", raw)
+    assert vercel_blob_access() == expected
+
+
+def test_vercel_blob_access_env_rejects_unknown(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AK5_VERCEL_BLOB_ACCESS", "secret")
+    with pytest.raises(RuntimeError, match="Unsupported AK5_VERCEL_BLOB_ACCESS"):
+        vercel_blob_access()
+
+
+def test_get_blob_store_vercel_private(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AK5_BLOB_BACKEND", "vercel-blob")
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_abc_secret")
+    monkeypatch.setenv("AK5_VERCEL_BLOB_ACCESS", "private")
+    store = get_blob_store()
+    assert isinstance(store, VercelBlobStore)
+    assert store.access == "private"
+    assert store.base_url == "https://abc.private.blob.vercel-storage.com"
+
 
 @pytest.mark.asyncio
 async def test_vercel_blob_store_restarted_process_derived_url(monkeypatch: pytest.MonkeyPatch):
@@ -547,7 +664,7 @@ async def test_vercel_blob_store_restarted_process_derived_url(monkeypatch: pyte
 async def test_live_vercel_blob_smoke():
     """Test #141: opt-in live smoke test against real Vercel Blob store."""
     token = os.environ["BLOB_READ_WRITE_TOKEN"]
-    store = VercelBlobStore(token)
+    store = VercelBlobStore(token, access=vercel_blob_access())
 
     # 1. Probe readiness
     await store.check_ready()
@@ -570,7 +687,7 @@ async def test_live_vercel_blob_smoke():
         assert data == content
 
         # 6. Verify restarted-process reading without memory cache
-        clean_store = VercelBlobStore(token)
+        clean_store = VercelBlobStore(token, access=vercel_blob_access())
         assert len(clean_store._url_cache) == 0
         assert await clean_store.exists(key)
         assert await _read(clean_store, key) == content
