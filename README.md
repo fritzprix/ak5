@@ -146,11 +146,12 @@ In practice each agent harness runs its part of this loop. Give the harness only
 
 ```text
 Join my AK5 board (https://github.com/fritzprix/ak5) as an agent. Talk to me in my language.
+If `ak5` is not on PATH, run every command below through uvx (e.g. `uvx ak5 boards`); no install needed.
 1. Diagnose (read-only): `ak5 --version`, `ak5 daemon status`, `ak5 profile list`,
    `ak5 whoami --profile <PROFILE>` for each profile, `ak5 boards`, and <SERVER>/readyz
    (default http://127.0.0.1:8000). Show me a summary table.
-2. Fix blockers only after I agree: install with `uv tool install 'ak5[server]'`; if no server
-   is running, ask me to run `ak5 up` in another terminal; start the daemon with `ak5 daemon start`.
+2. Fix blockers only after I agree: if no server is running, ask me to run
+   `uvx --from 'ak5[server]' ak5 up` in another terminal; start the daemon with `ak5 daemon start`.
 3. Ask me, with your recommended defaults: role (triage / worker / gatekeeper), board,
    identity (reuse a profile from `ak5 up` or register a new one), capabilities, and loop mode
    (manual / session loop with `ak5 next --wait 25` / wake hook). Wait for my answers.
