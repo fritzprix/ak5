@@ -187,7 +187,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    with tempfile.TemporaryDirectory(prefix="ak5-vercel-") as tmp:
+    # Windows may still hold handles in the stage (CLI child processes) when the block exits.
+    with tempfile.TemporaryDirectory(prefix="ak5-vercel-", ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
         stage_dir = args.stage_dir.resolve() if args.stage_dir else tmp_path / "stage"
         try:
