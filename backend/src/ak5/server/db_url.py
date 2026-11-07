@@ -1,20 +1,28 @@
 """DATABASE_URL normalization for SQLAlchemy async drivers (deployment.md §1.1).
 
-Side-effect free so both the server engine and ``ak5 db`` can share it.
+No I/O beyond loading CA certificates for ``verify-ca`` / ``verify-full`` URLs, so both
+the server engine and ``ak5 db`` can share it.
 """
 
 from __future__ import annotations
 
+import logging
+import ssl
 from typing import Any
 
 from sqlalchemy.engine import make_url
 
+logger = logging.getLogger(__name__)
+
 ASYNCPG_SCHEME = "postgresql+asyncpg"
+
+_VERIFYING_SSLMODES = ("verify-ca", "verify-full")
 
 # libpq query parameters that hosted providers (Neon, Supabase, ...) put in
 # connection strings but asyncpg.connect() rejects as unknown keyword arguments.
-# asyncpg has no channel-binding support and resolves CAs itself, so these can only be dropped.
-_UNSUPPORTED_LIBPQ_PARAMS = ("channel_binding", "sslrootcert")
+# Dropping them weakens what the URL asked for, so each drop is logged.
+_CHANNEL_BINDING_DROPPED = "asyncpg has no SCRAM channel binding; the connection is made without it"
+_SSLROOTCERT_DROPPED = "only verify-ca / verify-full check certificates; this CA file is not used"
 
 
 def normalize_database_url(url_str: str) -> str:
@@ -26,11 +34,31 @@ def normalize_database_url(url_str: str) -> str:
     return url_str
 
 
+def _query_value(value: str | tuple[str, ...]) -> str:
+    return value if isinstance(value, str) else value[-1]
+
+
+def _verifying_context(sslmode: str, sslrootcert: str | None) -> ssl.SSLContext:
+    """libpq semantics: ``sslrootcert=<file>`` or ``system`` (also the default here)."""
+    cafile = None if sslrootcert in (None, "system") else sslrootcert
+    context = ssl.create_default_context(cafile=cafile)
+    context.check_hostname = sslmode == "verify-full"
+    return context
+
+
+def _drop(key: str, consequence: str) -> None:
+    logger.warning("Database URL parameter %r is not supported by asyncpg and was dropped: %s", key, consequence)
+
+
 def asyncpg_url_and_connect_args(url_str: str) -> tuple[str, dict[str, Any]]:
     """Normalize ``url_str`` and move libpq-only query params out of an asyncpg URL.
 
-    ``sslmode`` becomes asyncpg's ``ssl`` connect argument (it accepts the same
-    mode names). Non-asyncpg URLs are only scheme-normalized.
+    ``sslmode`` becomes asyncpg's ``ssl`` connect argument. ``verify-ca`` /
+    ``verify-full`` get an ``SSLContext`` built from ``sslrootcert`` (a file, or
+    ``system`` / unset for the system store), because asyncpg itself would only
+    look at ``~/.postgresql/root.crt``. ``channel_binding`` (and ``sslrootcert``
+    under weaker modes) is dropped with a warning naming the parameter only.
+    Non-asyncpg URLs are only scheme-normalized.
     """
     normalized = normalize_database_url(url_str)
     if not normalized.startswith(f"{ASYNCPG_SCHEME}://"):
@@ -38,13 +66,23 @@ def asyncpg_url_and_connect_args(url_str: str) -> tuple[str, dict[str, Any]]:
 
     url = make_url(normalized)
     query = dict(url.query)
-    if "sslmode" not in query and not any(key in query for key in _UNSUPPORTED_LIBPQ_PARAMS):
+    if not {"sslmode", "sslrootcert", "channel_binding"} & query.keys():
         return normalized, {}
 
     connect_args: dict[str, Any] = {}
-    sslmode = query.pop("sslmode", None)
+    raw_sslmode = query.pop("sslmode", None)
+    raw_sslrootcert = query.pop("sslrootcert", None)
+    sslmode = _query_value(raw_sslmode).lower() if raw_sslmode is not None else None
+    sslrootcert = _query_value(raw_sslrootcert) if raw_sslrootcert is not None else None
+
     if sslmode is not None and "ssl" not in query:
-        connect_args["ssl"] = sslmode if isinstance(sslmode, str) else sslmode[-1]
-    for key in _UNSUPPORTED_LIBPQ_PARAMS:
-        query.pop(key, None)
+        if sslmode in _VERIFYING_SSLMODES:
+            connect_args["ssl"] = _verifying_context(sslmode, sslrootcert)
+            sslrootcert = None
+        else:
+            connect_args["ssl"] = sslmode
+    if sslrootcert is not None:
+        _drop("sslrootcert", _SSLROOTCERT_DROPPED)
+    if query.pop("channel_binding", None) is not None:
+        _drop("channel_binding", _CHANNEL_BINDING_DROPPED)
     return url.set(query=query).render_as_string(hide_password=False), connect_args

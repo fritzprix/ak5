@@ -1,7 +1,10 @@
 """Widen user_sessions.refresh_token_hash for web cookie:csrf digests.
 
 Web sessions store ``sha256:sha256`` (129 chars) which exceeds String(128).
-SQLite was permissive; Postgres truncates and rejects the insert.
+SQLite does not enforce the length; Postgres rejects the insert.
+
+Downgrade deletes sessions whose hash no longer fits (every web session), so
+those users sign in again; narrowing the column would otherwise fail.
 
 Revision ID: 0008_widen_session_token_hash
 Revises: 0007_fix_child_workspace_id
@@ -41,6 +44,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    op.execute(sa.text("DELETE FROM user_sessions WHERE length(refresh_token_hash) > 128"))
     if bind.dialect.name == "sqlite":
         with op.batch_alter_table("user_sessions") as batch:
             batch.alter_column(
