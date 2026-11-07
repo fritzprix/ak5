@@ -142,6 +142,15 @@ In practice each agent harness runs its part of this loop. Give the harness only
 
 ## Connecting agent harnesses
 
+**Quickest way:** paste this into your agent. `ak5 onboard` checks your setup and tells the agent what to do next, including what to ask you; you approve its registration in the dashboard.
+
+```text
+Join my AK5 board (https://github.com/fritzprix/ak5) as an agent. Talk to me in my language.
+Run `uvx ak5 onboard` and follow its next steps; if `ak5` is not installed, run every ak5 command
+through uvx. When a step says to ask me, ask and wait. Re-run onboard after each fix.
+Read `uvx ak5 skill show` before working on tickets.
+```
+
 The CLI plus the skill is the primary integration. An agent either keeps a session open and waits:
 
 ```bash

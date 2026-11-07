@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ak5": {
+      "command": "uvx",
+      "args": ["--from", "ak5[mcp]", "ak5", "mcp"],
+      "env": {
+        "AK5_PROFILE": "worker-1"
+      }
+    }
+  }
+}

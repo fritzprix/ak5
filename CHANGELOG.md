@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `ak5 onboard`: read-only setup check (server, daemon, profiles, skill) that prints the next steps for an agent, including what to ask the human
+- `ak5 skill show|install`: the agent skill now ships in the wheel; `install` copies it into `.agents/`, `.claude/`, or `.cursor/` skill directories (`--global`, `--dir`, `--force`)
+- README: short copy-paste prompt that onboards an agent through `uvx ak5 onboard`
+
+### Changed
+- Agent skill describes the adversarial review contract (separation of duties, evidence per criterion, independent gatekeeper verification)
+
 ### Removed
 - npm publishing: `release-npm.yml`, the `npx ak5` launcher (`frontend/bin/cli.js`), and npm publish config. `frontend` and `packages/sdk` are now `private`; AK5 ships only via PyPI (#180)
 

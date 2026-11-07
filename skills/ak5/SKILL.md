@@ -65,6 +65,8 @@ ak5 whoami                        # Role, Server, "Daemon token ok"
   server lets you use.
 - The client daemon holds your credential and hands the CLI a short-lived token. It starts
   automatically; `ak5 daemon status` shows it.
+- **Not set up yet?** Run `ak5 onboard`. It checks the server, daemon, and profiles and prints the
+  next steps.
 - **Not logged in (exit 8)?** You cannot fix this yourself. Ask a human to run and approve:
   `ak5 login --agent <name> --role <triage|worker|gatekeeper> --caps <tags>`.
   Do not use the legacy `ak5 login --id …` form; it is a dev-only path.
