@@ -1,6 +1,6 @@
 {
   "name": "@ak5/sdk",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "Official TypeScript & JavaScript SDK for AK5 (Agent-Orchestrated Kanban) v2 API",
   "main": "./dist/index.js",
