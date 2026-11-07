@@ -98,7 +98,8 @@ class UserSession(Base, TimestampMixin):
 
     session_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    refresh_token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Web sessions store ``sha256(cookie):sha256(csrf)`` (129 chars); keep headroom.
+    refresh_token_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     client: Mapped[str] = mapped_column(String(16), nullable=False)  # web|cli
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

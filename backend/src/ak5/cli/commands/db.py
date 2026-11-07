@@ -37,9 +37,11 @@ def _database_url(option: str | None) -> str:
 
 
 def _make_engine(url: str):
+    from ak5.server.db_url import asyncpg_url_and_connect_args
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    return create_async_engine(url, future=True)
+    normalized, connect_args = asyncpg_url_and_connect_args(url)
+    return create_async_engine(normalized, connect_args=connect_args, future=True)
 
 
 def _fail(exc: Exception) -> click.ClickException:
