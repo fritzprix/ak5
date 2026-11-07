@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ak5 skill show|install`: the agent skill now ships in the wheel; `install` copies it into `.agents/`, `.claude/`, or `.cursor/` skill directories (`--global`, `--dir`, `--force`)
 - README: short copy-paste prompt that onboards an agent through `uvx ak5 onboard`
 - `scripts/smoke_hosted.py <URL>`: deployment smoke check (`/readyz`, `/meta` API version, dashboard HTML, one `/_next` chunk served as JavaScript); the wheel smoke gate also rejects duplicate paths. Docs cover running local (`ak5 up`) and Vercel from one checkout, and `ak5 serve` against Neon from `.env` (#179)
+- `scripts/vercel_deploy.py`: one-command Vercel deploy from a Python-only stage (verified wheel with dashboard assets, no `.git`/`package.json`), followed by the hosted smoke check (#179)
 
 ### Changed
 - Agent skill describes the adversarial review contract (separation of duties, evidence per criterion, independent gatekeeper verification)

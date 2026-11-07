@@ -76,3 +76,6 @@ backend/src/ak5/server/web_ui/**
 !backend/src/ak5/server/web_ui/.keep
 !backend/src/ak5/server/web_ui/index.html
 
+
+# Vercel CLI project link (scripts/vercel_deploy.py)
+.vercel/

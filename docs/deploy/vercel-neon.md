@@ -23,34 +23,37 @@ api/index.py  →  create_app()  →  lifespan (prepare / schema check / seed)
 
 `create_app()` import는 DB 연결·데이터 디렉터리 생성·시드를 하지 않는다. 초기화는 lifespan(또는 이후 lazy)에서만 한다.
 
-### Vercel이 `ak5`를 찾는 방법
+## 배포 명령
 
-패키지 소스는 `backend/src/ak5`이다. Vercel Python은 루트 `api/`를 진입점으로 쓰므로, 빌드 시 **editable install**과 **PYTHONPATH**를 맞춰야 한다.
-
-최소 설정 예 (`vercel.json` — 리포에 커밋하지 않아도 프로젝트 설정으로 동일하게 가능):
-
-```json
-{
-  "builds": [{ "src": "api/index.py", "use": "@vercel/python" }],
-  "routes": [{ "src": "/(.*)", "dest": "api/index.py" }]
-}
-```
-
-Install Command 예:
+체크아웃을 그대로 올리지 않는다. `scripts/vercel_deploy.py`가 Python 전용 스테이지를 만들어 그것만 배포한다.
 
 ```bash
-pip install -e "./backend[server,postgres,vercel]"
+./scripts/build_web_ui.sh            # 대시보드 자산 (_next) — 없으면 배포 스크립트가 거부
+vercel link                          # 최초 1회, 리포 루트에서 (.vercel/는 gitignore)
+uv run --directory backend --extra server python ../scripts/vercel_deploy.py
 ```
 
-또는 Build 환경 변수:
+스크립트가 하는 일:
 
-| 변수 | 값 |
+1. `uv build backend --wheel`로 wheel을 만들고, `ak5/server/web_ui/_next/static/chunks/*.js`가 들어 있는지와 중복 경로가 없는지 확인한다.
+2. 임시 디렉터리에 `api/index.py`, wheel, `requirements.txt`(`./ak5-<ver>-py3-none-any.whl[server,postgres,vercel]`), `vercel.json`, `.vercel/project.json`만 둔다.
+3. 그 디렉터리에서 `vercel deploy --prod --yes`를 실행하고, 출력된 배포 URL로 아래 스모크 체크를 돌린다(콜드 스타트 대비 3회 재시도).
+
+| 옵션 | 뜻 |
 |---|---|
-| `PYTHONPATH` | `backend/src` |
+| `--preview` | 프로덕션 대신 프리뷰 배포 |
+| `--stage-only --stage-dir DIR` | 배포하지 않고 스테이지만 만든다 (내용 확인용) |
+| `--smoke-url URL` | 스모크 대상. 배포 URL이 Deployment Protection 뒤에 있으면(401) 공개 프로덕션 alias를 준다 |
+| `--no-smoke` | 스모크 생략 |
 
-`pip install -e ./backend[...]`를 쓰면 wheel에 `ak5`가 들어가므로 `PYTHONPATH`는 선택이다. 소스만 올리는 경우 `PYTHONPATH=backend/src`가 필수다.
+CI에서는 `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`를 환경 변수로 주면 `vercel link` 없이 동작한다.
 
-의존 extra: hosted Neon에는 최소 `server` + `postgres`; Blob이 Vercel이면 `vercel` 추가.
+이렇게 하는 이유 (issue #179 재현 항목):
+
+- `web_ui/_next`는 gitignore 대상이라 체크아웃을 올리면 Vercel CLI가 빼 버린다. 스테이지에는 gitignore가 없고 자산은 wheel 안에 있다.
+- `.git`이 없으므로 커밋 작성자가 팀 멤버가 아닐 때의 `BLOCKED` 상태가 생기지 않는다.
+- 루트 `package.json`이 없으므로 Node 빌드가 `@vercel/python` 앞에 끼지 않는다.
+- hatchling/uv editable 설치 대신 이미 검증된 wheel을 설치한다.
 
 ## 환경 변수
 
