@@ -24,6 +24,14 @@ fi
 
 echo "==> Smoke-testing wheel as isolated install: $WHEEL"
 
+# --- Layout gate: each path once (a force-include of web_ui duplicates it, #179) ---
+DUPES="$(unzip -Z1 "$WHEEL" | sort | uniq -d)"
+if [[ -n "$DUPES" ]]; then
+  echo "error: wheel contains duplicate paths:" >&2
+  echo "$DUPES" >&2
+  exit 1
+fi
+
 # --- Metadata gate: critical runtime deps must be declared (not just transitive) ---
 META="$(unzip -p "$WHEEL" '*/METADATA' 2>/dev/null || true)"
 if [[ -z "$META" ]]; then

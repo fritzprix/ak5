@@ -83,6 +83,7 @@ ak5 serve --ui                               # http://127.0.0.1:8000 (API + 대�
 - 첫 실행 시 `local` workspace, 시스템 **inbox** 보드, `proj-core-engine` 보드(템플릿 `default`)가 만들어진다.
 - 데이터는 OS 앱 데이터 디렉터리에 저장된다: Linux `~/.local/share/ak5/`, macOS `~/Library/Application Support/ak5/`, Windows `%LOCALAPPDATA%\ak5\`. `AK5_DATA_DIR`로 바꿀 수 있다.
 - `ak5 serve --daemon`은 같은 머신의 client daemon을 함께 띄운다 (서버와 agent를 한 머신에서 돌릴 때).
+- `ak5 serve`는 `ak5 up`과 달리 `.env`(현재 디렉터리, `frontend/`, 리포 루트 순)와 셸의 값을 그대로 쓴다. 이미 셸에 있는 키는 덮어쓰지 않는다. 그래서 Neon `DATABASE_URL`·`AK5_DATABASE_ADMIN_URL`이 든 `.env`로 로컬에서 hosted DB를 상대로 테스트할 수 있다. 의도한 경우에만 쓰고, 운영 DB가 아닌 Neon branch를 가리키게 한다. `.env`를 무시하려면 `AK5_SKIP_DOTENV=1`. 로컬과 Vercel을 한 체크아웃에서 같이 쓰는 규칙은 [deploy/vercel-neon.md](deploy/vercel-neon.md#한-체크아웃에서-로컬과-vercel)에 있다.
 
 API 문서는 `http://127.0.0.1:8000/docs`에 있다.
 
