@@ -124,6 +124,33 @@ def _pipe_dacl_sddl(name: str) -> str:
         k32.LocalFree(descriptor)
 
 
+def _canonical_sid(sddl_trustee: str) -> str:
+    """``S-1-…`` form of an SDDL trustee, expanding aliases like ``LA`` or ``BA``."""
+    import ctypes
+    from ctypes import wintypes
+
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv.ConvertStringSidToSidW.restype = wintypes.BOOL
+    adv.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPVOID)]
+    adv.ConvertSidToStringSidW.restype = wintypes.BOOL
+    adv.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+    k32.LocalFree.restype = wintypes.LPVOID
+    k32.LocalFree.argtypes = [wintypes.LPVOID]
+
+    sid = wintypes.LPVOID()
+    assert adv.ConvertStringSidToSidW(sddl_trustee, ctypes.byref(sid)), ctypes.WinError(ctypes.get_last_error())
+    try:
+        text = wintypes.LPWSTR()
+        assert adv.ConvertSidToStringSidW(sid, ctypes.byref(text)), ctypes.WinError(ctypes.get_last_error())
+        try:
+            return str(text.value)
+        finally:
+            k32.LocalFree(text)
+    finally:
+        k32.LocalFree(sid)
+
+
 @windows_only
 def test_pipe_is_user_only_and_rejects_squatters(daemon_home):
     from ak5.daemon.win32 import PipeTransport, _UserOnlySecurity, create_pipe_instance, current_user_sid
@@ -136,7 +163,9 @@ def test_pipe_is_user_only_and_rejects_squatters(daemon_home):
     assert sddl.startswith("D:P"), sddl  # protected: nothing inherited
     aces = sddl[3:].strip("()").split(")(")
     assert len(aces) == 1, sddl
-    assert aces[0].startswith("A;") and aces[0].endswith(f";{current_user_sid()}"), sddl
+    assert aces[0].startswith("A;"), sddl
+    # SDDL may abbreviate well-known accounts (e.g. LA for the built-in Administrator).
+    assert _canonical_sid(aces[0].rsplit(";", 1)[1]) == current_user_sid(), sddl
 
     security = _UserOnlySecurity()
     try:
