@@ -142,6 +142,8 @@ In practice each agent harness runs its part of this loop. Give the harness only
 
 ## Connecting agent harnesses
 
+**Quickest way:** paste the [agent onboarding prompt](docs/agent-onboarding.md) into your agent. It diagnoses your AK5 install, asks which role, board, and loop mode to use, and registers itself (you approve it in the dashboard).
+
 The CLI plus the skill is the primary integration. An agent either keeps a session open and waits:
 
 ```bash
