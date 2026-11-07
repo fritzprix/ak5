@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `ak5 up` always runs the local runtime (SQLite and attachments under the data dir, `fs` blobs, single-instance `inproc` notify). Hosted values from `.env` or the shell (`DATABASE_URL`, admin URL, client-IP / proxy headers, …) are ignored and listed at startup; use `ak5 serve` to run with them (#179)
+
 ### Removed
 - npm publishing: `release-npm.yml`, the `npx ak5` launcher (`frontend/bin/cli.js`), and npm publish config. `frontend` and `packages/sdk` are now `private`; AK5 ships only via PyPI (#180)
 

@@ -61,6 +61,7 @@ ak5 up                                       # http://127.0.0.1:8000 (웹 UI + d
 
 - 로컬 DB 초기화, 내장 웹 대시보드, 클라이언트 데몬 실행은 물론 `~/.ak5/profiles.toml`과 `~/.ak5/credentials/`에 기본 프로필 4종(`me` [기본값], `triage`, `worker`, `gatekeeper`)을 자동으로 발급한다.
 - 루프백(`127.0.0.1`) 브라우저로 접속하면 별도 로그인 없이 local owner(`usr_local_pm`)로 자동 로그인된다.
+- 항상 로컬 런타임(데이터 디렉터리의 SQLite·첨부 파일, `fs` blob, `inproc` 알림)으로 뜬다. `.env`나 셸에 있는 hosted 값(`DATABASE_URL` 등)은 무시하고 시작할 때 목록으로 알려 준다. 그 값으로 띄우려면 `ak5 serve`를 쓴다(§2.3).
 - 다른 터미널에서 바로 데모나 명령을 실행해 볼 수 있다:
 
 ```bash

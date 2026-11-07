@@ -35,7 +35,16 @@ HOSTED_ENV = {
     "AK5_NOTIFY": "poll",
     "AK5_CLIENT_IP_HEADER": "x-vercel-forwarded-for",
     "AK5_TRUSTED_PROXIES": "0.0.0.0/0",
+    "ATTACHMENTS_DIR": "/tmp/ak5-attachments",
+    "AK5_INSTANCES": "2",
+    "LONG_POLL_USE_INPROCESS_NOTIFY": "false",
 }
+
+
+def test_hosted_fixture_covers_every_pinned_key() -> None:
+    from ak5.cli.commands.up import _LOCAL_UP_RUNTIME_ENV
+
+    assert set(HOSTED_ENV) == set(_LOCAL_UP_RUNTIME_ENV) | {"DATABASE_URL", "ATTACHMENTS_DIR"}
 
 
 def _set_hosted_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,7 +54,7 @@ def _set_hosted_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_pin_local_runtime_overrides_hosted_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ak5.paths import get_default_database_url
+    from ak5.paths import get_default_attachments_dir, get_default_database_url
 
     _set_hosted_env(monkeypatch)
 
@@ -53,9 +62,12 @@ def test_pin_local_runtime_overrides_hosted_env(monkeypatch: pytest.MonkeyPatch)
 
     assert replaced == sorted(HOSTED_ENV)
     assert os.environ["DATABASE_URL"] == get_default_database_url()
+    assert os.environ["ATTACHMENTS_DIR"] == str(get_default_attachments_dir())
     assert os.environ["AK5_DEPLOY_PROFILE"] == "local"
     assert os.environ["AK5_BLOB_BACKEND"] == "fs"
     assert os.environ["AK5_NOTIFY"] == "inproc"
+    assert os.environ["AK5_INSTANCES"] == "1"
+    assert os.environ["LONG_POLL_USE_INPROCESS_NOTIFY"] == "true"
     for key in ("AK5_DATABASE_ADMIN_URL", "DATABASE_ADMIN_URL", "AK5_CLIENT_IP_HEADER", "AK5_TRUSTED_PROXIES"):
         assert os.environ[key] == ""
     assert os.environ["AK5_AUTH_PASSWORD"] == "from-dotenv"
@@ -69,7 +81,8 @@ def test_pin_local_runtime_reports_nothing_when_already_local(monkeypatch: pytes
 
 def test_pinned_env_beats_hosted_dotenv_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """pydantic Settings reads ``.env`` itself; pinned (even empty) env vars must win."""
-    from ak5.server.config import Settings, get_deploy_profile
+    import ak5.server.config as server_config
+    from ak5.paths import get_default_attachments_dir
 
     _set_hosted_env(monkeypatch)
     for key in HOSTED_ENV:
@@ -80,12 +93,16 @@ def test_pinned_env_beats_hosted_dotenv_file(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.chdir(tmp_path)
 
     _pin_local_up_runtime_env()
-    loaded = Settings()
+    loaded = server_config.Settings()
+    monkeypatch.setattr(server_config, "settings", loaded)
 
     assert loaded.DATABASE_URL.startswith("sqlite+aiosqlite:///")
     assert loaded.DATABASE_ADMIN_URL == ""
-    assert loaded.NOTIFY == "inproc"
-    assert get_deploy_profile() == "local"
+    attachments_dir = loaded.ATTACHMENTS_DIR
+    assert attachments_dir == str(get_default_attachments_dir())
+    assert server_config.get_deploy_profile() == "local"
+    assert server_config.get_notify_mode() == "inproc"
+    server_config.validate_notify_config()
 
 
 def test_up_pins_local_runtime_before_serving(monkeypatch: pytest.MonkeyPatch) -> None:

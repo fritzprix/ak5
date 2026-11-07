@@ -21,7 +21,7 @@ from ak5.daemon.profiles import (
     set_default_profile,
     upsert_profile,
 )
-from ak5.paths import get_default_database_url
+from ak5.paths import get_default_attachments_dir, get_default_database_url
 from rich.console import Console
 from rich.panel import Panel
 
@@ -50,6 +50,9 @@ _LOCAL_UP_RUNTIME_ENV: dict[str, str] = {
     "AK5_DEPLOY_PROFILE": "local",
     "AK5_BLOB_BACKEND": "fs",
     "AK5_NOTIFY": "inproc",
+    # inproc notify is only valid for one instance and is otherwise downgraded to poll.
+    "AK5_INSTANCES": "1",
+    "LONG_POLL_USE_INPROCESS_NOTIFY": "true",
     "AK5_DATABASE_ADMIN_URL": "",
     "DATABASE_ADMIN_URL": "",
     "AK5_CLIENT_IP_HEADER": "",
@@ -59,7 +62,11 @@ _LOCAL_UP_RUNTIME_ENV: dict[str, str] = {
 
 def _pin_local_up_runtime_env() -> list[str]:
     """Force the local runtime into ``os.environ``; return keys whose value was replaced."""
-    pinned = {**_LOCAL_UP_RUNTIME_ENV, "DATABASE_URL": get_default_database_url()}
+    pinned = {
+        **_LOCAL_UP_RUNTIME_ENV,
+        "DATABASE_URL": get_default_database_url(),
+        "ATTACHMENTS_DIR": str(get_default_attachments_dir()),
+    }
     replaced = sorted(key for key, value in pinned.items() if os.environ.get(key, value) != value)
     os.environ.update(pinned)
     return replaced
