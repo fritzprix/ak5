@@ -91,6 +91,33 @@ uv run --directory backend --extra server --extra postgres ak5 db upgrade
 uv run --directory backend --extra server --extra postgres ak5 db maintenance --sweep-blob-gc
 ```
 
+## 한 체크아웃에서 로컬과 Vercel
+
+같은 체크아웃과 같은 `.env`로 두 경로를 모두 쓸 수 있다. `ak5 up`은 hosted 값을 무시하고 로컬 런타임을 고정한다. Vercel은 체크아웃의 `.env`가 아니라 Vercel 프로젝트 환경 변수를 쓴다.
+
+| 항목 | 로컬 (`ak5 up`) | Vercel |
+|---|---|---|
+| DB | SQLite (고정) | Neon |
+| Blob | 데이터 디렉터리 아래 `fs` | `vercel-blob` (권장) |
+| Notify | `inproc` | `poll` |
+| Profile | `local` | `hosted` |
+| Web UI | wheel에 든 `web_ui`, 또는 `scripts/build_web_ui.sh`로 빌드한 것 | 같은 빌드 결과물이 배포에 포함돼야 함 |
+| `.env` | 공유해도 됨. `ak5 up`이 로컬 값으로 덮어씀 | 쓰지 않음 (프로젝트 env) |
+
+- `ak5 up`은 `.env`나 셸에 무엇이 있든 다음 키를 로컬 값으로 고정하고, 바꾼 키는 시작할 때 `ignoring …` 메시지로 알려 준다: `DATABASE_URL`, `AK5_DATABASE_ADMIN_URL`, `DATABASE_ADMIN_URL`, `ATTACHMENTS_DIR`, `AK5_DEPLOY_PROFILE`, `AK5_BLOB_BACKEND`, `AK5_NOTIFY`, `AK5_INSTANCES`, `LONG_POLL_USE_INPROCESS_NOTIFY`, `AK5_CLIENT_IP_HEADER`, `AK5_TRUSTED_PROXIES` ([MANUAL §2.2](../MANUAL.md)). `.env`의 Neon 값을 로컬에서 일부러 쓰려면 `ak5 serve`를 쓴다 ([MANUAL §2.3](../MANUAL.md)).
+- `ak5 up`에서도 인증 비밀(`AK5_AUTH_PASSWORD` 등)은 `.env` 값을 그대로 쓴다.
+- `backend/src/ak5/server/web_ui/`의 빌드 결과물(`_next/`)은 gitignore 대상이다. 배포 전에 `scripts/build_web_ui.sh`를 돌리고, 업로드에 `_next/`가 빠지지 않았는지 아래 스모크 체크로 확인한다. HTML만 있고 chunk가 404면 대시보드가 깨진다.
+- `/tmp` 위의 `fs` blob은 임시 우회일 뿐이다(인스턴스마다 따로이고 사라진다). 상시 배포는 `vercel-blob`을 쓴다.
+
+## 배포 스모크 체크
+
+배포 URL마다 돌린다. `/readyz`가 `ready`인지, `/meta`의 `api_version`이 `2`인지, 대시보드 HTML이 오는지, 그 HTML이 참조하는 `/_next/static/chunks/*.js` 하나가 JavaScript로 200인지 본다. 하나라도 실패하면 exit 1.
+
+```bash
+uv run python scripts/smoke_hosted.py https://<your-deployment>.vercel.app
+uv run python scripts/smoke_hosted.py http://127.0.0.1:8000 --json   # 로컬 ak5 up / serve --ui
+```
+
 ## 로컬 검증
 
 ```bash
