@@ -42,7 +42,7 @@ uv run --directory backend --extra server python ../scripts/vercel_deploy.py
 | 옵션 | 뜻 |
 |---|---|
 | `--preview` | 프로덕션 대신 프리뷰 배포 |
-| `--stage-only --stage-dir DIR` | 배포하지 않고 스테이지만 만든다 (내용 확인용) |
+| `--stage-only --stage-dir DIR` | 배포하지 않고 스테이지만 만든다 (내용 확인용). `DIR`은 비어 있거나 이전 스테이지(`.ak5-vercel-stage` 표식)여야 하며, 리포와 그 상위 디렉터리는 거부한다 |
 | `--smoke-url URL` | 스모크 대상. 배포 URL이 Deployment Protection 뒤에 있으면(401) 공개 프로덕션 alias를 준다 |
 | `--no-smoke` | 스모크 생략 |
 

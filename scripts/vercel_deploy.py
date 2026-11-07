@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB_UI_CHUNKS = ROOT / "backend" / "src" / "ak5" / "server" / "web_ui" / "_next" / "static" / "chunks"
 WHEEL_CHUNKS_PREFIX = "ak5/server/web_ui/_next/static/chunks/"
 WHEEL_EXTRAS = "server,postgres,vercel"
+STAGE_MARKER = ".ak5-vercel-stage"
 
 VERCEL_JSON = {
     "builds": [{"src": "api/index.py", "use": "@vercel/python"}],
@@ -84,10 +85,26 @@ def find_project_link(root: Path = ROOT) -> Path | None:
     return link if link.is_file() else None
 
 
-def stage(stage_dir: Path, wheel: Path, project_link: Path | None) -> None:
+def check_stage_dir(stage_dir: Path, root: Path = ROOT) -> None:
+    """Refuse stage locations whose replacement would delete anything but a previous stage."""
+    target = stage_dir.resolve()
+    repo = root.resolve()
+    if target == repo or target in repo.parents:
+        raise DeployError(f"refusing stage dir {target}: it contains the repository")
+    if not target.exists():
+        return
+    if not target.is_dir():
+        raise DeployError(f"refusing stage dir {target}: not a directory")
+    if any(target.iterdir()) and not (target / STAGE_MARKER).is_file():
+        raise DeployError(f"refusing stage dir {target}: not empty and not a previous stage (no {STAGE_MARKER})")
+
+
+def stage(stage_dir: Path, wheel: Path, project_link: Path | None, root: Path = ROOT) -> None:
+    check_stage_dir(stage_dir, root)
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
     (stage_dir / "api").mkdir(parents=True)
+    (stage_dir / STAGE_MARKER).write_text("", encoding="utf-8")
     shutil.copy2(ROOT / "api" / "index.py", stage_dir / "api" / "index.py")
     shutil.copy2(wheel, stage_dir / wheel.name)
     (stage_dir / "requirements.txt").write_text(f"./{wheel.name}[{WHEEL_EXTRAS}]\n", encoding="utf-8")
@@ -114,12 +131,11 @@ def parse_deployment_url(stdout: str) -> str:
     return urls[-1]
 
 
-def deploy(stage_dir: Path, *, prod: bool, token: str | None) -> str:
+def deploy(stage_dir: Path, *, prod: bool) -> str:
     cmd = [*vercel_command(), "deploy", "--yes"]
     if prod:
         cmd.append("--prod")
-    if token:
-        cmd.extend(["--token", token])
+    # The CLI reads VERCEL_TOKEN from the inherited environment; never put it in argv.
     proc = subprocess.run(cmd, cwd=stage_dir, stdout=subprocess.PIPE, text=True, check=False)
     if proc.returncode != 0:
         raise DeployError(f"vercel deploy exited {proc.returncode}")
@@ -144,6 +160,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--smoke-url", help="Origin to smoke-check (default: the deployment URL).")
     parser.add_argument("--no-smoke", action="store_true", help="Skip the post-deploy smoke check.")
     args = parser.parse_args(argv)
+    if args.stage_only and args.stage_dir is None:
+        parser.error("--stage-only requires --stage-dir (a temp stage is deleted on exit)")
+
+    if args.stage_dir is not None:
+        try:
+            check_stage_dir(args.stage_dir)
+        except DeployError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     if not web_ui_built():
         print(f"error: no dashboard chunks in {WEB_UI_CHUNKS}; run scripts/build_web_ui.sh first", file=sys.stderr)
@@ -172,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"==> Staged {wheel.name} in {stage_dir}")
             if args.stage_only:
                 return 0
-            url = deploy(stage_dir, prod=not args.preview, token=os.environ.get("VERCEL_TOKEN"))
+            url = deploy(stage_dir, prod=not args.preview)
         except (DeployError, subprocess.CalledProcessError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -186,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{'PASS' if r.ok else 'FAIL'}  {r.name:<10} {r.detail}")
     if all(r.ok for r in results):
         return 0
+    print(f"error: deploy succeeded ({url}) but the smoke check against {smoke_url} failed", file=sys.stderr)
     if any("HTTP 401" in r.detail for r in results):
         print(
             "hint: deployment URLs may sit behind Vercel Deployment Protection; "
