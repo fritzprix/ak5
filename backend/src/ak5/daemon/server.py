@@ -15,13 +15,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 import uvicorn
-from uvicorn.server import STARTUP_FAILURE
 
 from ak5.daemon.app import create_daemon_app
 from ak5.daemon.paths import chmod_socket, daemon_endpoint, ensure_socket_parent, pid_path, socket_path
 from ak5.daemon.state import DaemonState
 
 _WINDOWS = sys.platform == "win32"
+# uvicorn's startup-failure exit code; ``uvicorn.server.STARTUP_FAILURE`` only exists from 0.50.
+STARTUP_FAILURE = 3
 
 logger = logging.getLogger("ak5.daemon")
 

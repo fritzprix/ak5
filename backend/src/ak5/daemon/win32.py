@@ -37,6 +37,10 @@ _PIPE_UNLIMITED_INSTANCES = 255
 _GENERIC_READ = 0x80000000
 _GENERIC_WRITE = 0x40000000
 _OPEN_EXISTING = 3
+_SECURITY_SQOS_PRESENT = 0x00100000
+_SECURITY_IDENTIFICATION = 0x00010000
+# Below uvicorn's 5 s keep-alive timeout, so the pool never reuses a pipe the daemon closed.
+_KEEPALIVE_EXPIRY_SECONDS = 2.0
 _TOKEN_QUERY = 0x0008
 _TOKEN_USER_CLASS = 1
 _SDDL_REVISION_1 = 1
@@ -342,7 +346,16 @@ def open_pipe(name: str, *, expected_server_pid: int | None, timeout: float | No
     api = _win()
     deadline = time.monotonic() + (timeout if timeout is not None else 10.0)
     while True:
-        handle = api.CreateFileW(name, _GENERIC_READ | _GENERIC_WRITE, 0, None, _OPEN_EXISTING, 0, None)
+        # Identification-level only: a server on this name cannot act as the client.
+        handle = api.CreateFileW(
+            name,
+            _GENERIC_READ | _GENERIC_WRITE,
+            0,
+            None,
+            _OPEN_EXISTING,
+            _SECURITY_SQOS_PRESENT | _SECURITY_IDENTIFICATION,
+            None,
+        )
         if handle not in (None, _INVALID_HANDLE_VALUE):
             break
         err = ctypes.get_last_error()
@@ -439,7 +452,10 @@ class PipeTransport(httpx.BaseTransport):
     """``httpx`` transport that sends every request over the daemon's named pipe."""
 
     def __init__(self, name: str, *, expected_server_pid: int | None) -> None:
-        self._pool = httpcore.ConnectionPool(network_backend=PipeNetworkBackend(name, expected_server_pid))
+        self._pool = httpcore.ConnectionPool(
+            network_backend=PipeNetworkBackend(name, expected_server_pid),
+            keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
+        )
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         core_request = httpcore.Request(

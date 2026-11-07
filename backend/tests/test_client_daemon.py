@@ -151,6 +151,17 @@ def test_pipe_is_user_only_and_rejects_squatters(daemon_home):
 
 
 @windows_only
+def test_pipe_client_survives_daemon_idle_timeout(daemon_home):
+    """uvicorn closes idle connections after 5 s; the pool must not reuse that pipe."""
+    _setup_worker_profile()
+    start_daemon_background(sock=daemon_home["sock"])
+    with daemon_client(timeout=5.0) as client:
+        assert client.get("/v1/status").status_code == 200
+        time.sleep(6.5)
+        assert client.get("/v1/status").status_code == 200
+
+
+@windows_only
 def test_losing_daemon_keeps_the_running_pid_file(daemon_home):
     _setup_worker_profile()
     pid = start_daemon_background(sock=daemon_home["sock"])
