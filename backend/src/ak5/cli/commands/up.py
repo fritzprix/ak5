@@ -21,6 +21,7 @@ from ak5.daemon.profiles import (
     set_default_profile,
     upsert_profile,
 )
+from ak5.paths import get_default_attachments_dir, get_default_database_url
 from rich.console import Console
 from rich.panel import Panel
 
@@ -41,6 +42,34 @@ DEFAULT_LOCAL_AGENT_SPECS: tuple[tuple[str, str, str, list[str]], ...] = (
         ["review", "qa", "security", "code-review"],
     ),
 )
+
+# Runtime that ``ak5 up`` always uses, even when the shell or a checkout ``.env``
+# carries hosted (Vercel/Neon) values. Hosted-only keys are set to "" rather than
+# removed because pydantic Settings would otherwise read them from ``.env``.
+_LOCAL_UP_RUNTIME_ENV: dict[str, str] = {
+    "AK5_DEPLOY_PROFILE": "local",
+    "AK5_BLOB_BACKEND": "fs",
+    "AK5_NOTIFY": "inproc",
+    # inproc notify is only valid for one instance and is otherwise downgraded to poll.
+    "AK5_INSTANCES": "1",
+    "LONG_POLL_USE_INPROCESS_NOTIFY": "true",
+    "AK5_DATABASE_ADMIN_URL": "",
+    "DATABASE_ADMIN_URL": "",
+    "AK5_CLIENT_IP_HEADER": "",
+    "AK5_TRUSTED_PROXIES": "",
+}
+
+
+def _pin_local_up_runtime_env() -> list[str]:
+    """Force the local runtime into ``os.environ``; return keys whose value was replaced."""
+    pinned = {
+        **_LOCAL_UP_RUNTIME_ENV,
+        "DATABASE_URL": get_default_database_url(),
+        "ATTACHMENTS_DIR": str(get_default_attachments_dir()),
+    }
+    replaced = sorted(key for key, value in pinned.items() if os.environ.get(key, value) != value)
+    os.environ.update(pinned)
+    return replaced
 
 
 async def bootstrap_local_profiles(api_url: str) -> dict[str, str]:
@@ -321,6 +350,9 @@ def up_command(
     Automatically initializes the local database, provisions ready-to-use CLI
     profiles (`me`, `triage`, `worker`, `gatekeeper`), starts the client daemon,
     and opens the Web Dashboard signed in as the local owner.
+
+    Always runs the local runtime (SQLite, fs blobs, inproc notify) even if `.env`
+    holds hosted settings; use `ak5 serve` to run against those.
     """
     from ak5.cli.server_extra import require_server_extra
 
@@ -333,6 +365,12 @@ def up_command(
         raise SystemExit(1)
 
     _load_dotenv_files()
+    replaced = _pin_local_up_runtime_env()
+    if replaced:
+        console.print(
+            f"[yellow]ak5 up uses the local runtime; ignoring {', '.join(replaced)}. "
+            "Use [cyan]ak5 serve[/cyan] to run with those settings.[/yellow]"
+        )
     _prepare_database()
 
     api_url = f"http://127.0.0.1:{port}/api/v1"

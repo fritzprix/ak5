@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 from ak5.cli.commands.demo import run_collaboration_simulation
-from ak5.cli.commands.up import bootstrap_local_profiles
+from ak5.cli.commands.up import _pin_local_up_runtime_env, bootstrap_local_profiles
 from ak5.cli.main import cli
 from ak5.daemon.credentials import load_credential
 from ak5.daemon.profiles import list_profiles, load_profiles_file
@@ -24,6 +24,112 @@ def test_up_help_and_non_loopback_rejected() -> None:
     bad_res = runner.invoke(cli, ["up", "--host", "0.0.0.0"])
     assert bad_res.exit_code == 1
     assert "local loopback only" in bad_res.output
+
+
+HOSTED_ENV = {
+    "DATABASE_URL": "postgresql+asyncpg://u:p@ep-x-pooler.neon.tech/ak5",
+    "AK5_DATABASE_ADMIN_URL": "postgresql+asyncpg://u:p@ep-x.neon.tech/ak5",
+    "DATABASE_ADMIN_URL": "postgresql+asyncpg://u:p@ep-x.neon.tech/ak5",
+    "AK5_DEPLOY_PROFILE": "hosted",
+    "AK5_BLOB_BACKEND": "vercel-blob",
+    "AK5_NOTIFY": "poll",
+    "AK5_CLIENT_IP_HEADER": "x-vercel-forwarded-for",
+    "AK5_TRUSTED_PROXIES": "0.0.0.0/0",
+    "ATTACHMENTS_DIR": "/tmp/ak5-attachments",
+    "AK5_INSTANCES": "2",
+    "LONG_POLL_USE_INPROCESS_NOTIFY": "false",
+}
+
+
+def test_hosted_fixture_covers_every_pinned_key() -> None:
+    from ak5.cli.commands.up import _LOCAL_UP_RUNTIME_ENV
+
+    assert set(HOSTED_ENV) == set(_LOCAL_UP_RUNTIME_ENV) | {"DATABASE_URL", "ATTACHMENTS_DIR"}
+
+
+def _set_hosted_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in HOSTED_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("AK5_AUTH_PASSWORD", "from-dotenv")
+
+
+def test_pin_local_runtime_overrides_hosted_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ak5.paths import get_default_attachments_dir, get_default_database_url
+
+    _set_hosted_env(monkeypatch)
+
+    replaced = _pin_local_up_runtime_env()
+
+    assert replaced == sorted(HOSTED_ENV)
+    assert os.environ["DATABASE_URL"] == get_default_database_url()
+    assert os.environ["ATTACHMENTS_DIR"] == str(get_default_attachments_dir())
+    assert os.environ["AK5_DEPLOY_PROFILE"] == "local"
+    assert os.environ["AK5_BLOB_BACKEND"] == "fs"
+    assert os.environ["AK5_NOTIFY"] == "inproc"
+    assert os.environ["AK5_INSTANCES"] == "1"
+    assert os.environ["LONG_POLL_USE_INPROCESS_NOTIFY"] == "true"
+    for key in ("AK5_DATABASE_ADMIN_URL", "DATABASE_ADMIN_URL", "AK5_CLIENT_IP_HEADER", "AK5_TRUSTED_PROXIES"):
+        assert os.environ[key] == ""
+    assert os.environ["AK5_AUTH_PASSWORD"] == "from-dotenv"
+
+
+def test_pin_local_runtime_reports_nothing_when_already_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_hosted_env(monkeypatch)
+    _pin_local_up_runtime_env()
+    assert _pin_local_up_runtime_env() == []
+
+
+def test_pinned_env_beats_hosted_dotenv_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """pydantic Settings reads ``.env`` itself; pinned (even empty) env vars must win."""
+    import ak5.server.config as server_config
+    from ak5.paths import get_default_attachments_dir
+
+    _set_hosted_env(monkeypatch)
+    for key in HOSTED_ENV:
+        monkeypatch.delenv(key)
+    (tmp_path / ".env").write_text(
+        "".join(f"{key}={value}\n" for key, value in HOSTED_ENV.items()), encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    _pin_local_up_runtime_env()
+    loaded = server_config.Settings()
+    monkeypatch.setattr(server_config, "settings", loaded)
+
+    assert loaded.DATABASE_URL.startswith("sqlite+aiosqlite:///")
+    assert loaded.DATABASE_ADMIN_URL == ""
+    attachments_dir = loaded.ATTACHMENTS_DIR
+    assert attachments_dir == str(get_default_attachments_dir())
+    assert server_config.get_deploy_profile() == "local"
+    assert server_config.get_notify_mode() == "inproc"
+    server_config.validate_notify_config()
+
+
+def test_up_pins_local_runtime_before_serving(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ak5.cli.commands.up as up_module
+
+    _set_hosted_env(monkeypatch)
+    seen: dict[str, str] = {}
+
+    async def fake_bootstrap(api_url: str) -> dict[str, str]:
+        return {}
+
+    def fake_run_serve(**kwargs: object) -> None:
+        seen.update({key: os.environ[key] for key in HOSTED_ENV})
+
+    monkeypatch.setattr(up_module, "_prepare_database", lambda: None)
+    monkeypatch.setattr(up_module, "bootstrap_local_profiles", fake_bootstrap)
+    monkeypatch.setattr(up_module, "_print_quickstart_banner", lambda *args: None)
+    monkeypatch.setattr(up_module, "run_serve", fake_run_serve)
+    monkeypatch.setenv("AK5_LOCAL_AUTO_LOGIN", "0")
+
+    result = CliRunner().invoke(cli, ["up", "--no-browser"])
+
+    assert result.exit_code == 0, result.output
+    assert "ignoring" in result.output
+    assert seen["AK5_DEPLOY_PROFILE"] == "local"
+    assert seen["DATABASE_URL"].startswith("sqlite+aiosqlite:///")
+    assert seen["AK5_CLIENT_IP_HEADER"] == ""
 
 
 def test_global_profile_flag_restores_env(
