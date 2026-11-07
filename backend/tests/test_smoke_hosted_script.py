@@ -79,6 +79,7 @@ def _set(path: str, resp: httpx.Response) -> Callable[[dict[str, httpx.Response]
             {"readyz"},
             id="blob-not-ready",
         ),
+        pytest.param(_set("/readyz", httpx.Response(200, json=[])), {"readyz"}, id="readyz-not-object"),
         pytest.param(_set("/meta", httpx.Response(200, json={"api_version": "1"})), {"meta"}, id="wrong-api"),
         pytest.param(
             _set("/", httpx.Response(200, json={"detail": "api only"})),

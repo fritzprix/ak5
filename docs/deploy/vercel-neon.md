@@ -104,7 +104,7 @@ uv run --directory backend --extra server --extra postgres ak5 db maintenance --
 | Web UI | wheel에 든 `web_ui`, 또는 `scripts/build_web_ui.sh`로 빌드한 것 | 같은 빌드 결과물이 배포에 포함돼야 함 |
 | `.env` | 공유해도 됨. `ak5 up`이 로컬 값으로 덮어씀 | 쓰지 않음 (프로젝트 env) |
 
-- `ak5 up`이 무시하는 키와 그 이유는 [MANUAL §2.2](../MANUAL.md)에 있다. `.env`의 Neon 값을 로컬에서 일부러 쓰려면 `ak5 serve`를 쓴다 ([MANUAL §2.3](../MANUAL.md)).
+- `ak5 up`은 `.env`나 셸에 무엇이 있든 다음 키를 로컬 값으로 고정하고, 바꾼 키는 시작할 때 `ignoring …` 메시지로 알려 준다: `DATABASE_URL`, `AK5_DATABASE_ADMIN_URL`, `DATABASE_ADMIN_URL`, `ATTACHMENTS_DIR`, `AK5_DEPLOY_PROFILE`, `AK5_BLOB_BACKEND`, `AK5_NOTIFY`, `AK5_INSTANCES`, `LONG_POLL_USE_INPROCESS_NOTIFY`, `AK5_CLIENT_IP_HEADER`, `AK5_TRUSTED_PROXIES` ([MANUAL §2.2](../MANUAL.md)). `.env`의 Neon 값을 로컬에서 일부러 쓰려면 `ak5 serve`를 쓴다 ([MANUAL §2.3](../MANUAL.md)).
 - `ak5 up`에서도 인증 비밀(`AK5_AUTH_PASSWORD` 등)은 `.env` 값을 그대로 쓴다.
 - `backend/src/ak5/server/web_ui/`의 빌드 결과물(`_next/`)은 gitignore 대상이다. 배포 전에 `scripts/build_web_ui.sh`를 돌리고, 업로드에 `_next/`가 빠지지 않았는지 아래 스모크 체크로 확인한다. HTML만 있고 chunk가 404면 대시보드가 깨진다.
 - `/tmp` 위의 `fs` blob은 임시 우회일 뿐이다(인스턴스마다 따로이고 사라진다). 상시 배포는 `vercel-blob`을 쓴다.

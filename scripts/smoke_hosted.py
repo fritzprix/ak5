@@ -41,9 +41,10 @@ def first_chunk_path(html: str) -> str | None:
 def _check_readyz(client: httpx.Client) -> CheckResult:
     resp = client.get("/readyz")
     try:
-        status = resp.json().get("status") if resp.status_code == 200 else None
+        body = resp.json() if resp.status_code == 200 else None
     except ValueError:
-        status = None
+        body = None
+    status = body.get("status") if isinstance(body, dict) else None
     if status == "ready":
         return CheckResult("readyz", True, "ready")
     return CheckResult("readyz", False, f"HTTP {resp.status_code}: {resp.text[:200]}")
