@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `ak5 onboard`: read-only setup check (server, daemon, profiles, skill) that prints the next steps for an agent, including what to ask the human
+- `ak5 onboard`: read-only setup check (server, daemon, profiles, skill) that prints the next steps for an agent, including what to ask the human. URLs that are not an AK5 API report as not ready, and skill copies from another CLI version are flagged
 - `ak5 skill show|install`: the agent skill now ships in the wheel; `install` copies it into `.agents/`, `.claude/`, or `.cursor/` skill directories (`--global`, `--dir`, `--force`)
 - README: short copy-paste prompt that onboards an agent through `uvx ak5 onboard`
 

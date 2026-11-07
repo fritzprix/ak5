@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
-from ak5.cli.commands.skill import bundled_skill_files
+from ak5.cli.commands.skill import bundled_skill_files, bundled_skill_md, skill_md_is_current
 from ak5.cli.main import cli
 from click.testing import CliRunner
 
@@ -30,7 +33,30 @@ def test_bundled_skill_matches_repo_skill() -> None:
 def test_skill_show_prints_skill_md() -> None:
     result = CliRunner().invoke(cli, ["skill", "show"])
     assert result.exit_code == 0, result.output
-    assert result.output.startswith("---\nname: ak5")
+    assert _normalized(result.stdout_bytes).startswith(b"---\nname: ak5")
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "cp949", "ascii"])
+def test_skill_show_survives_legacy_stdout_encoding(encoding: str) -> None:
+    env = {**os.environ, "PYTHONUTF8": "0", "PYTHONIOENCODING": encoding}
+    proc = subprocess.run(
+        [sys.executable, "-c", "from ak5.cli.main import cli; cli()", "skill", "show"],
+        capture_output=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert proc.stdout == bundled_skill_md()
+
+
+def test_skill_md_is_current(tmp_path: Path) -> None:
+    installed = tmp_path / "SKILL.md"
+    assert skill_md_is_current(installed) is False
+    installed.write_bytes(bundled_skill_md())
+    assert skill_md_is_current(installed) is True
+    installed.write_text("older copy", encoding="utf-8")
+    assert skill_md_is_current(installed) is False
 
 
 def test_skill_install_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 import httpx
 from ak5 import __version__
-from ak5.cli.commands.skill import installed_skill_paths
+from ak5.cli.commands.skill import installed_skill_paths, skill_md_is_current
 from ak5.cli.config import get_api_url
 from ak5.client.http import api_root_from_url, versions_compatible
 from ak5.daemon.credentials import load_credential
@@ -44,26 +44,39 @@ class OnboardReport:
     daemon_running: bool
     profiles: list[ProfileCheck]
     skill_paths: list[str]
+    stale_skill_paths: list[str] = field(default_factory=list)
     next_steps: list[str] = field(default_factory=list)
 
 
-def _probe_server(api_url: str) -> ServerCheck:
+def _probe_server(api_url: str, transport: httpx.BaseTransport | None = None) -> ServerCheck:
+    """Ready only when ``/readyz`` is 200 and ``/meta`` is an AK5 version document."""
     check = ServerCheck(api_url=api_url)
-    root = api_root_from_url(api_url)
     try:
-        with httpx.Client(base_url=root, timeout=PROBE_TIMEOUT_SECONDS) as client:
-            ready = client.get("/readyz")
-            check.ready = ready.status_code == 200
+        root = api_root_from_url(api_url)
+        with httpx.Client(base_url=root, timeout=PROBE_TIMEOUT_SECONDS, transport=transport) as client:
+            readyz = client.get("/readyz")
+            if readyz.status_code != 200:
+                check.error = f"/readyz returned HTTP {readyz.status_code}"
+                return check
             meta = client.get("/meta")
-            if meta.is_success:
-                body = meta.json()
-                check.api_version = str(body.get("api_version", ""))
-                check.compatible = versions_compatible(
-                    server_api_version=check.api_version,
-                    server_min_client=str(body.get("min_client", "0.0.0")),
-                )
-    except httpx.HTTPError as exc:
+            if not meta.is_success:
+                check.error = f"/meta returned HTTP {meta.status_code}; not an AK5 API?"
+                return check
+            body = meta.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers malformed URLs and non-JSON bodies (json.JSONDecodeError).
         check.error = f"{type(exc).__name__}: {exc}"
+        return check
+    api_version = body.get("api_version") if isinstance(body, dict) else None
+    if not isinstance(api_version, str) or not api_version:
+        check.error = "/meta has no api_version; not an AK5 API?"
+        return check
+    check.ready = True
+    check.api_version = api_version
+    check.compatible = versions_compatible(
+        server_api_version=api_version,
+        server_min_client=str(body.get("min_client", "0.0.0")),
+    )
     return check
 
 
@@ -90,10 +103,17 @@ def _next_steps(report: OnboardReport) -> list[str]:
     if not report.daemon_running:
         steps.append("Run `ak5 daemon start` (non-blocking; it holds your credentials).")
     if not report.skill_paths:
-        steps.append(
-            "Run `ak5 skill show` and follow it for all ticket work. Ask the human whether to save it "
-            "for your harness with `ak5 skill install --harness <agents|claude|cursor>`."
-        )
+        if report.stale_skill_paths:
+            save_hint = (
+                f"The installed copies are from another CLI version ({', '.join(report.stale_skill_paths)}); "
+                "ask the human whether to refresh them with `ak5 skill install --force --harness <agents|claude|cursor>`."
+            )
+        else:
+            save_hint = (
+                "Ask the human whether to save it for your harness with "
+                "`ak5 skill install --harness <agents|claude|cursor>`."
+            )
+        steps.append(f"Run `ak5 skill show` and follow it for all ticket work. {save_hint}")
     reusable = [
         p.name
         for p in report.profiles
@@ -104,7 +124,7 @@ def _next_steps(report: OnboardReport) -> list[str]:
         [
             "ASK THE HUMAN, in one message with your recommended defaults: "
             "(1) role: triage (inbox to spec), worker (build), or gatekeeper (review); "
-            "(2) board: show them `ak5 boards` (triage uses the inbox); "
+            "(2) board ID, or 'list them after login' (triage uses the inbox); "
             "(3) identity: reuse a profile or register a new one;"
             f"{reuse_hint} "
             "(4) capabilities, e.g. py,web; "
@@ -113,6 +133,8 @@ def _next_steps(report: OnboardReport) -> list[str]:
             f"New identity: run `ak5 login --url {server.api_url} --agent <NAME> --role <ROLE> --caps <CAPS>`, "
             "show the human the approval URL it prints, and wait for them to approve it. You never "
             "approve yourself. Done when `ak5 whoami --profile <NAME>` shows the role.",
+            # Listing boards needs a token, and --profile pins it to the server checked above.
+            "Board not chosen yet: run `ak5 --profile <NAME> boards` and ask the human to pick one.",
             "Verify without claiming: `ak5 --json --profile <NAME> next --board <BOARD>` "
             "(`--inbox` for triage). Exit 0 or 6 means you are set up.",
             "Wake hook only: `ak5 subscribe add <BOARD> --profile <NAME> --events WORK_AVAILABLE "
@@ -125,7 +147,11 @@ def _next_steps(report: OnboardReport) -> list[str]:
 
 
 def _logged_in(profile_name: str) -> bool:
-    cred = load_credential(profile_name)
+    try:
+        cred = load_credential(profile_name)
+    except (OSError, ValueError):
+        # Unreadable or corrupt credential file: the profile needs a fresh login.
+        return False
     return cred is not None and cred.status == "active"
 
 
@@ -140,12 +166,14 @@ def build_report(api_url: str) -> OnboardReport:
         )
         for p in list_profiles()
     ]
+    installed = installed_skill_paths([Path.cwd(), Path.home()])
     report = OnboardReport(
         cli_version=__version__,
         server=_probe_server(api_url),
         daemon_running=is_daemon_running(),
         profiles=profiles,
-        skill_paths=[str(p) for p in installed_skill_paths([Path.cwd(), Path.home()])],
+        skill_paths=[str(p) for p in installed if skill_md_is_current(p)],
+        stale_skill_paths=[str(p) for p in installed if not skill_md_is_current(p)],
     )
     report.next_steps = _next_steps(report)
     return report
@@ -166,7 +194,10 @@ def _print_human(report: OnboardReport) -> None:
             click.echo(f"Profile    {p.name}  {p.principal}/{p.role or '-'}  {state}  {p.server}")
     else:
         click.echo("Profile    none")
-    click.echo(f"Skill      {', '.join(report.skill_paths) or 'not installed'}")
+    if report.skill_paths or not report.stale_skill_paths:
+        click.echo(f"Skill      {', '.join(report.skill_paths) or 'not installed'}")
+    for path in report.stale_skill_paths:
+        click.echo(f"Skill      {path}  (other CLI version)")
     click.echo("")
     click.echo("Next steps:")
     for i, step in enumerate(report.next_steps, 1):

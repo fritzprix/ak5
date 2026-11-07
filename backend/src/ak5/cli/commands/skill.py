@@ -54,6 +54,18 @@ def bundled_skill_files() -> list[SkillFile]:
     return sorted(out, key=lambda f: f.relpath.as_posix())
 
 
+def bundled_skill_md() -> bytes:
+    return (bundled_skill_root() / "SKILL.md").read_bytes()
+
+
+def skill_md_is_current(path: Path) -> bool:
+    """Whether an installed ``SKILL.md`` matches the copy bundled with this CLI."""
+    try:
+        return path.read_bytes() == bundled_skill_md()
+    except OSError:
+        return False
+
+
 def skill_dir(target: str, base: Path) -> Path:
     return base / HARNESS_DIRS[target] / SKILL_NAME
 
@@ -100,7 +112,9 @@ def skill_group() -> None:
 @skill_group.command("show")
 def skill_show() -> None:
     """Print the bundled SKILL.md to stdout."""
-    click.echo((bundled_skill_root() / "SKILL.md").read_text(encoding="utf-8"), nl=False)
+    # Bytes go to the binary buffer; the text stream would encode with the locale code page
+    # (cp949/cp1252 on Windows), which cannot represent every character in SKILL.md.
+    click.echo(bundled_skill_md(), nl=False)
 
 
 @skill_group.command("install")
