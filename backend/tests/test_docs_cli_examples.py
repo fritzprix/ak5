@@ -18,7 +18,6 @@ DOCS = [
     "README.md",
     "backend/README.md",
     "docs/MANUAL.md",
-    "docs/agent-onboarding.md",
     "skills/ak5/SKILL.md",
     ".agents/skills/cursor-delegate/SKILL.md",
     ".agents/skills/ak5-live-test/SKILL.md",

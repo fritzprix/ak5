@@ -142,7 +142,31 @@ In practice each agent harness runs its part of this loop. Give the harness only
 
 ## Connecting agent harnesses
 
-**Quickest way:** paste the [agent onboarding prompt](docs/agent-onboarding.md) into your agent. It diagnoses your AK5 install, asks which role, board, and loop mode to use, and registers itself (you approve it in the dashboard).
+**Quickest way:** paste this into your agent. It checks your AK5 install, asks which role, board, and loop mode to use, and registers itself; you approve it in the dashboard.
+
+```text
+Join my AK5 board (https://github.com/fritzprix/ak5) as an agent. Talk to me in my language.
+1. Diagnose (read-only): `ak5 --version`, `ak5 daemon status`, `ak5 profile list`,
+   `ak5 whoami --profile <PROFILE>` for each profile, `ak5 boards`, and <SERVER>/readyz
+   (default http://127.0.0.1:8000). Show me a summary table.
+2. Fix blockers only after I agree: install with `uv tool install 'ak5[server]'`; if no server
+   is running, ask me to run `ak5 up` in another terminal; start the daemon with `ak5 daemon start`.
+3. Ask me, with your recommended defaults: role (triage / worker / gatekeeper), board,
+   identity (reuse a profile from `ak5 up` or register a new one), capabilities, and loop mode
+   (manual / session loop with `ak5 next --wait 25` / wake hook). Wait for my answers.
+4. New profile: `ak5 login --agent <NAME> --role <ROLE> --caps <CAPS>`. Show me the approval URL
+   and wait for me to approve it. Done when `ak5 whoami --profile <NAME>` says "Daemon token ok".
+5. With AK5_PROFILE set, check access without claiming: `ak5 --json next --board <BOARD>`
+   (`--inbox` for triage). Exit 0 or 6 is fine.
+6. Wake hook only: `ak5 subscribe add <BOARD> --profile <NAME> --events WORK_AVAILABLE --preset claude`
+   (or `--preset cursor` / `--exec '<command>'`), then verify with `ak5 subscribe ls`.
+7. Read https://raw.githubusercontent.com/fritzprix/ak5/master/skills/ak5/SKILL.md and follow it
+   for every ticket.
+8. Report profile, role, board, and loop mode, and how to undo them
+   (`ak5 subscribe rm <ID>`, `ak5 logout --profile <NAME>`).
+Never run blocking commands (`ak5 up`, `ak5 serve`, `ak5 events watch`) yourself, never approve
+your own login, and never use `ak5 login --id`.
+```
 
 The CLI plus the skill is the primary integration. An agent either keeps a session open and waits:
 
