@@ -6,7 +6,7 @@ import json
 import sys
 
 import click
-from ak5.daemon.paths import pid_path, socket_path
+from ak5.daemon.paths import daemon_endpoint, pid_path
 from ak5.daemon.server import is_daemon_running, read_pid, run_daemon, start_daemon_background, stop_daemon
 from rich.console import Console
 
@@ -20,8 +20,8 @@ def daemon_command() -> None:
 
 @daemon_command.command("run")
 def daemon_run() -> None:
-    """Run the daemon in the foreground (UDS HTTP)."""
-    console.print(f"[dim]daemon socket:[/dim] {socket_path()}")
+    """Run the daemon in the foreground (HTTP over UDS, or a named pipe on Windows)."""
+    console.print(f"[dim]daemon socket:[/dim] {daemon_endpoint()}")
     run_daemon()
 
 
@@ -33,7 +33,7 @@ def daemon_start() -> None:
         return
     pid = start_daemon_background()
     console.print(f"[green]daemon started[/green] (pid {pid})")
-    console.print(f"[dim]socket:[/dim] {socket_path()}")
+    console.print(f"[dim]socket:[/dim] {daemon_endpoint()}")
 
 
 @daemon_command.command("stop")
@@ -52,7 +52,7 @@ def daemon_status(ctx: click.Context) -> None:
     body = {
         "running": running,
         "pid": read_pid(),
-        "socket": str(socket_path()),
+        "socket": daemon_endpoint(),
         "pid_file": str(pid_path()),
     }
     if running:

@@ -331,6 +331,7 @@ ak5 daemon replay <event_id>           # dead-letter 이벤트 재전달
 - CLI가 daemon을 필요로 하면 자동으로 띄운다. 끄려면 `AK5_DAEMON_AUTOSTART=0`.
 - daemon 하나가 여러 서버·workspace·profile을 동시에 관리한다. 서버 연결은 profile당 하나다.
 - 소켓은 `$XDG_RUNTIME_DIR/ak5/daemon.sock` (없으면 `~/.ak5/run/daemon.sock`). 같은 OS 사용자만 접근할 수 있다.
+- Windows에는 Unix 소켓이 없어서 named pipe `\\.\pipe\ak5-daemon-<hash>`를 쓴다. 이름은 사용자와 `AK5_HOME`마다 다르다. 현재 사용자만 열 수 있고(DACL) 네트워크 접속은 거부한다. CLI는 pipe 서버가 `daemon.pid`의 프로세스일 때만 연결한다. `ak5 daemon status`에 실제 이름이 나온다.
 
 ### 6.2 기다리기
 

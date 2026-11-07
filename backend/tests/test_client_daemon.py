@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -11,10 +13,16 @@ import pytest
 from ak5.cli.main import cli
 from ak5.contracts.errors import EXIT_CODE, ErrorCode
 from ak5.daemon.credentials import ProfileCredential, save_credential
+from ak5.daemon.ipc import daemon_client
+from ak5.daemon.paths import daemon_endpoint
 from ak5.daemon.profiles import Profile, list_profiles, upsert_profile
-from ak5.daemon.server import is_daemon_running, start_daemon_background, stop_daemon
+from ak5.daemon.server import is_daemon_running, read_pid, start_daemon_background, stop_daemon
 from click.testing import CliRunner
-from httpx import HTTPTransport
+
+WINDOWS = sys.platform == "win32"
+posix_hooks = pytest.mark.skipif(WINDOWS, reason="hook commands here are POSIX shell (touch, sleep, $VAR)")
+posix_socket = pytest.mark.skipif(WINDOWS, reason="Unix domain socket file; Windows uses a named pipe")
+windows_only = pytest.mark.skipif(not WINDOWS, reason="named pipe transport")
 
 
 @pytest.fixture
@@ -39,12 +47,141 @@ def daemon_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     stop_daemon()
 
 
-def _uds_client(sock: Path) -> httpx.Client:
-    return httpx.Client(
-        transport=HTTPTransport(uds=str(sock)),
-        base_url="http://ak5-daemon",
-        timeout=5.0,
+def _client() -> httpx.Client:
+    """Platform transport (UDS at ``sock``, or the named pipe on Windows)."""
+    return daemon_client(timeout=5.0)
+
+
+def _setup_worker_profile() -> None:
+    upsert_profile(Profile(name="worker-1", server="http://127.0.0.1:9/api/v1", role="worker"))
+    save_credential(
+        "worker-1",
+        ProfileCredential(access_token="tok-abc", actor_id="agent_w1", status="active"),
     )
+
+
+def test_daemon_status_token_and_events_over_ipc(daemon_home):
+    """Transport round trip on every platform (UDS, or the named pipe on Windows #182)."""
+    _setup_worker_profile()
+    pid = start_daemon_background(sock=daemon_home["sock"])
+    assert pid == read_pid()
+    assert is_daemon_running()
+    with daemon_client(timeout=5.0) as client:
+        status = client.get("/v1/status")
+        assert status.status_code == 200
+        assert status.json()["pid"] == pid
+        token = client.post("/v1/token", json={"profile": "worker-1"})
+        assert token.json()["access_token"] == "tok-abc"
+        spooled = client.post(
+            "/v1/spool",
+            json={"profile": "worker-1", "type": "WORK_AVAILABLE", "ticket_id": "TK-1", "data": {}},
+        )
+        assert spooled.status_code == 200
+        events = client.get(
+            "/v1/events",
+            params={"profile": "worker-1", "cursor": 0, "wait": 0, "events": "WORK_AVAILABLE"},
+        ).json()["events"]
+        assert [e["ticket_id"] for e in events] == ["TK-1"]
+    stop_daemon()
+    assert not is_daemon_running()
+
+
+def _pipe_dacl_sddl(name: str) -> str:
+    """DACL of a named pipe as SDDL, read with GetNamedSecurityInfoW."""
+    import ctypes
+    from ctypes import wintypes
+
+    se_file_object, dacl_information, sddl_revision_1 = 1, 4, 1
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    adv.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+        wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID,
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    adv.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
+    adv.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), wintypes.LPVOID,
+    ]
+    k32.LocalFree.restype = wintypes.LPVOID
+    k32.LocalFree.argtypes = [wintypes.LPVOID]
+
+    descriptor = wintypes.LPVOID()
+    err = adv.GetNamedSecurityInfoW(name, se_file_object, dacl_information, None, None, None, None, ctypes.byref(descriptor))
+    assert err == 0, ctypes.WinError(err)
+    try:
+        text = wintypes.LPWSTR()
+        ok = adv.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, sddl_revision_1, dacl_information, ctypes.byref(text), None
+        )
+        assert ok, ctypes.WinError(ctypes.get_last_error())
+        try:
+            return str(text.value)
+        finally:
+            k32.LocalFree(text)
+    finally:
+        k32.LocalFree(descriptor)
+
+
+@windows_only
+def test_pipe_is_user_only_and_rejects_squatters(daemon_home):
+    from ak5.daemon.win32 import PipeTransport, _UserOnlySecurity, create_pipe_instance, current_user_sid
+
+    _setup_worker_profile()
+    start_daemon_background(sock=daemon_home["sock"])
+    name = daemon_endpoint()
+
+    sddl = _pipe_dacl_sddl(name)
+    assert sddl.startswith("D:P"), sddl  # protected: nothing inherited
+    aces = sddl[3:].strip("()").split(")(")
+    assert len(aces) == 1, sddl
+    assert aces[0].startswith("A;") and aces[0].endswith(f";{current_user_sid()}"), sddl
+
+    security = _UserOnlySecurity()
+    try:
+        with pytest.raises(PermissionError):
+            create_pipe_instance(name, security, first=True)
+    finally:
+        security.free()
+
+    squatted = httpx.Client(transport=PipeTransport(name, expected_server_pid=1), base_url="http://ak5-daemon")
+    with squatted, pytest.raises(httpx.ConnectError, match="refusing to connect"):
+        squatted.get("/v1/status")
+
+
+@windows_only
+def test_losing_daemon_keeps_the_running_pid_file(daemon_home):
+    _setup_worker_profile()
+    pid = start_daemon_background(sock=daemon_home["sock"])
+    second = subprocess.run(
+        [sys.executable, "-m", "ak5.cli.main", "daemon", "run"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert second.returncode != 0
+    assert read_pid() == pid
+    assert is_daemon_running()
+
+
+@windows_only
+def test_pid_alive_does_not_signal_on_windows():
+    from ak5.daemon.server import pid_alive
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        assert pid_alive(child.pid)
+        time.sleep(0.3)
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    assert not pid_alive(child.pid)
 
 
 def test_daemon_unavailable_exit_code():
@@ -59,6 +196,7 @@ def test_profiles_roundtrip(daemon_home):
     assert any(p.name == "worker-1" and p.role == "worker" for p in rows)
 
 
+@posix_hooks
 def test_daemon_status_token_subscribers_and_waiters(daemon_home):
     sock: Path = daemon_home["sock"]
     upsert_profile(Profile(name="worker-1", server="http://127.0.0.1:9/api/v1", role="worker"))
@@ -75,7 +213,7 @@ def test_daemon_status_token_subscribers_and_waiters(daemon_home):
     # Best-effort 0600 (umask may differ); at least not world-writable
     assert mode & 0o002 == 0
 
-    with _uds_client(sock) as client:
+    with _client() as client:
         st = client.get("/v1/status")
         assert st.status_code == 200
         assert st.json()["pid"] == pid
@@ -190,6 +328,7 @@ def test_resolve_access_token_prefers_env(daemon_home, monkeypatch):
     assert resolve_access_token() == "env-token"
 
 
+@posix_socket
 def test_peer_uid_socket_not_world_accessible(daemon_home):
     sock: Path = daemon_home["sock"]
     upsert_profile(Profile(name="p", server="http://x/api/v1"))
@@ -212,6 +351,7 @@ def test_next_wait_option_registered():
     assert "--wait" in help_r.output
 
 
+@posix_hooks
 def test_slow_hook_does_not_block_token(daemon_home, monkeypatch):
     """client.md §4.3: one slow subscriber must not stall IPC (High review finding)."""
     import threading
@@ -225,7 +365,7 @@ def test_slow_hook_does_not_block_token(daemon_home, monkeypatch):
     )
     start_daemon_background(sock=sock)
     fast_ok = daemon_home["home"] / "fast.ok"
-    with _uds_client(sock) as client:
+    with _client() as client:
         assert (
             client.post(
                 "/v1/subscribers",
@@ -252,7 +392,7 @@ def test_slow_hook_does_not_block_token(daemon_home, monkeypatch):
     results: dict[str, object] = {}
 
     def _spool() -> None:
-        with _uds_client(sock) as c:
+        with _client() as c:
             results["spool"] = c.post(
                 "/v1/spool",
                 json={"profile": "worker-1", "type": "WORK_AVAILABLE", "data": {}},
@@ -262,7 +402,7 @@ def test_slow_hook_does_not_block_token(daemon_home, monkeypatch):
     t = threading.Thread(target=_spool)
     t.start()
     time.sleep(0.4)
-    with _uds_client(sock) as client:
+    with _client() as client:
         tok = client.post("/v1/token", json={"profile": "worker-1"}, timeout=2.0)
         assert tok.status_code == 200
         assert tok.json()["access_token"] == "tok-abc"
@@ -285,6 +425,7 @@ def test_cursor_expired_tip_parser():
     assert _tip_from_expired({"error": {"details": {"cursor": 5}}}) == 0
 
 
+@posix_hooks
 def test_fast_subscriber_not_blocked_by_slow_while_polling(daemon_home, monkeypatch):
     """client.md §4.3: new events must reach fast hooks while a slow hook still runs."""
     sock: Path = daemon_home["sock"]
@@ -296,7 +437,7 @@ def test_fast_subscriber_not_blocked_by_slow_while_polling(daemon_home, monkeypa
     )
     start_daemon_background(sock=sock)
     home: Path = daemon_home["home"]
-    with _uds_client(sock) as client:
+    with _client() as client:
         assert (
             client.post(
                 "/v1/subscribers",
@@ -365,6 +506,7 @@ def test_subscribe_add_is_local_only():
     assert "--local/--server" not in help_r.output
 
 
+@posix_hooks
 def test_overlapping_dispatch_runs_each_seq_once(daemon_home, monkeypatch):
     """Overlapping dispatch tasks must not re-run already-advanced seqs."""
     import asyncio
@@ -413,6 +555,7 @@ def test_overlapping_dispatch_runs_each_seq_once(daemon_home, monkeypatch):
         state.close()
 
 
+@posix_hooks
 def test_hook_env_carries_subscriber_profile_not_daemon_token(daemon_home, monkeypatch):
     """#78: each hook gets its own AK5_PROFILE; daemon-process tokens never leak in."""
     sock: Path = daemon_home["sock"]
@@ -425,7 +568,7 @@ def test_hook_env_carries_subscriber_profile_not_daemon_token(daemon_home, monke
     start_daemon_background(sock=sock)
 
     record = 'printf "%s|%s|%s|%s" "$AK5_PROFILE" "${AK5_TOKEN-unset}" "$AK5_SUBSCRIBER_ID" "$AK5_ACTOR_ID"'
-    with _uds_client(sock) as client:
+    with _client() as client:
         for name in ("worker-1", "gk-1"):
             res = client.post(
                 "/v1/subscribers",
