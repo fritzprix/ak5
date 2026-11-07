@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -125,8 +126,8 @@ async def test_oauth_flow_agent_grant_and_credential_mode(
     )
     path = credentials_dir() / "worker-1.json"
     assert path.is_file()
-    mode = path.stat().st_mode & 0o777
-    assert mode & 0o077 == 0  # not group/world readable
+    if sys.platform != "win32":  # POSIX modes; chmod on Windows only toggles read-only
+        assert path.stat().st_mode & 0o077 == 0  # not group/world readable
     loaded = load_credential("worker-1")
     assert loaded is not None
     assert loaded.access_token == bundle.access_token
@@ -184,7 +185,8 @@ async def test_daemon_login_poll_logout_agent(
         assert access.startswith("ak5_agt_")
 
         cred_path = credentials_dir() / "worker-1.json"
-        assert (cred_path.stat().st_mode & 0o777) & 0o077 == 0
+        if sys.platform != "win32":  # POSIX modes; chmod on Windows only toggles read-only
+            assert cred_path.stat().st_mode & 0o077 == 0
 
         logout = d.post("/v1/logout", json={"profile": "worker-1"})
         assert logout.status_code == 200

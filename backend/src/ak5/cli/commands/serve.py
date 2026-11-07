@@ -194,6 +194,7 @@ def start_daemon_sibling(
     start, poll briefly so an immediate crash surfaces a warning instead of
     silent failure.
     """
+    from ak5.daemon.server import detached_popen_kwargs
     from ak5.paths import get_app_data_dir
 
     argv = list(command) if command is not None else default_daemon_command()
@@ -211,7 +212,7 @@ def start_daemon_sibling(
             argv,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **detached_popen_kwargs(),
         )
 
     if early_exit_check_seconds > 0:
@@ -235,6 +236,13 @@ def stop_daemon_sibling(
     if proc.poll() is not None:
         return
     console.print("[dim]Stopping sibling daemon...[/dim]")
+    if sys.platform == "win32":
+        # No process groups to signal; terminate() is TerminateProcess.
+        with contextlib.suppress(OSError):
+            proc.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=grace_seconds)
+        return
     try:
         # start_new_session=True → kill the process group when possible.
         os.killpg(proc.pid, signal.SIGTERM)

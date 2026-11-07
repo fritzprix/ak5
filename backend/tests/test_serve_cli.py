@@ -623,6 +623,20 @@ def test_default_daemon_command_targets_cli_main() -> None:
     assert cmd[-2:] == ["daemon", "run"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows terminate path")
+def test_stop_daemon_sibling_terminates_on_windows() -> None:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    assert proc.poll() is None
+    stop_daemon_sibling(proc, grace_seconds=5.0)
+    assert proc.poll() is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups (os.killpg)")
 def test_stop_daemon_sibling_sends_sigterm() -> None:
     child_script = (
         "import time, signal, sys\n"

@@ -45,6 +45,11 @@ jobs:
         run: |
           uv run pytest backend/tests/test_import_boundaries.py -v
 
+      - name: CLI imports at the declared uvicorn floor
+        run: |
+          uv run --with "uvicorn[standard]==0.30.0" python -c "import uvicorn, ak5.cli.main; assert uvicorn.__version__ == '0.30.0'"
+          uv run --with "uvicorn[standard]==0.30.0" ak5 --help > /dev/null
+
       - name: Run Ruff Lint
         run: |
           uvx ruff check backend
@@ -54,6 +59,41 @@ jobs:
           rm -rf dist
           uv build backend --out-dir dist
           ./scripts/smoke_uvx_wheel.sh
+
+  windows-cli-ci:
+    name: Windows CLI & Daemon
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --all-packages --all-extras
+
+      - name: CLI, daemon named pipe, skill and onboard tests
+        run: >
+          uv run pytest -m "not live_server"
+          backend/tests/test_client_daemon.py
+          backend/tests/test_serve_cli.py
+          backend/tests/test_cli_session.py
+          backend/tests/test_cli_oauth_login.py
+          backend/tests/test_cli_daemon_token.py
+          backend/tests/test_skill_cli.py
+          backend/tests/test_onboard_cli.py
+
+      - name: Daemon named pipe at the declared uvicorn floor
+        run: uv run --with "uvicorn[standard]==0.30.0" pytest backend/tests/test_client_daemon.py
 
   live-server-ci:
     name: Live Server Contracts (CLI + SDK)

@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 import httpx
 
 from ak5.client.errors import EXIT_DAEMON, ClientError
 from ak5.contracts.errors import ErrorCode
-from ak5.daemon.paths import socket_path
-from ak5.daemon.server import is_daemon_running, start_daemon_background
+from ak5.daemon.paths import daemon_endpoint, socket_path
+from ak5.daemon.server import is_daemon_running, read_pid, start_daemon_background
 
 
-def _transport(sock: str | None = None) -> httpx.HTTPTransport:
-    path = sock or str(socket_path())
-    return httpx.HTTPTransport(uds=path)
+def _transport(sock: str | None = None) -> httpx.BaseTransport:
+    if sys.platform == "win32":
+        from ak5.daemon.win32 import PipeTransport
+
+        return PipeTransport(sock or daemon_endpoint(), expected_server_pid=read_pid())
+    return httpx.HTTPTransport(uds=sock or str(socket_path()))
 
 
 def daemon_client(*, sock: str | None = None, timeout: float = 10.0) -> httpx.Client:

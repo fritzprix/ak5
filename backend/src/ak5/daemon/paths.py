@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import stat
+import sys
 from pathlib import Path
 
 
@@ -61,6 +62,22 @@ def socket_path() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     return runtime_dir() / "daemon.sock"
+
+
+def daemon_endpoint() -> str:
+    """Where the daemon listens: the UDS path, or a named pipe on Windows (#182).
+
+    On Windows ``AK5_DAEMON_SOCK`` is honoured only when it names a pipe
+    (``\\\\.\\pipe\\…``); otherwise the pipe name is derived from the user and ``AK5_HOME``.
+    """
+    if sys.platform == "win32":
+        from ak5.daemon.win32 import PIPE_PREFIX, pipe_name_for
+
+        override = os.environ.get("AK5_DAEMON_SOCK", "").strip()
+        if override.lower().startswith(PIPE_PREFIX):
+            return override
+        return pipe_name_for(ak5_home())
+    return str(socket_path())
 
 
 def ensure_socket_parent(path: Path) -> None:

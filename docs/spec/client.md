@@ -175,6 +175,7 @@ ak5 next --wait <sec> [--board …]       # 할 일이 없으면 WORK_AVAILABLE�
 
 - Unix domain socket: `$XDG_RUNTIME_DIR/ak5/daemon.sock` (없으면 `~/.ak5/run/daemon.sock`). 디렉터리 0700, 소켓 0600, `SO_PEERCRED`(Linux)/`getpeereid`(macOS)로 같은 uid만 허용.
 - 프로토콜: UDS 위의 HTTP/1.1 + JSON (httpx `UDS` transport로 CLI 구현 단순화).
+- Windows (#182): 같은 HTTP/1.1을 named pipe `\\.\pipe\ak5-daemon-<sha256(SID|AK5_HOME)[:24]>` 위에서 쓴다. 인스턴스마다 보호된 DACL(현재 사용자 SID만 허용) + `PIPE_REJECT_REMOTE_CLIENTS`, 첫 인스턴스는 `FILE_FLAG_FIRST_PIPE_INSTANCE`로 이름 선점(squatting)을 거부한다. 클라이언트는 `GetNamedPipeServerProcessId`가 `daemon.pid`와 같을 때만 요청을 보낸다. `AK5_DAEMON_SOCK`은 `\\.\pipe\…` 값일 때만 적용된다.
 
 | 메서드 | 경로 | 용도 |
 |---|---|---|

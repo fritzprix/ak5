@@ -29,7 +29,18 @@ from click.testing import CliRunner
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AK5_PROJECT_ROOT", str(tmp_path))
-    for key in ("AK5_ACTOR_ID", "AK5_ACTOR_TOKEN", "AK5_ACTOR_ROLE", "AK5_SESSION_FILE", "AK5_API_URL"):
+    # The developer's own profiles and daemon must not answer for these session tests.
+    monkeypatch.setenv("AK5_HOME", str(tmp_path / "ak5-home"))
+    monkeypatch.setenv("AK5_DAEMON_AUTOSTART", "0")
+    for key in (
+        "AK5_ACTOR_ID",
+        "AK5_ACTOR_TOKEN",
+        "AK5_ACTOR_ROLE",
+        "AK5_SESSION_FILE",
+        "AK5_API_URL",
+        "AK5_PROFILE",
+        "AK5_TOKEN",
+    ):
         monkeypatch.delenv(key, raising=False)
     return tmp_path
 
