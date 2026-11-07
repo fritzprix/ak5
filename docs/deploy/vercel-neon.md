@@ -82,6 +82,18 @@ AK5_NOTIFY_POLL_MS=1000
 AK5_CLIENT_IP_HEADER=x-vercel-forwarded-for
 ```
 
+### Neon 연결 문자열과 asyncpg
+
+Neon 콘솔이 주는 URL(`?sslmode=require&channel_binding=require`)은 그대로 넣어도 된다. AK5는 asyncpg 드라이버를 쓰므로 libpq 전용 파라미터를 이렇게 바꾼다.
+
+| 파라미터 | 처리 |
+|---|---|
+| `sslmode` | asyncpg의 `ssl` 옵션으로 옮긴다. `verify-ca` / `verify-full`이면 AK5가 직접 인증서 검증 컨텍스트를 만든다(`verify-full`은 호스트명까지 확인) |
+| `sslrootcert` | `verify-ca` / `verify-full`에서만 쓴다: 파일 경로면 그 CA, `system`이나 생략이면 시스템 CA 저장소. 파일이 없으면 시작이 실패한다. 다른 모드에서는 **버린다** |
+| `channel_binding` | **버린다.** asyncpg에는 SCRAM channel binding이 없어서 연결은 channel binding 없이 이뤄진다 |
+
+버릴 때마다 시작 로그에 파라미터 이름만 담은 경고가 남는다(URL과 비밀번호는 남기지 않는다). `sslmode=require`는 서버 인증서를 검증하지 않으므로, channel binding이 빠지면 중간자 공격에 대한 남은 보호도 없다. 인증서를 검증하려면 `sslmode=verify-full`을 쓴다(Neon은 공인 CA 인증서를 쓰므로 `sslrootcert` 없이 시스템 저장소로 검증된다).
+
 스키마는 배포 파이프라인에서:
 
 ```bash

@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Windows: the client daemon now runs over a named pipe instead of a Unix socket, so `ak5 up` profiles and every daemon-backed CLI command work (previously exit 9 `DAEMON_UNAVAILABLE`). The pipe allows only the current user, rejects network clients, refuses a name already taken by another process, and the CLI only talks to the pipe served by the recorded daemon pid. Daemon liveness checks no longer send Ctrl+C to the target on Windows, and stopping `serve --daemon` no longer calls `os.killpg` there (#182)
+- Postgres: Neon-style `DATABASE_URL`s (`?sslmode=require&channel_binding=require`) no longer crash startup with `connect() got an unexpected keyword argument`. `sslmode` maps to asyncpg's `ssl`, and `channel_binding` / `sslrootcert` are dropped, for both the server engines and `ak5 db` (#179)
+- Postgres: web sign-in no longer fails to store its session. `user_sessions.refresh_token_hash` is widened to 256 characters (migration `0008_widen_session_token_hash`), since web sessions store a 129-character `cookie:csrf` digest pair (#179)
 
 ### Removed
 - npm publishing: `release-npm.yml`, the `npx ak5` launcher (`frontend/bin/cli.js`), and npm publish config. `frontend` and `packages/sdk` are now `private`; AK5 ships only via PyPI (#180)

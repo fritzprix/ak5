@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import (
 
 from ak5.paths import get_app_data_dir
 from ak5.server.config import settings
+from ak5.server.db_url import asyncpg_url_and_connect_args, normalize_database_url
 
 logger = logging.getLogger(__name__)
 
@@ -33,19 +34,9 @@ LEGACY_SUBSCRIPTIONS_EXPORT_KEYS = (
 # reset → seed) must not refuse dual-DB before `ak5 migrate-legacy` can run.
 # Safety gate lives in lifespan + `ak5 serve` / `ak5 web` (see main.py).
 
-def normalize_database_url(url_str: str) -> str:
-    """Normalize DATABASE_URL for SQLAlchemy async drivers (deployment.md §1.1)."""
-    if url_str.startswith("postgresql://"):
-        return "postgresql+asyncpg://" + url_str[len("postgresql://") :]
-    if url_str.startswith("postgres://"):
-        return "postgresql+asyncpg://" + url_str[len("postgres://") :]
-    return url_str
-
-
 def get_engine_options(url_str: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
     """Return (normalized_url, connect_args, engine_kwargs) based on dialect scheme."""
-    normalized = normalize_database_url(url_str)
-    connect_args: dict[str, Any] = {}
+    normalized, connect_args = asyncpg_url_and_connect_args(url_str)
     engine_kwargs: dict[str, Any] = {"echo": False, "future": True}
 
     if "sqlite" in normalized:
