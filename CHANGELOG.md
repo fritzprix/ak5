@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ak5 onboard`: read-only setup check (server, daemon, profiles, skill) that prints the next steps for an agent, including what to ask the human. URLs that are not an AK5 API report as not ready, and skill copies from another CLI version are flagged
 - `ak5 skill show|install`: the agent skill now ships in the wheel; `install` copies it into `.agents/`, `.claude/`, or `.cursor/` skill directories (`--global`, `--dir`, `--force`)
 - README: short copy-paste prompt that onboards an agent through `uvx ak5 onboard`
+- `AK5_VERCEL_BLOB_ACCESS=private`: the `vercel-blob` backend can use a private Vercel Blob store. Uploads declare the access mode, and reads and existence checks send the token, so attachments are not readable by URL alone. Default stays `public` (#179)
 - `scripts/smoke_hosted.py <URL>`: deployment smoke check (`/readyz`, `/meta` API version, dashboard HTML, one `/_next` chunk served as JavaScript); the wheel smoke gate also rejects duplicate paths. Docs cover running local (`ak5 up`) and Vercel from one checkout, and `ak5 serve` against Neon from `.env` (#179)
 
 ### Changed
