@@ -46,6 +46,8 @@ def _run_isolated(code: str, *, extra_env: dict[str, str] | None = None) -> subp
         ["daemon", "--help"],
         ["subscribe", "--help"],
         ["profile", "--help"],
+        ["onboard", "--help"],
+        ["skill", "show"],
     ],
 )
 def test_client_cli_help_without_sqlalchemy(argv: list[str]) -> None:

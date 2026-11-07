@@ -16,9 +16,11 @@ from ak5.cli.commands.logout import logout_command
 from ak5.cli.commands.mcp import mcp_command
 from ak5.cli.commands.migrate_legacy import migrate_legacy_command
 from ak5.cli.commands.next import next_command
+from ak5.cli.commands.onboard import onboard_command
 from ak5.cli.commands.profile import profile_command
 from ak5.cli.commands.reset import reset_command
 from ak5.cli.commands.serve import serve_command
+from ak5.cli.commands.skill import skill_group
 from ak5.cli.commands.subscribe import subscribe_command
 from ak5.cli.commands.template import template_group
 from ak5.cli.commands.ticket import (
@@ -74,6 +76,7 @@ def cli(ctx: click.Context, json_output: bool, profile_name: str | None) -> None
 
     \b
     Agent happy path (pull model):
+      ak5 onboard                                          # check setup, get the next steps
       ak5 login --agent worker-1 --role worker --caps ..   # or use `ak5 --profile worker ...` locally
       export AK5_PROFILE=worker-1
       # loop: ak5 next --wait 25 --json → ak5 ticket claim → work → ak5 ticket submit
@@ -114,6 +117,8 @@ cli.add_command(demo_command)
 cli.add_command(login_command)
 cli.add_command(logout_command)
 cli.add_command(whoami_command)
+cli.add_command(onboard_command)
+cli.add_command(skill_group)
 cli.add_command(web_command)
 cli.add_command(migrate_legacy_command)
 cli.add_command(subscribe_command)
