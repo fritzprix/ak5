@@ -783,3 +783,40 @@ def test_run_serve_does_not_pollute_environ_from_dotenv(
         )
 
     assert os.environ.get("AK5_AUTH_PASSWORD") in (None, "")
+
+
+def test_wait_for_server_polls_until_ready() -> None:
+    import http.server
+    import socketserver
+    import threading
+    import time
+
+    from ak5.cli.commands.serve import _wait_for_server
+
+    class ReusableTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    class QuietHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ReusableTCPServer(("127.0.0.1", 0), QuietHandler)
+    port = server.server_address[1]
+
+    def run_temp_server() -> None:
+        time.sleep(0.3)
+        server.handle_request()
+        server.server_close()
+
+    t = threading.Thread(target=run_temp_server, daemon=True)
+    t.start()
+
+    assert _wait_for_server(f"http://127.0.0.1:{port}/", timeout=5.0) is True
+    # Port is now closed after handle_request + server_close
+    assert _wait_for_server(f"http://127.0.0.1:{port}/", timeout=0.2) is False
+
+
