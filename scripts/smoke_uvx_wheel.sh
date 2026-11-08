@@ -114,29 +114,34 @@ if [[ -z "$AK5" ]]; then
   exit 1
 fi
 
-"$AK5" --version
-"$AK5" boards --help >/dev/null
-"$AK5" serve --help >/dev/null
-set +e
-SERVE_ERR="$("$AK5" serve --host 127.0.0.1 --port 9 2>&1)"
-SERVE_RC=$?
-set -e
-if [[ "$SERVE_RC" -eq 0 ]]; then
-  echo "error: 'ak5 serve' succeeded without server extra" >&2
-  exit 1
-fi
-if ! echo "$SERVE_ERR" | grep -qi "ak5\\[server\\]"; then
-  echo "error: missing install hint for server extra; got:" >&2
-  echo "$SERVE_ERR" >&2
-  exit 1
-fi
-echo "  ✓ base CLI works; serve prints ak5[server] hint (exit $SERVE_RC)"
+(
+  cd "$TMP"
+  "$AK5" --version
+  "$AK5" boards --help >/dev/null
+  "$AK5" serve --help >/dev/null
+  set +e
+  SERVE_ERR="$("$AK5" serve --host 127.0.0.1 --port 9 2>&1)"
+  SERVE_RC=$?
+  set -e
+  if [[ "$SERVE_RC" -eq 0 ]]; then
+    echo "error: 'ak5 serve' succeeded without server extra" >&2
+    exit 1
+  fi
+  if ! echo "$SERVE_ERR" | grep -qi "ak5\\[server\\]"; then
+    echo "error: missing install hint for server extra; got:" >&2
+    echo "$SERVE_ERR" >&2
+    exit 1
+  fi
+  echo "  ✓ base CLI works; serve prints ak5[server] hint (exit $SERVE_RC)"
+)
 
 echo "==> Server extra install"
 uv pip install --python "$PY" --quiet "${WHEEL}[server]"
 
 echo "==> Import gate (SQLAlchemy asyncio / greenlet / FastAPI app)"
-"$PY" - <<'PY'
+(
+  cd "$TMP"
+  "$PY" - <<'PY'
 import greenlet  # noqa: F401 — must be installable from wheel Requires-Dist
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: F401
 from ak5.server.app import app, create_app
@@ -150,10 +155,11 @@ assert web_ui_assets_built(), "embedded web_ui/_next static chunks missing from 
 print("  ✓ greenlet + sqlalchemy.ext.asyncio + ak5.server.app:app + web_ui")
 PY
 
-echo "==> CLI entrypoints (with server)"
-"$AK5" --version
-"$AK5" web --help >/dev/null
-"$AK5" boards --help >/dev/null
-echo "  ✓ ak5 --version / web --help / boards --help"
+  echo "==> CLI entrypoints (with server)"
+  "$AK5" --version
+  "$AK5" web --help >/dev/null
+  "$AK5" boards --help >/dev/null
+  echo "  ✓ ak5 --version / web --help / boards --help"
+)
 
 echo "==> Smoke OK (isolated wheel install matches uvx contract)"
