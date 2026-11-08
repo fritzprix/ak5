@@ -380,9 +380,33 @@ def _print_ui_banner(host: str, port: int, *, is_ssl: bool) -> None:
     )
 
 
-def _open_browser_later(url: str, delay: float = 1.2) -> None:
+def _wait_for_server(url: str, timeout: float = 20.0, poll_interval: float = 0.2) -> bool:
+    """Poll URL until the HTTP server is listening and ready to accept requests."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AK5-Readiness-Check"})
+            with urllib.request.urlopen(req, timeout=0.8, context=ctx):
+                return True
+        except urllib.error.HTTPError:
+            # Any HTTP status code (200, 302, 401, etc.) confirms the server is accepting requests.
+            return True
+        except Exception:
+            time.sleep(poll_interval)
+    return False
+
+
+def _open_browser_later(url: str, delay: float = 1.2, timeout: float = 20.0) -> None:
     def _open() -> None:
-        time.sleep(delay)
+        _wait_for_server(url, timeout=timeout)
         with contextlib.suppress(Exception):
             webbrowser.open(url)
 
