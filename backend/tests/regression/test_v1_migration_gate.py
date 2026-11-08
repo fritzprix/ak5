@@ -44,6 +44,7 @@ async def test_v1_fixture_migration_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("AK5_SKIP_DOTENV", "1")
 
     from ak5 import database as dbmod
+    from ak5.server import database as s_dbmod
 
     engine = create_async_engine(url, future=True)
 
@@ -54,11 +55,15 @@ async def test_v1_fixture_migration_idempotent(tmp_path, monkeypatch):
         cursor.close()
 
     monkeypatch.setattr(dbmod, "engine", engine)
+    monkeypatch.setattr(s_dbmod, "engine", engine)
+    monkeypatch.setattr(s_dbmod, "admin_engine", engine)
     session_factory = async_sessionmaker(
         bind=engine, class_=AsyncSession, expire_on_commit=False
     )
     monkeypatch.setattr(dbmod, "AsyncSessionLocal", session_factory)
     monkeypatch.setattr(dbmod, "AsyncSessionLocalAdmin", session_factory)
+    monkeypatch.setattr(s_dbmod, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(s_dbmod, "AsyncSessionLocalAdmin", session_factory)
 
     async def _boot_once() -> None:
         # The real startup path (#105): legacy fixes on a pre-Alembic file, then stamp head.

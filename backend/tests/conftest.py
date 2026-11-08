@@ -16,6 +16,8 @@ from pathlib import Path
 _TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="ak5_pytest_data_"))
 os.environ["AK5_DATA_DIR"] = str(_TEST_DATA_DIR)
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(_TEST_DATA_DIR / 'ak5.db').as_posix()}"
+os.environ["DATABASE_ADMIN_URL"] = ""
+os.environ["AK5_DATABASE_ADMIN_URL"] = ""
 os.environ.setdefault("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
 # Prevent ``ak5 serve`` from permanently writing checkout ``.env`` into os.environ.
 os.environ["AK5_SKIP_DOTENV"] = "1"
