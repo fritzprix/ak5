@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] — 2026-11-08
+
+### Fixed
+- CLI: `ak5 serve --ui` (and `ak5 web`) now polls for HTTP server readiness (`_wait_for_server`) before launching the web browser, preventing initial connection failure when database startup or TLS negotiation takes longer (#192, #193).
+
+
 ## [2.0.1] — 2026-11-07
 
 ### Added
