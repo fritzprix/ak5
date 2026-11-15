@@ -69,7 +69,7 @@ CI에서는 `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`를 환경 변�
 | `AK5_NOTIFY_POLL_MS` | 선택 | 기본 `1000` |
 | `AK5_CLIENT_IP_HEADER` | 예 | `x-vercel-forwarded-for` |
 | `BLOB_READ_WRITE_TOKEN` | vercel-blob 시 | Vercel Blob 토큰 |
-| `AK5_VERCEL_BLOB_ACCESS` | vercel-blob 시 권장 | 스토어 접근 모드 `private` 또는 `public` (기본 `public`, 2.0.0 동작). 스토어를 만들 때 고른 모드와 같아야 한다. `private`이면 읽기에도 토큰을 보내므로 URL을 알아도 인증 없이는 읽을 수 없다 |
+| `AK5_VERCEL_BLOB_ACCESS` | vercel-blob 시 권장 | 스토어 접근 모드 `private` 또는 `public`. **`AK5_DEPLOY_PROFILE=hosted`에서는 unset 시 `private`**. 로컬/`serve`는 unset 시 `public`(2.0.0 동작). 스토어를 만들 때 고른 모드와 같아야 한다 |
 
 Blob 스토어 생성 (리포 루트에서 `vercel link` 후, 프로덕션에 `BLOB_READ_WRITE_TOKEN`이 추가된다):
 
@@ -147,4 +147,5 @@ uv run python scripts/smoke_hosted.py http://127.0.0.1:8000 --json   # 로컬 ak
 uv run --directory backend --extra server pytest tests/test_create_app_import_side_effects.py -q
 ```
 
-로컬 Postgres 스택: 리포 루트 `docker-compose.postgres.yml` (포트는 `127.0.0.1`에만 바인딩).
+로컬 Postgres 스택(고급): 리포 루트 `docker-compose.postgres.yml` (포트는 `127.0.0.1`에만 바인딩).  
+**일상적인 로컬 개발은 `ak5 up`을 권장**한다 (SQLite, UI, daemon 포함). Docker Compose는 VM/온프레ms Postgres 연동 검증용이다; 루트 `docker-compose.yml`은 UI+SQLite 백엔드 예시이며 `ak5 up`과 역할이 겹친다.

@@ -1,3 +1,6 @@
+# Optional container stack (SQLite backend + separate frontend container).
+# For day-to-day local dev, prefer `ak5 up` (embedded UI, daemon, zero-config SQLite).
+# For local PostgreSQL, see docker-compose.postgres.yml + MANUAL.md / deploy/vercel-neon.md.
 version: '3.8'
 
 services:

@@ -15,7 +15,13 @@ from pathlib import Path
 # --- Isolate production DB BEFORE importing ak5 (order matters) ---
 _TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="ak5_pytest_data_"))
 os.environ["AK5_DATA_DIR"] = str(_TEST_DATA_DIR)
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(_TEST_DATA_DIR / 'ak5.db').as_posix()}"
+_POSTGRES_TEST_URL = (
+    os.environ.get("AK5_TEST_POSTGRES_URL") or os.environ.get("AK5_POSTGRES_URL") or ""
+).strip()
+if _POSTGRES_TEST_URL:
+    os.environ["DATABASE_URL"] = _POSTGRES_TEST_URL
+else:
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(_TEST_DATA_DIR / 'ak5.db').as_posix()}"
 os.environ["DATABASE_ADMIN_URL"] = ""
 os.environ["AK5_DATABASE_ADMIN_URL"] = ""
 os.environ.setdefault("AK5_JWT_SECRET", "test-jwt-secret-not-for-production")
@@ -31,7 +37,7 @@ import ak5.server.models  # noqa: E402, F401  # register SQLAlchemy metadata
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from ak5.server.config import settings  # noqa: E402
-from ak5.server.database import get_db  # noqa: E402
+from ak5.server.database import get_db, get_engine_options  # noqa: E402
 from ak5.server.main import app  # noqa: E402
 from ak5.server.models.base import Base  # noqa: E402
 from ak5.server.models.workspace import LOCAL_WORKSPACE_ID  # noqa: E402
@@ -50,22 +56,31 @@ if "/.local/share/ak5/" in _db_path.replace("\\", "/"):
         "conftest isolation failed."
     )
 
-# Use in-memory SQLite database for HTTP API tests (override get_db).
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+# HTTP API tests: in-memory SQLite locally; live PostgreSQL when AK5_TEST_POSTGRES_URL is set.
+TEST_DB_URL = _POSTGRES_TEST_URL or "sqlite+aiosqlite:///:memory:"
+_USING_POSTGRES = bool(_POSTGRES_TEST_URL)
 
-test_engine = create_async_engine(
-    TEST_DB_URL,
-    connect_args={"check_same_thread": False},
-    future=True,
-)
+if _USING_POSTGRES:
+    _engine_url, _connect_args, _engine_kwargs = get_engine_options(TEST_DB_URL)
+    test_engine = create_async_engine(
+        _engine_url,
+        connect_args=_connect_args,
+        future=True,
+        **_engine_kwargs,
+    )
+else:
+    test_engine = create_async_engine(
+        TEST_DB_URL,
+        connect_args={"check_same_thread": False},
+        future=True,
+    )
 
-
-@event.listens_for(test_engine.sync_engine, "connect")
-def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
-    # Match production database.py so FK mismatches fail in tests.
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON;")
-    cursor.close()
+    @event.listens_for(test_engine.sync_engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+        # Match production database.py so FK mismatches fail in tests.
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.close()
 
 
 TestAsyncSessionLocal = async_sessionmaker(
@@ -98,9 +113,15 @@ def _isolate_runtime_secrets(monkeypatch):
     reset_secret_caches()
 
 
+@pytest.fixture
+def test_engine_fixture():
+    """Expose the module-level async engine (used for multi-session concurrency tests)."""
+    return test_engine
+
+
 @pytest_asyncio.fixture(scope="function")
-async def test_db() -> AsyncGenerator[AsyncSession]:
-    async with test_engine.begin() as conn:
+async def test_db(test_engine_fixture) -> AsyncGenerator[AsyncSession]:
+    async with test_engine_fixture.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     # Override get_db
@@ -279,7 +300,7 @@ async def test_db() -> AsyncGenerator[AsyncSession]:
     async with TestAsyncSessionLocal() as session:
         yield session
 
-    async with test_engine.begin() as conn:
+    async with test_engine_fixture.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
     app.dependency_overrides.clear()
