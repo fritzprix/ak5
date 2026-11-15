@@ -573,11 +573,19 @@ async def test_vercel_blob_public_store_reads_anonymously(monkeypatch: pytest.Mo
     [(None, "public"), ("", "public"), ("public", "public"), (" Private ", "private")],
 )
 def test_vercel_blob_access_env(monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: str):
+    monkeypatch.delenv("AK5_DEPLOY_PROFILE", raising=False)
+    monkeypatch.delenv("AK5_PROFILE", raising=False)
     if raw is None:
         monkeypatch.delenv("AK5_VERCEL_BLOB_ACCESS", raising=False)
     else:
         monkeypatch.setenv("AK5_VERCEL_BLOB_ACCESS", raw)
     assert vercel_blob_access() == expected
+
+
+def test_vercel_blob_access_defaults_private_on_hosted(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AK5_DEPLOY_PROFILE", "hosted")
+    monkeypatch.delenv("AK5_VERCEL_BLOB_ACCESS", raising=False)
+    assert vercel_blob_access() == "private"
 
 
 def test_vercel_blob_access_env_rejects_unknown(monkeypatch: pytest.MonkeyPatch):

@@ -192,9 +192,19 @@ jobs:
         run: |
           uv sync --all-packages --all-extras
 
-      - name: Run PostgreSQL dialect, migrations & RLS tests
+      - name: Run PostgreSQL dialect, migrations, RLS & core API tests
         env:
           AK5_TEST_POSTGRES_URL: postgresql+asyncpg://ak5:ak5password@localhost:5432/ak5_test
         run: |
-          uv run pytest backend/tests/test_dialect_compatibility.py backend/tests/test_postgres_support.py backend/tests/test_migration_0008_session_hash.py -v
+          uv run pytest \
+            backend/tests/test_dialect_compatibility.py \
+            backend/tests/test_postgres_support.py \
+            backend/tests/test_migration_0007_rls_backfill.py \
+            backend/tests/test_migration_0008_session_hash.py \
+            backend/tests/test_rls_table_coverage.py \
+            backend/tests/test_lease_reclaim_concurrency.py \
+            backend/tests/test_workflow_api.py \
+            backend/tests/test_tickets_api.py \
+            backend/tests/test_workspace_isolation.py \
+            -v
 

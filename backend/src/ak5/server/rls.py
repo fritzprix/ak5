@@ -42,6 +42,7 @@ TENANT_RLS_TABLES: tuple[str, ...] = (
     "workspace_usage",
     "blob_gc",
     "agents",
+    "memberships",
 )
 
 RLS_POLICY_NAME = "ak5_workspace_isolation"

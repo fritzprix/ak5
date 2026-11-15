@@ -1,9 +1,8 @@
 """Attachment blob storage abstraction (deployment.md §2, #104).
 
-``BlobStore`` is the only thing the API talks to for attachment bytes. Only the
-``fs`` backend exists today; ``s3`` / ``vercel-blob`` land with #109 behind the
-same interface. Authorization stays in the API layer (#75): a backend never
-decides who may read a key.
+``BlobStore`` is the only thing the API talks to for attachment bytes. Backends:
+``fs`` (default), ``s3``, and ``vercel-blob`` (selected via ``AK5_BLOB_BACKEND``).
+Authorization stays in the API layer (#75): a backend never decides who may read a key.
 """
 
 from __future__ import annotations
@@ -488,8 +487,16 @@ def blob_backend_name() -> str:
 
 
 def vercel_blob_access() -> VercelBlobAccess:
-    """Store access mode from ``AK5_VERCEL_BLOB_ACCESS`` (default ``public``, the 2.0.0 behaviour)."""
-    value = (os.environ.get("AK5_VERCEL_BLOB_ACCESS") or "public").strip().lower()
+    """Store access mode from ``AK5_VERCEL_BLOB_ACCESS``.
+
+    Local deployments default to ``public`` (2.0.0 behaviour). ``AK5_DEPLOY_PROFILE=hosted``
+    defaults to ``private`` when unset so attachments are not world-readable by URL alone.
+    """
+    from ak5.server.config import hosted_profile
+
+    raw = os.environ.get("AK5_VERCEL_BLOB_ACCESS")
+    default = "private" if hosted_profile() else "public"
+    value = default if raw is None or not raw.strip() else raw.strip().lower()
     if value == "private":
         return "private"
     if value == "public":

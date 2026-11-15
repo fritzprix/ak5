@@ -795,24 +795,33 @@ async def reclaim_expired_leases(
 ) -> list[str]:
     """Reclaim expired claims (T8 / T20). Returns affected ticket ids."""
     now = _naive(_now())
-    stmt = (
-        select(Ticket)
-        .options(selectinload(Ticket.column), selectinload(Ticket.board))
-        .where(
-            Ticket.claim_token.is_not(None),
-            Ticket.lease_expires_at.is_not(None),
-            Ticket.lease_expires_at <= now,
-        )
+    expired_clause = (
+        Ticket.claim_token.is_not(None),
+        Ticket.lease_expires_at.is_not(None),
+        Ticket.lease_expires_at <= now,
     )
+    id_stmt = select(Ticket.ticket_id).where(*expired_clause)
     if board_id:
-        stmt = stmt.where(Ticket.board_id == board_id)
-    tickets = (await db.execute(stmt)).scalars().all()
+        id_stmt = id_stmt.where(Ticket.board_id == board_id)
+    ticket_ids = (await db.execute(id_stmt)).scalars().all()
     affected: list[str] = []
     system_actor_id = SYSTEM_ACTOR_ID
-    for ticket in tickets:
+    for ticket_id in ticket_ids:
+        cleared = await db.execute(
+            update(Ticket)
+            .where(Ticket.ticket_id == ticket_id, *expired_clause)
+            .values(
+                claim_token=None,
+                claimed_by=None,
+                lease_expires_at=None,
+                assigned_to=None,
+            )
+        )
+        if cleared.rowcount != 1:
+            continue
+        ticket = await _load_ticket(db, ticket_id)
         stage = ticket_stage(ticket)
         from_stage = stage
-        _clear_claim(ticket)
         if stage == Stage.IN_PROGRESS:
             ticket.lease_expirations = (ticket.lease_expirations or 0) + 1
             safe_inc(lease_expirations_total)

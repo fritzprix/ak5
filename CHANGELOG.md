@@ -5,7 +5,21 @@ All notable changes to AK5 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — 2.0.3 (not tagged)
+
+### Added
+- PostgreSQL CI: core workflow, tickets, and workspace-isolation API suites run against live Postgres when `AK5_TEST_POSTGRES_URL` is set
+- `test_rls_table_coverage`: fails when a model table with `workspace_id` is missing from `TENANT_RLS_TABLES`
+- `test_lease_reclaim_concurrency`: guard against reclaim vs `claim_ticket` races on expired leases
+
+### Changed
+- PostgreSQL RLS: `memberships` included in tenant RLS (migration `0009_rls_memberships`)
+- `reclaim_expired_leases` locks candidate tickets with `SELECT … FOR UPDATE` before mutating claims
+- `AK5_DEPLOY_PROFILE=hosted`: `vercel-blob` defaults to private blob access when `AK5_VERCEL_BLOB_ACCESS` is unset (local default remains `public`)
+
+### Fixed
+- PostgreSQL: archive/unarchive writes naive UTC for `archived_at` (asyncpg rejects tz-aware values on `TIMESTAMP WITHOUT TIME ZONE`)
+- Documentation drift: `blob.py` module doc, `.env.example` JWT/identify/`ak5 up` guidance, historical banner on `docs/analysis-report.md`, Docker Compose vs `ak5 up`
 
 ## [2.0.2] — 2026-11-08
 

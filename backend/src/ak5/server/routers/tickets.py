@@ -574,7 +574,7 @@ async def update_ticket(
         if ticket.is_archived != new_archived:
             changes["is_archived"] = (ticket.is_archived, new_archived)
             ticket.is_archived = new_archived
-            ticket.archived_at = datetime.now(UTC) if new_archived else None
+            ticket.archived_at = datetime.now(UTC).replace(tzinfo=None) if new_archived else None
 
     try:
         if should_block:
@@ -652,7 +652,7 @@ async def archive_ticket(
         return _workspace_forbidden_ticket(ticket_id, workspace_id)
     changes = {"is_archived": (ticket.is_archived, True)}
     ticket.is_archived = True
-    ticket.archived_at = datetime.now(UTC)
+    ticket.archived_at = datetime.now(UTC).replace(tzinfo=None)
 
     audit = AuditLog(
             workspace_id=ticket.workspace_id,
