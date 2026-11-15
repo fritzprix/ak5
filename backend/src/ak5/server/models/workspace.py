@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ak5.server.models.base import Base, TimestampMixin
@@ -18,6 +18,18 @@ class Workspace(Base, TimestampMixin):
     workspace_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     policy: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    halted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    frozen: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    halt_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    freeze_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    halted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    frozen_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    halted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    frozen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class User(Base, TimestampMixin):

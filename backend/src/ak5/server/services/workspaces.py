@@ -275,6 +275,114 @@ async def update_workspace(
     return workspace
 
 
+def _naive_utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+async def set_workspace_halt(
+    db: AsyncSession,
+    *,
+    workspace: Workspace,
+    actor_id: str,
+    reason: str | None = None,
+) -> Workspace:
+    """Set the workspace halt flag (#199)."""
+    cleaned = reason.strip() if reason and reason.strip() else None
+    workspace.halted = True
+    workspace.halt_reason = cleaned
+    workspace.halted_by = actor_id
+    workspace.halted_at = _naive_utc_now()
+    db.add(
+        AuditLog(
+            workspace_id=workspace.workspace_id,
+            actor_id=actor_id,
+            action="WORKSPACE_HALTED",
+            target_type="workspace",
+            target_id=workspace.workspace_id,
+            payload=json.dumps({"reason": cleaned}),
+        )
+    )
+    await db.flush()
+    return workspace
+
+
+async def clear_workspace_halt(
+    db: AsyncSession,
+    *,
+    workspace: Workspace,
+    actor_id: str,
+) -> Workspace:
+    """Clear the workspace halt flag (#199)."""
+    workspace.halted = False
+    workspace.halt_reason = None
+    workspace.halted_by = None
+    workspace.halted_at = None
+    db.add(
+        AuditLog(
+            workspace_id=workspace.workspace_id,
+            actor_id=actor_id,
+            action="WORKSPACE_UNHALTED",
+            target_type="workspace",
+            target_id=workspace.workspace_id,
+            payload="{}",
+        )
+    )
+    await db.flush()
+    return workspace
+
+
+async def set_workspace_freeze(
+    db: AsyncSession,
+    *,
+    workspace: Workspace,
+    actor_id: str,
+    reason: str | None = None,
+) -> Workspace:
+    """Set the workspace freeze flag (#199). Does not create a decision-board card."""
+    cleaned = reason.strip() if reason and reason.strip() else None
+    workspace.frozen = True
+    workspace.freeze_reason = cleaned
+    workspace.frozen_by = actor_id
+    workspace.frozen_at = _naive_utc_now()
+    db.add(
+        AuditLog(
+            workspace_id=workspace.workspace_id,
+            actor_id=actor_id,
+            action="WORKSPACE_FROZEN",
+            target_type="workspace",
+            target_id=workspace.workspace_id,
+            payload=json.dumps({"reason": cleaned}),
+        )
+    )
+    await db.flush()
+    return workspace
+
+
+async def clear_workspace_freeze(
+    db: AsyncSession,
+    *,
+    workspace: Workspace,
+    actor_id: str,
+) -> Workspace:
+    """Clear the workspace freeze flag (#199)."""
+    workspace.frozen = False
+    workspace.freeze_reason = None
+    workspace.frozen_by = None
+    workspace.frozen_at = None
+    db.add(
+        AuditLog(
+            workspace_id=workspace.workspace_id,
+            actor_id=actor_id,
+            action="WORKSPACE_UNFROZEN",
+            target_type="workspace",
+            target_id=workspace.workspace_id,
+            payload="{}",
+        )
+    )
+    await db.flush()
+    return workspace
+
+
 async def list_members(db: AsyncSession, workspace_id: str) -> list[dict[str, Any]]:
     rows = (
         await db.execute(
