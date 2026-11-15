@@ -71,6 +71,8 @@ async def _reset_postgres_public_schema(conn) -> None:
 if _USING_POSTGRES:
     _engine_url, _connect_args, _engine_kwargs = get_engine_options(TEST_DB_URL)
     _engine_kwargs = {**_engine_kwargs, "poolclass": NullPool}
+    for _pool_key in ("pool_size", "max_overflow", "pool_timeout"):
+        _engine_kwargs.pop(_pool_key, None)
     test_engine = create_async_engine(
         _engine_url,
         connect_args=_connect_args,
