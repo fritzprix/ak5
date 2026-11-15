@@ -117,6 +117,7 @@ async def test_mcp_v2_tools_match_agent_cli_verbs():
         "ticket delegate",
         "ticket block",
         "ticket unblock",
+        "ticket attention",
         "ticket history",
     }
     assert set(V2_CLI_TOOL_MAP) == expected_cli

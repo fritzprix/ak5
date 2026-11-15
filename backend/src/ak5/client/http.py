@@ -403,6 +403,12 @@ class AK5Client:
             body["resolution"] = resolution
         return self.post(f"/tickets/{ticket_id}/unblock", json=body or None)
 
+    def set_attention(self, ticket_id: str, *, reason: str) -> dict[str, Any]:
+        return self.post(f"/tickets/{ticket_id}/attention", json={"reason": reason})
+
+    def clear_attention(self, ticket_id: str) -> dict[str, Any]:
+        return self.delete(f"/tickets/{ticket_id}/attention")
+
     def reopen(self, ticket_id: str, *, reason: str) -> dict[str, Any]:
         return self.post(f"/tickets/{ticket_id}/reopen", json={"reason": reason})
 

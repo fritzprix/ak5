@@ -1237,3 +1237,141 @@ async def test_triage_route_requires_refined_plan(client: AsyncClient, roles):
         )
         assert resp.status_code == 422, resp.text
         assert resp.json()["error"]["code"] == ErrorCode.PAYLOAD_INVALID.value
+
+
+@pytest.mark.asyncio
+async def test_attention_flag_does_not_block_next_claim_or_verdict(client: AsyncClient, roles):
+    """#200: Attention flag never blocks next_ticket, claim_ticket, or verdict()."""
+    human = _h(roles, "user_pm", "human")
+    worker = _h(roles, "agent_worker")
+    gk = _h(roles, "agent_gk")
+
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Attention test"), headers=human)
+    ).json()["ticket_id"]
+    wtoken = (await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)).json()["claim_token"]
+    submitted = await client.post(
+        f"/api/v1/tickets/{tid}/submit",
+        json={
+            "claim_token": wtoken,
+            "deliverable": {
+                "summary": "Done",
+                "artifacts": [],
+                "criteria_self_check": [],
+            },
+        },
+        headers=worker,
+    )
+    assert submitted.status_code == 200, submitted.text
+
+    flagged = await client.post(
+        f"/api/v1/tickets/{tid}/attention",
+        json={"reason": "please look at this"},
+        headers=worker,
+    )
+    assert flagged.status_code == 200, flagged.text
+    fbody = flagged.json()
+    assert fbody["attention_flag"] is True
+    assert fbody["attention_reason"] == "please look at this"
+    assert fbody["attention_actor"] == "agent_worker"
+    assert fbody["blocked_kind"] is None
+    assert fbody["status"] == "open"
+
+    # Gatekeeper still sees the ticket in /next and can claim + verdict it.
+    nxt = await client.get("/api/v1/boards/proj-core-engine/next", headers=gk)
+    assert nxt.status_code == 200, nxt.text
+    assert nxt.json()["ticket_id"] == tid
+
+    gclaim = await client.post(f"/api/v1/tickets/{tid}/claim", headers=gk)
+    assert gclaim.status_code == 200, gclaim.text
+    gtoken = gclaim.json()["claim_token"]
+
+    approved = await client.post(
+        f"/api/v1/tickets/{tid}/verdict",
+        json={
+            "claim_token": gtoken,
+            "verdict": {
+                "decision": "approve",
+                "findings": [{"criterion": "c", "pass": True}],
+            },
+        },
+        headers=gk,
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["stage"] == "human_review"
+    assert approved.json()["attention_flag"] is True
+
+    cleared = await client.delete(f"/api/v1/tickets/{tid}/attention", headers=human)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["attention_flag"] is False
+    assert cleared.json()["attention_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_escalation_remains_blocking_and_attention_does_not_clear_it(
+    client: AsyncClient, roles
+):
+    """#200: Escalation stays blocking until human unblocks with resolution."""
+    human = _h(roles, "user_pm", "human")
+    worker = _h(roles, "agent_worker")
+    gk = _h(roles, "agent_gk")
+
+    tid = (
+        await client.post(
+            "/api/v1/tickets",
+            json=board_ticket("Escalate attention", max_attempts=1),
+            headers=human,
+        )
+    ).json()["ticket_id"]
+    wtoken = (await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)).json()["claim_token"]
+    await client.post(
+        f"/api/v1/tickets/{tid}/submit",
+        json={
+            "claim_token": wtoken,
+            "deliverable": {
+                "summary": "try",
+                "artifacts": [],
+                "criteria_self_check": [],
+            },
+        },
+        headers=worker,
+    )
+    gtoken = (await client.post(f"/api/v1/tickets/{tid}/claim", headers=gk)).json()["claim_token"]
+    rej = await client.post(
+        f"/api/v1/tickets/{tid}/verdict",
+        json={
+            "claim_token": gtoken,
+            "verdict": {
+                "decision": "reject",
+                "findings": [{"criterion": "x", "pass": False, "note": "fail"}],
+            },
+        },
+        headers=gk,
+    )
+    assert rej.status_code == 200, rej.text
+    assert rej.json()["blocked_kind"] == "escalation"
+
+    # Setting and clearing attention does not clear escalation.
+    await client.post(
+        f"/api/v1/tickets/{tid}/attention",
+        json={"reason": "ping"},
+        headers=worker,
+    )
+    cleared = await client.delete(f"/api/v1/tickets/{tid}/attention", headers=human)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["blocked_kind"] == "escalation"
+
+    nxt = await client.get("/api/v1/boards/proj-core-engine/next", headers=worker)
+    assert nxt.status_code == 204
+
+    claim_blocked = await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)
+    assert claim_blocked.status_code == 423
+    assert claim_blocked.json()["error"]["code"] == ErrorCode.TICKET_BLOCKED.value
+
+    unblocked = await client.post(
+        f"/api/v1/tickets/{tid}/unblock",
+        json={"resolution": "increase max attempts or clarify"},
+        headers=human,
+    )
+    assert unblocked.status_code == 200, unblocked.text
+    assert unblocked.json()["blocked_kind"] is None
