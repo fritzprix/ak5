@@ -47,6 +47,7 @@ V2_CLI_TOOL_MAP: dict[str, str] = {
     "ticket delegate": "ak5_ticket_delegate",
     "ticket block": "ak5_ticket_block",
     "ticket unblock": "ak5_ticket_unblock",
+    "ticket attention": "ak5_ticket_attention",
     "ticket history": "ak5_ticket_history",
 }
 
@@ -370,6 +371,8 @@ async def ak5_ticket_block(
     """Workflow roles: triage, worker, gatekeeper.
 
     Block a ticket (B1) — cli.md ``ticket block``.
+    Use ``ak5_ticket_attention`` for non-blocking "please look at this" requests;
+    reserve ``needs_human`` for hard stops where work cannot proceed.
     ``claim_token`` may be omitted when cached from ``ak5_ticket_claim``.
     """
     token = _resolve_claim_token(ticket_id, claim_token)
@@ -413,6 +416,36 @@ async def ak5_ticket_unblock(
 
     try:
         result = await client.unblock(ticket_id, resolution=resolution)
+    except AK5APIError as exc:
+        return _tool_error(exc)
+    return _tool_result(result)
+
+
+@server.tool()
+async def ak5_ticket_attention(
+    ticket_id: str,
+    reason: str | None = None,
+    clear: bool = False,
+) -> list[TextContent]:
+    """Workflow roles: triage, worker, gatekeeper.
+
+    Set or clear the non-blocking attention flag on a ticket (cli.md ``ticket attention``).
+    Attention never blocks ``next_ticket``, ``claim_ticket``, or ``verdict``.
+    """
+    client = get_client()
+    try:
+        if clear:
+            result = await client.clear_attention(ticket_id)
+        else:
+            if not (reason or "").strip():
+                return _json_content(
+                    error_body(
+                        ErrorCode.PAYLOAD_INVALID,
+                        "reason is required when setting attention",
+                        details={"ticket_id": ticket_id},
+                    )
+                )
+            result = await client.set_attention(ticket_id, reason=reason or "")
     except AK5APIError as exc:
         return _tool_error(exc)
     return _tool_result(result)

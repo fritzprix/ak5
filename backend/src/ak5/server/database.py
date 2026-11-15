@@ -782,6 +782,23 @@ async def run_sqlite_schema_migrations(async_engine: AsyncEngine = engine) -> No
     # Last: needs every model column present in the old tickets table.
     await _run_sqlite_table_rebuild(async_engine, migrate_sqlite_drop_ticket_status)
 
+    # Ensure post-baseline ticket columns exist when callers invoke
+    # run_sqlite_schema_migrations() directly before seed_initial_data().
+    async with async_engine.begin() as conn:
+        await conn.run_sync(_ensure_post_baseline_ticket_columns)
+
+
+def _ensure_post_baseline_ticket_columns(sync_conn: Connection) -> None:
+    exists = sync_conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tickets'")
+    ).scalar()
+    if not exists:
+        return
+    _add_column_if_missing(sync_conn, "tickets", "attention_flag", "BOOLEAN NOT NULL DEFAULT 0")
+    _add_column_if_missing(sync_conn, "tickets", "attention_reason", "TEXT")
+    _add_column_if_missing(sync_conn, "tickets", "attention_since", "DATETIME")
+    _add_column_if_missing(sync_conn, "tickets", "attention_actor", "VARCHAR(128)")
+
 
 async def run_legacy_schema_upgrade(async_engine: AsyncEngine = engine) -> None:
     """Pre-Alembic path (frozen, #105): adopt the baseline, then the SQLite fixes above.

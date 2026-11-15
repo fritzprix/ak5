@@ -2240,6 +2240,73 @@ async def unblock_ticket(
     )
 
 
+async def set_attention(
+    db: AsyncSession,
+    actor: Actor,
+    ticket_id: str,
+    *,
+    reason: str,
+) -> Ticket:
+    """Flag a ticket for non-blocking attention without stopping pull/claim/review."""
+    try:
+        require_roles(actor, Role.TRIAGE, Role.WORKER, Role.GATEKEEPER, Role.HUMAN)
+    except RoleForbiddenError as exc:
+        raise WorkflowError(exc.code, exc.message) from exc
+    if not reason.strip():
+        raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "reason is required")
+    ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
+    stage = ticket_stage(ticket)
+    ticket.attention_flag = True
+    ticket.attention_reason = reason.strip()
+    ticket.attention_since = _naive(_now())
+    ticket.attention_actor = actor.actor_id
+    return await _finish_transition(
+        db,
+        ticket,
+        actor=actor,
+        op="attention_set",
+        from_stage=stage,
+        to_stage=stage,
+        reason=ticket.attention_reason,
+        human_action=True,
+        human_reason=ticket.attention_reason,
+    )
+
+
+async def clear_attention(
+    db: AsyncSession,
+    actor: Actor,
+    ticket_id: str,
+) -> Ticket:
+    """Clear the non-blocking attention flag (human or the actor who set it)."""
+    try:
+        require_roles(actor, Role.TRIAGE, Role.WORKER, Role.GATEKEEPER, Role.HUMAN)
+    except RoleForbiddenError as exc:
+        raise WorkflowError(exc.code, exc.message) from exc
+    ticket = await _load_ticket(db, ticket_id, for_update=True)
+    _require_board_scope(actor, ticket.board_id)
+    role = workflow_role_of(actor)
+    if role != Role.HUMAN and ticket.attention_actor and not same_subject(ticket.attention_actor, actor):
+        raise WorkflowError(
+            ErrorCode.ROLE_FORBIDDEN,
+            "Only a human or the actor who set attention can clear it",
+        )
+    stage = ticket_stage(ticket)
+    ticket.attention_flag = False
+    ticket.attention_reason = None
+    ticket.attention_since = None
+    ticket.attention_actor = None
+    return await _finish_transition(
+        db,
+        ticket,
+        actor=actor,
+        op="attention_clear",
+        from_stage=stage,
+        to_stage=stage,
+    )
+
+
 async def move_ticket_constrained(
     db: AsyncSession,
     actor: Actor,
