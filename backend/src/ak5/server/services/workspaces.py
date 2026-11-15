@@ -286,7 +286,11 @@ async def set_workspace_halt(
     actor_id: str,
     reason: str | None = None,
 ) -> Workspace:
-    """Set the workspace halt flag (#199)."""
+    """Set the workspace halt flag (#199).
+
+    Future (#212 / #204): also create a decision-board card and emit an
+    immediate notify event when the decision-board primitives land.
+    """
     cleaned = reason.strip() if reason and reason.strip() else None
     workspace.halted = True
     workspace.halt_reason = cleaned

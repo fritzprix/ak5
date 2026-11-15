@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from ak5.contracts.stages import BlockedKind, Role, Stage
+from ak5.contracts.stages import Role, Stage
 from ak5.server.auth.principal import Principal
 from ak5.server.auth.tokens import issue_access_token
 from ak5.server.models.board import Board
@@ -217,6 +217,21 @@ async def test_halt_blocks_next_and_claim_but_allows_heartbeat_and_human_verdict
     assert verdict_resp.status_code == 200
     assert verdict_resp.json()["stage"] == Stage.DONE.value
 
+    # After human clears halt, next returns backlog work again (G1.1)
+    clear_resp = await client.delete(
+        f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}/halt",
+        headers=_user_headers(),
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["halted"] is False
+
+    next_resumed = await client.get(
+        f"/api/v1/boards/{board_id}/next",
+        headers=_agent_headers(),
+    )
+    assert next_resumed.status_code == 200
+    assert next_resumed.json()["ticket_id"] == "tkt_hf_backlog"
+
 
 @pytest.mark.asyncio
 async def test_freeze_permissions_and_distinct_signals(
@@ -303,21 +318,20 @@ async def test_freeze_permissions_and_distinct_signals(
 
 
 @pytest.mark.asyncio
-async def test_ticket_block_does_not_halt_or_freeze_workspace(
+async def test_ticket_attention_does_not_halt_or_freeze_workspace(
     client: AsyncClient, test_db: AsyncSession
 ) -> None:
     board_id = await _setup_board_with_columns(test_db, "brd_hf_attn")
     test_db.add_all(
         [
             Ticket(
-                ticket_id="tkt_hf_blocked",
+                ticket_id="tkt_hf_attn",
                 board_id=board_id,
                 column_id=f"{board_id}_backlog",
                 workspace_id=LOCAL_WORKSPACE_ID,
-                title="Blocked ticket",
+                title="Attention ticket",
                 rank="0001",
                 created_by=LOCAL_USER_ID,
-                blocked_kind=BlockedKind.NEEDS_HUMAN.value,
             ),
             Ticket(
                 ticket_id="tkt_hf_ready",
@@ -332,6 +346,16 @@ async def test_ticket_block_does_not_halt_or_freeze_workspace(
     )
     await test_db.commit()
 
+    # Flag attention on tkt_hf_attn (#200)
+    attn_resp = await client.post(
+        "/api/v1/tickets/tkt_hf_attn/attention",
+        headers=_agent_headers(),
+        json={"reason": "needs human input"},
+    )
+    assert attn_resp.status_code == 200
+    assert attn_resp.json()["attention_flag"] is True
+
+    # Workspace halt and freeze remain False
     ws_read = await client.get(
         f"/api/v1/workspaces/{LOCAL_WORKSPACE_ID}",
         headers=_user_headers(),
@@ -340,9 +364,10 @@ async def test_ticket_block_does_not_halt_or_freeze_workspace(
     assert ws_read.json()["halted"] is False
     assert ws_read.json()["frozen"] is False
 
+    # next still returns work (not halted/frozen)
     next_resp = await client.get(
         f"/api/v1/boards/{board_id}/next",
         headers=_agent_headers(),
     )
     assert next_resp.status_code == 200
-    assert next_resp.json()["ticket_id"] == "tkt_hf_ready"
+    assert next_resp.json()["ticket_id"] == "tkt_hf_attn"

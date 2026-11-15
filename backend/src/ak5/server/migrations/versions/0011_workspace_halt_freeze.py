@@ -1,7 +1,7 @@
 """Add workspace halt and freeze flags (#199).
 
-Revision ID: 0010_workspace_halt_freeze
-Revises: 0009_rls_memberships
+Revision ID: 0011_workspace_halt_freeze
+Revises: 0010_attention_flag
 Create Date: 2026-11-16
 """
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0010_workspace_halt_freeze"
-down_revision = "0009_rls_memberships"
+revision = "0011_workspace_halt_freeze"
+down_revision = "0010_attention_flag"
 branch_labels = None
 depends_on = None
 
