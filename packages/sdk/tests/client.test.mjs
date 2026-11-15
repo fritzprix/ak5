@@ -180,6 +180,7 @@ describe("AK5Client v2 API", () => {
         summary: "done",
         artifacts: [{ kind: "commit", ref: "abc" }],
         criteria_self_check: [{ criterion: "c1", pass: true }],
+        refutation: { method: "run unit tests" },
       },
     });
     await client.routeTicket("t1", {

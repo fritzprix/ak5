@@ -469,7 +469,11 @@ def block_ticket_cmd(
     token: str | None,
     mention: str | None,
 ) -> None:
-    """Block a ticket (releases claim; in_progress → backlog)."""
+    """Block a ticket (releases claim; in_progress → backlog).
+
+    Use `ak5 ticket attention` for non-blocking human attention; reserve
+    `--kind needs_human` for hard stops where work cannot proceed.
+    """
     _ = mention
     json_mode = _jm(ctx)
     try:
@@ -511,6 +515,36 @@ def unblock_cmd(ctx: click.Context, ticket_id: str, resolution: str | None) -> N
             json_mode=json_mode,
             human=f"[bold green]✓[/bold green] Unblocked [cyan]{ticket_id}[/cyan]",
         )
+    except ClientError as exc:
+        handle_client_error(exc, json_mode=json_mode)
+    except Exception as exc:
+        handle_client_error(exc, json_mode=json_mode)
+
+
+@ticket_group.command("attention")
+@click.argument("ticket_id")
+@click.option("--reason", "-r", default=None, help="Why human attention is requested")
+@click.option("--clear", is_flag=True, help="Clear the non-blocking attention flag")
+@click.pass_context
+def attention_cmd(
+    ctx: click.Context, ticket_id: str, reason: str | None, clear: bool
+) -> None:
+    """Set or clear the non-blocking attention flag on a ticket."""
+    json_mode = _jm(ctx)
+    try:
+        with open_client() as client:
+            if clear:
+                result = client.clear_attention(ticket_id)
+                human = f"[bold green]✓[/bold green] Cleared attention on [cyan]{ticket_id}[/cyan]"
+            else:
+                if not (reason or "").strip():
+                    raise click.UsageError("--reason is required unless --clear is passed")
+                result = client.set_attention(ticket_id, reason=reason or "")
+                human = (
+                    f"[bold yellow]![/bold yellow] Flagged [cyan]{ticket_id}[/cyan] "
+                    f"for attention: {reason}"
+                )
+        _ok(result, json_mode=json_mode, human=human)
     except ClientError as exc:
         handle_client_error(exc, json_mode=json_mode)
     except Exception as exc:
@@ -651,6 +685,10 @@ def view_ticket_cmd(ctx: click.Context, ticket_id: str) -> None:
         labels = t.get("labels", [])
         if labels:
             meta_table.add_row("Labels", ", ".join(labels))
+        if t.get("attention_flag"):
+            att_reason = t.get("attention_reason") or ""
+            att_str = f" ({att_reason})" if att_reason else ""
+            meta_table.add_row("Attention", f"[bold yellow]YES[/bold yellow]{att_str}")
         if t.get("is_archived"):
             arch_at = t.get("archived_at") or ""
             arch_str = f" (at {arch_at[:19].replace('T', ' ')})" if arch_at else ""

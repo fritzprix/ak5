@@ -40,6 +40,7 @@ from ak5.server.routers.auth import (
     get_current_actor,
 )
 from ak5.server.schemas.ticket import (
+    AttentionRequest,
     AuditLogOut,
     BlockRequest,
     BounceRequest,
@@ -151,6 +152,10 @@ def _format_ticket_out(t: Ticket, subtask_stats: tuple[int, int] = (0, 0)) -> Ti
         blocked_kind=t.blocked_kind,
         blocked_since=t.blocked_since,
         blocked_actor=t.blocked_actor,
+        attention_flag=t.attention_flag,
+        attention_reason=t.attention_reason,
+        attention_since=t.attention_since,
+        attention_actor=t.attention_actor,
         original_request=t.original_request,
         subtask_count=count,
         subtask_done_count=done_count,
@@ -1638,6 +1643,75 @@ async def unblock_endpoint(
             response_builder=_run,
             ticket_id=ticket_id,
             body=body.model_dump(mode="json"),
+        )
+        if not from_cache:
+            await db.commit()
+    except WorkflowError as exc:
+        await db.rollback()
+        return _workflow_error_response(exc)
+    return TicketOut.model_validate(out) if from_cache else out
+
+
+@router.post("/{ticket_id}/attention", response_model=None)
+async def set_attention_endpoint(
+    ticket_id: str,
+    req: AttentionRequest,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
+
+    async def _run() -> TicketOut:
+        ticket = await wf.set_attention(db, current_actor, ticket_id, reason=req.reason)
+        return _format_ticket_out(ticket)
+
+    try:
+        out, from_cache = await _idempotent(
+            db,
+            key=idempotency_key,
+            actor_id=current_actor.actor_id,
+            op=f"ticket.attention.set:{ticket_id}",
+            response_builder=_run,
+            ticket_id=ticket_id,
+            body=req.model_dump(mode="json"),
+        )
+        if not from_cache:
+            await db.commit()
+    except WorkflowError as exc:
+        await db.rollback()
+        return _workflow_error_response(exc)
+    return TicketOut.model_validate(out) if from_cache else out
+
+
+@router.delete("/{ticket_id}/attention", response_model=None)
+async def clear_attention_endpoint(
+    ticket_id: str,
+    current_actor: Annotated[Actor, Depends(get_current_actor)],
+    workspace_id: Annotated[str, Depends(get_auth_workspace_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TicketOut | JSONResponse:
+    denied = await _reject_cross_workspace_ticket(db, ticket_id, workspace_id)
+    if denied is not None:
+        return denied
+
+    async def _run() -> TicketOut:
+        ticket = await wf.clear_attention(db, current_actor, ticket_id)
+        return _format_ticket_out(ticket)
+
+    try:
+        out, from_cache = await _idempotent(
+            db,
+            key=idempotency_key,
+            actor_id=current_actor.actor_id,
+            op=f"ticket.attention.clear:{ticket_id}",
+            response_builder=_run,
+            ticket_id=ticket_id,
+            body={},
         )
         if not from_cache:
             await db.commit()

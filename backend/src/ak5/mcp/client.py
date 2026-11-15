@@ -322,6 +322,18 @@ class AK5Client:
         resp = await self._request("POST", f"tickets/{ticket_id}/unblock", json=body)
         return resp.json()
 
+    async def set_attention(self, ticket_id: str, *, reason: str) -> dict[str, Any]:
+        resp = await self._request(
+            "POST",
+            f"tickets/{ticket_id}/attention",
+            json={"reason": reason},
+        )
+        return resp.json()
+
+    async def clear_attention(self, ticket_id: str) -> dict[str, Any]:
+        resp = await self._request("DELETE", f"tickets/{ticket_id}/attention")
+        return resp.json()
+
     async def reopen(self, ticket_id: str, *, reason: str) -> dict[str, Any]:
         resp = await self._request(
             "POST",

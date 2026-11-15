@@ -96,6 +96,10 @@ class Ticket(Base, TimestampMixin):
     blocked_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     blocked_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     blocked_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attention_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attention_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attention_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attention_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Relationships
     board: Mapped["Board"] = relationship("Board", back_populates="tickets")

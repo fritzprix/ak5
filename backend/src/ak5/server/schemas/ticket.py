@@ -123,6 +123,10 @@ class TicketOut(TicketBase):
     blocked_kind: str | None = None
     blocked_since: datetime | None = None
     blocked_actor: str | None = None
+    attention_flag: bool = False
+    attention_reason: str | None = None
+    attention_since: datetime | None = None
+    attention_actor: str | None = None
     original_request: str | None = None
 
     # Subtasks count or summaries
@@ -299,6 +303,10 @@ class BlockRequest(BaseModel):
 
 class UnblockRequest(BaseModel):
     resolution: str | None = None
+
+
+class AttentionRequest(BaseModel):
+    reason: str = Field(..., min_length=1)
 
 
 class ReopenRequest(BaseModel):
