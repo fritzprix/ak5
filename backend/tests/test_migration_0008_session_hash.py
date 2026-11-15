@@ -13,7 +13,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 PREVIOUS = "0007_fix_child_workspace_id"
-CURRENT = "0008_widen_session_token_hash"
+UPGRADE = "0008_widen_session_token_hash"
 
 
 def _pg_url() -> str:
@@ -60,7 +60,7 @@ async def test_live_postgres_web_session_hash_and_downgrade():
     assert len(web_hash) == 129
 
     try:
-        assert await mig.ensure_schema(engine) == CURRENT
+        assert await mig.ensure_schema(engine) == mig.head_revision()
         async with engine.begin() as conn:
             assert await _hash_column_length(conn) == 256
             await _insert_session(conn, web_sid, web_hash, "web")
@@ -69,6 +69,7 @@ async def test_live_postgres_web_session_hash_and_downgrade():
         async with engine.begin() as conn:
             await conn.run_sync(_downgrade_to_previous)
         async with engine.begin() as conn:
+            assert await conn.run_sync(mig.current_revision) == PREVIOUS
             assert await _hash_column_length(conn) == 128
             remaining = set(
                 (
@@ -81,7 +82,7 @@ async def test_live_postgres_web_session_hash_and_downgrade():
             assert remaining == {cli_sid}
     finally:
         async with engine.begin() as conn:
-            await conn.run_sync(mig.upgrade_sync)
+            await conn.run_sync(mig.upgrade_sync, UPGRADE)
             await conn.execute(
                 text("DELETE FROM user_sessions WHERE session_id IN (:w, :c)"), {"w": web_sid, "c": cli_sid}
             )

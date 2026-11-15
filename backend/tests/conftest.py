@@ -44,9 +44,10 @@ from ak5.server.models.workspace import LOCAL_WORKSPACE_ID  # noqa: E402
 from ak5.server.routers.auth import create_access_token  # noqa: E402
 from ak5.server.security import reset_secret_caches  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
-from sqlalchemy import event  # noqa: E402
+from sqlalchemy import event, text  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.pool import NullPool  # noqa: E402
 
 # Guard: fail collection if we somehow still point at the user global store.
 _db_path = make_url(settings.DATABASE_URL).database or ""
@@ -60,8 +61,16 @@ if "/.local/share/ak5/" in _db_path.replace("\\", "/"):
 TEST_DB_URL = _POSTGRES_TEST_URL or "sqlite+aiosqlite:///:memory:"
 _USING_POSTGRES = bool(_POSTGRES_TEST_URL)
 
+async def _reset_postgres_public_schema(conn) -> None:
+    """Fresh schema for isolated API tests (migration suites share the same CI database)."""
+    await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+    await conn.execute(text("CREATE SCHEMA public"))
+    await conn.execute(text("GRANT ALL ON SCHEMA public TO PUBLIC"))
+
+
 if _USING_POSTGRES:
     _engine_url, _connect_args, _engine_kwargs = get_engine_options(TEST_DB_URL)
+    _engine_kwargs = {**_engine_kwargs, "poolclass": NullPool}
     test_engine = create_async_engine(
         _engine_url,
         connect_args=_connect_args,
@@ -121,6 +130,8 @@ def test_engine_fixture():
 @pytest_asyncio.fixture(scope="function")
 async def test_db(test_engine_fixture) -> AsyncGenerator[AsyncSession]:
     async with test_engine_fixture.begin() as conn:
+        if _USING_POSTGRES:
+            await _reset_postgres_public_schema(conn)
         await conn.run_sync(Base.metadata.create_all)
 
     # Override get_db
@@ -300,7 +311,10 @@ async def test_db(test_engine_fixture) -> AsyncGenerator[AsyncSession]:
         yield session
 
     async with test_engine_fixture.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        if _USING_POSTGRES:
+            await _reset_postgres_public_schema(conn)
+        else:
+            await conn.run_sync(Base.metadata.drop_all)
 
     app.dependency_overrides.clear()
     if hasattr(app.state, "session_factory"):
