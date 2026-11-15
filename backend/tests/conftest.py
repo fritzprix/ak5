@@ -65,7 +65,6 @@ if _USING_POSTGRES:
     test_engine = create_async_engine(
         _engine_url,
         connect_args=_connect_args,
-        future=True,
         **_engine_kwargs,
     )
 else:
