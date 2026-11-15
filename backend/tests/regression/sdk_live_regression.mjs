@@ -86,6 +86,7 @@ const submitted = await worker.submitTicket(created.ticket_id, {
     summary: "sdk live submit",
     artifacts: [],
     criteria_self_check: [{ criterion: "history readable", pass: true }],
+    refutation: { method: "check ticket history endpoint returns revisions and audit" },
   },
 });
 assert.equal(submitted.stage, "agent_review");

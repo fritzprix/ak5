@@ -215,10 +215,16 @@ export interface CriteriaSelfCheck {
   note?: string;
 }
 
+export interface Refutation {
+  method: string;
+  [key: string]: unknown;
+}
+
 export interface Deliverable {
   summary: string;
   artifacts?: Artifact[];
   criteria_self_check?: CriteriaSelfCheck[];
+  refutation: Refutation;
 }
 
 export interface Finding {
