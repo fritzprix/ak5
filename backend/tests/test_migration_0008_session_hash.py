@@ -13,7 +13,6 @@ from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 PREVIOUS = "0007_fix_child_workspace_id"
-UPGRADE = "0008_widen_session_token_hash"
 
 
 def _pg_url() -> str:
@@ -82,7 +81,7 @@ async def test_live_postgres_web_session_hash_and_downgrade():
             assert remaining == {cli_sid}
     finally:
         async with engine.begin() as conn:
-            await conn.run_sync(mig.upgrade_sync, UPGRADE)
+            await conn.run_sync(mig.upgrade_sync)
             await conn.execute(
                 text("DELETE FROM user_sessions WHERE session_id IN (:w, :c)"), {"w": web_sid, "c": cli_sid}
             )
