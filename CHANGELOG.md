@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AK5_DEPLOY_PROFILE=hosted`: `vercel-blob` defaults to private blob access when `AK5_VERCEL_BLOB_ACCESS` is unset (local default remains `public`)
 
 ### Fixed
+- PostgreSQL: archive/unarchive writes naive UTC for `archived_at` (asyncpg rejects tz-aware values on `TIMESTAMP WITHOUT TIME ZONE`)
 - Documentation drift: `blob.py` module doc, `.env.example` JWT/identify/`ak5 up` guidance, historical banner on `docs/analysis-report.md`, Docker Compose vs `ak5 up`
 
 ## [2.0.2] — 2026-11-08
