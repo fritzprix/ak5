@@ -469,7 +469,11 @@ def block_ticket_cmd(
     token: str | None,
     mention: str | None,
 ) -> None:
-    """Block a ticket (releases claim; in_progress → backlog)."""
+    """Block a ticket (releases claim; in_progress → backlog).
+
+    Use `ak5 ticket attention` for non-blocking human attention; reserve
+    `--kind needs_human` for hard stops where work cannot proceed.
+    """
     _ = mention
     json_mode = _jm(ctx)
     try:

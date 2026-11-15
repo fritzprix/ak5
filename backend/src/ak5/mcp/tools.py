@@ -371,6 +371,8 @@ async def ak5_ticket_block(
     """Workflow roles: triage, worker, gatekeeper.
 
     Block a ticket (B1) — cli.md ``ticket block``.
+    Use ``ak5_ticket_attention`` for non-blocking "please look at this" requests;
+    reserve ``needs_human`` for hard stops where work cannot proceed.
     ``claim_token`` may be omitted when cached from ``ak5_ticket_claim``.
     """
     token = _resolve_claim_token(ticket_id, claim_token)
