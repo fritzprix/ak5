@@ -125,7 +125,7 @@ ak5 ticket route TK-001 --plan @route.json          # {"refined_title", "refined
 export AK5_PROFILE=worker-1
 ak5 next --board proj-core-engine --caps py --wait 25
 ak5 ticket claim TK-001 --caps py
-ak5 ticket submit TK-001 --deliverable @deliverable.json   # {"summary", "artifacts", "criteria_self_check"}
+ak5 ticket submit TK-001 --deliverable @deliverable.json   # {"summary", "artifacts", "criteria_self_check", "refutation": {"method": "…"}}
 
 # Gatekeeper: review
 export AK5_PROFILE=gk-1
