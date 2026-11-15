@@ -21,13 +21,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "tickets",
-        sa.Column("attention_flag", sa.Boolean(), nullable=False, server_default=sa.false()),
-    )
-    op.add_column("tickets", sa.Column("attention_reason", sa.Text(), nullable=True))
-    op.add_column("tickets", sa.Column("attention_since", sa.DateTime(), nullable=True))
-    op.add_column("tickets", sa.Column("attention_actor", sa.String(length=128), nullable=True))
+    bind = op.get_bind()
+    existing = {col["name"] for col in sa.inspect(bind).get_columns("tickets")}
+    if "attention_flag" not in existing:
+        op.add_column(
+            "tickets",
+            sa.Column("attention_flag", sa.Boolean(), nullable=False, server_default=sa.false()),
+        )
+    if "attention_reason" not in existing:
+        op.add_column("tickets", sa.Column("attention_reason", sa.Text(), nullable=True))
+    if "attention_since" not in existing:
+        op.add_column("tickets", sa.Column("attention_since", sa.DateTime(), nullable=True))
+    if "attention_actor" not in existing:
+        op.add_column("tickets", sa.Column("attention_actor", sa.String(length=128), nullable=True))
 
     op.execute(
         sa.text(
