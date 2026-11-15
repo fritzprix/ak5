@@ -125,7 +125,8 @@ status   : API 하위호환용 파생 필드 (저장하지 않음)
 {
   "summary": "string",
   "artifacts": [{ "kind": "url|attachment|commit|text", "ref": "string" }],
-  "criteria_self_check": [{ "criterion": "string", "pass": true, "note": "string" }]
+  "criteria_self_check": [{ "criterion": "string", "pass": true, "note": "string" }],
+  "refutation": { "method": "string" }
 }
 ```
 

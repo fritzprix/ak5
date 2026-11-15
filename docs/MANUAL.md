@@ -290,7 +290,8 @@ ak5 ticket postmortem <id> --body @pm.json|-
 
 // submit --deliverable  (artifacts[].kind: url | attachment | commit | text)
 { "summary": "…", "artifacts": [{ "kind": "commit", "ref": "a1b2c3d" }],
-  "criteria_self_check": [{ "criterion": "…", "pass": true, "note": "" }] }
+  "criteria_self_check": [{ "criterion": "…", "pass": true, "note": "" }],
+  "refutation": { "method": "…" } }
 
 // verdict --findings  (approve는 모두 pass, reject는 fail 1개 이상)
 [{ "criterion": "…", "pass": true, "note": "…" }]

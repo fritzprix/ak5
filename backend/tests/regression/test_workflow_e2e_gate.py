@@ -121,6 +121,7 @@ async def test_e2e_reject_postmortem_to_done(client: AsyncClient, roles, test_db
                     "summary": note,
                     "artifacts": [{"kind": "commit", "ref": "abc"}],
                     "criteria_self_check": [{"criterion": "tests pass in CI", "pass": True}],
+                    "refutation": {"method": "run pytest"},
                 },
             },
             headers=worker,

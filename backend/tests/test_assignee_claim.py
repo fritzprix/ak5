@@ -78,7 +78,10 @@ async def test_submit_and_route_clear_assigned_to(client: AsyncClient, auth_head
     token = claim.json()["claim_token"]
     submit = await client.post(
         f"/api/v1/tickets/{tid}/submit",
-        json={"claim_token": token, "deliverable": {"summary": "x", "artifacts": []}},
+        json={
+            "claim_token": token,
+            "deliverable": {"summary": "x", "artifacts": [], "refutation": {"method": "check"}},
+        },
         headers=auth_headers("agent_asg_w", "agent"),
     )
     assert submit.status_code == 200, submit.text

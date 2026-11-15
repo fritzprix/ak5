@@ -198,7 +198,12 @@ async def test_non_local_workspace_t1_route_reroute_bounce_use_own_inbox(
         f"/api/v1/tickets/{tid}/submit",
         json={
             "claim_token": wtoken,
-            "deliverable": {"summary": "done", "artifacts": [], "criteria_self_check": []},
+            "deliverable": {
+                "summary": "done",
+                "artifacts": [],
+                "criteria_self_check": [],
+                "refutation": {"method": "check"},
+            },
         },
         headers=worker,
     )

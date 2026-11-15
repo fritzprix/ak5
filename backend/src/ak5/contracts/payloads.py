@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class RouteTargetBoard(BaseModel):
@@ -44,12 +44,28 @@ class CriteriaSelfCheck(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class Refutation(BaseModel):
+    """Falsifiability check for a submitted deliverable."""
+
+    method: str = Field(..., min_length=1)
+
+    model_config = ConfigDict(extra="allow")
+
+    @field_validator("method")
+    @classmethod
+    def _non_blank_method(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("refutation.method must be a non-empty string")
+        return value
+
+
 class Deliverable(BaseModel):
     """Worker submit deliverable (workflow.md §5.2)."""
 
     summary: str = Field(..., min_length=1)
     artifacts: list[Artifact] = Field(default_factory=list)
     criteria_self_check: list[CriteriaSelfCheck] = Field(default_factory=list)
+    refutation: Refutation
 
 
 class Finding(BaseModel):

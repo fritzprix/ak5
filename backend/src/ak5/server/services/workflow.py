@@ -1388,6 +1388,16 @@ async def release(
     )
 
 
+def _has_refutation_method(deliverable: object) -> bool:
+    if not isinstance(deliverable, dict):
+        return False
+    refutation = deliverable.get("refutation")
+    if not isinstance(refutation, dict):
+        return False
+    method = refutation.get("method")
+    return isinstance(method, str) and bool(method.strip())
+
+
 async def submit(
     db: AsyncSession,
     actor: Actor,
@@ -1401,6 +1411,10 @@ async def submit(
         require_roles(actor, Role.WORKER)
     except RoleForbiddenError as exc:
         raise WorkflowError(exc.code, exc.message) from exc
+    refutation = getattr(deliverable, "refutation", None)
+    method = getattr(refutation, "method", None) if refutation is not None else None
+    if not isinstance(method, str) or not method.strip():
+        raise WorkflowError(ErrorCode.PAYLOAD_INVALID, "deliverable.refutation.method is required")
     ticket = await _load_ticket(db, ticket_id, for_update=True)
     _require_board_scope(actor, ticket.board_id)
     stage = ticket_stage(ticket)
@@ -1668,6 +1682,40 @@ async def verdict(
                 ErrorCode.SEPARATION_OF_DUTIES,
                 "Submitter cannot review their own submission",
             )
+
+        stored_deliverable = (ticket.execution_context_dict or {}).get("deliverable")
+        if not _has_refutation_method(stored_deliverable):
+            if body.decision == "approve":
+                raise WorkflowError(
+                    ErrorCode.PAYLOAD_INVALID,
+                    "Cannot approve deliverable without refutation.method; reject without content findings",
+                )
+            if not body.misrouted:
+                reason = body.reason or "deliverable missing refutation.method"
+                review = TicketReview(
+                    workspace_id=ticket.workspace_id,
+                    ticket_id=ticket.ticket_id,
+                    stage=stage.value,
+                    decision="reject",
+                    reviewer=actor.actor_id,
+                    attempt=ticket.attempt,
+                    reason=reason,
+                    misrouted=False,
+                )
+                review.findings = [f.model_dump(mode="json", by_alias=True) for f in body.findings]
+                db.add(review)
+                _clear_claim(ticket)
+                await _move_ticket(db, ticket, board_id=ticket.board_id, stage=Stage.BACKLOG)
+                return await _finish_transition(
+                    db,
+                    ticket,
+                    actor=actor,
+                    op="verdict_reject",
+                    from_stage=stage,
+                    to_stage=Stage.BACKLOG,
+                    reason=reason,
+                    work_available=True,
+                )
 
         if body.decision == "approve":
             if not body.findings:
