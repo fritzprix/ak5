@@ -1192,6 +1192,25 @@ async def create_direct(
     return ticket
 
 
+async def _require_workspace_active(db: AsyncSession, workspace_id: str) -> None:
+    """Fail closed when the workspace is halted or frozen (#199)."""
+    ws = await db.get(Workspace, workspace_id)
+    if ws is None:
+        return
+    if ws.halted:
+        raise WorkflowError(
+            ErrorCode.WORKSPACE_HALTED,
+            "Workspace is halted",
+            details={"workspace_id": ws.workspace_id, "reason": ws.halt_reason},
+        )
+    if ws.frozen:
+        raise WorkflowError(
+            ErrorCode.WORKSPACE_FROZEN,
+            "Workspace is frozen",
+            details={"workspace_id": ws.workspace_id, "reason": ws.freeze_reason},
+        )
+
+
 async def claim_ticket(
     db: AsyncSession,
     actor: Actor,
@@ -1203,6 +1222,7 @@ async def claim_ticket(
     await reclaim_expired_leases(db)
     ticket = await _load_ticket(db, ticket_id, for_update=True)
     _require_board_scope(actor, ticket.board_id)
+    await _require_workspace_active(db, ticket.workspace_id)
     _require_unblocked(ticket)
     # Valid claim (incl. in_progress) → conflict for losers, not INVALID_TRANSITION.
     if is_claim_valid(ticket):
@@ -2473,6 +2493,7 @@ async def next_ticket(
     board = await db.get(Board, board_id)
     if board is None:
         raise WorkflowError(ErrorCode.NOT_FOUND, f"Board '{board_id}' not found")
+    await _require_workspace_active(db, board.workspace_id)
     # Out-of-scope boards yield 204 (no work), not ROLE_FORBIDDEN.
     if not board_in_scope(actor, board_id):
         return None

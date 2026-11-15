@@ -40,12 +40,36 @@ class WorkspaceUpdate(BaseModel):
     policy: WorkspacePolicyPatch | None = None
 
 
+class WorkspaceStateRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class WorkspaceStateOut(BaseModel):
+    workspace_id: str
+    halted: bool = False
+    frozen: bool = False
+    halt_reason: str | None = None
+    freeze_reason: str | None = None
+    halted_by: str | None = None
+    frozen_by: str | None = None
+    halted_at: datetime | None = None
+    frozen_at: datetime | None = None
+
+
 class WorkspaceOut(BaseModel):
     workspace_id: str
     name: str
     policy: dict[str, Any]
     inbox_board_id: str | None = None
     membership_role: str | None = None
+    halted: bool = False
+    frozen: bool = False
+    halt_reason: str | None = None
+    freeze_reason: str | None = None
+    halted_by: str | None = None
+    frozen_by: str | None = None
+    halted_at: datetime | None = None
+    frozen_at: datetime | None = None
 
 
 class MemberOut(BaseModel):

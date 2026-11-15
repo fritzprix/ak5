@@ -9,8 +9,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ak5.contracts.errors import HTTP_STATUS, ErrorCode, error_body
+from ak5.contracts.stages import Role
 from ak5.server.auth.passkeys import presence_is_fresh, workspace_has_passkey_holder
 from ak5.server.auth.principal import Principal
+from ak5.server.authz import workflow_role_of
 from ak5.server.database import get_db
 from ak5.server.models.workspace import User, Workspace
 from ak5.server.routers.auth import AuthContext, get_auth_context
@@ -26,6 +28,8 @@ from ak5.server.schemas.workspace import (
     MemberRoleUpdate,
     WorkspaceCreate,
     WorkspaceOut,
+    WorkspaceStateOut,
+    WorkspaceStateRequest,
     WorkspaceUpdate,
     WorkspaceUsageOut,
 )
@@ -42,6 +46,8 @@ from ak5.server.services.agents import (
 from ak5.server.services.workspaces import (
     WorkspaceServiceError,
     accept_invite,
+    clear_workspace_freeze,
+    clear_workspace_halt,
     create_invite,
     create_workspace,
     inbox_board_id_for,
@@ -51,6 +57,8 @@ from ak5.server.services.workspaces import (
     remove_member,
     require_membership,
     require_workspace_admin,
+    set_workspace_freeze,
+    set_workspace_halt,
     update_member_role,
     update_workspace,
 )
@@ -101,6 +109,107 @@ async def _require_presence_to_relax_approval_policy(
     )
 
 
+def _to_workspace_out(
+    ws: Workspace,
+    *,
+    inbox_board_id: str | None = None,
+    membership_role: str | None = None,
+) -> WorkspaceOut:
+    return WorkspaceOut(
+        workspace_id=ws.workspace_id,
+        name=ws.name,
+        policy=parse_policy(ws.policy),
+        inbox_board_id=inbox_board_id,
+        membership_role=membership_role,
+        halted=ws.halted,
+        frozen=ws.frozen,
+        halt_reason=ws.halt_reason,
+        freeze_reason=ws.freeze_reason,
+        halted_by=ws.halted_by,
+        frozen_by=ws.frozen_by,
+        halted_at=ws.halted_at,
+        frozen_at=ws.frozen_at,
+    )
+
+
+def _to_workspace_state_out(ws: Workspace) -> WorkspaceStateOut:
+    return WorkspaceStateOut(
+        workspace_id=ws.workspace_id,
+        halted=ws.halted,
+        frozen=ws.frozen,
+        halt_reason=ws.halt_reason,
+        freeze_reason=ws.freeze_reason,
+        halted_by=ws.halted_by,
+        frozen_by=ws.frozen_by,
+        halted_at=ws.halted_at,
+        frozen_at=ws.frozen_at,
+    )
+
+
+async def _require_workspace_caller(
+    db: AsyncSession,
+    ctx: AuthContext,
+    workspace_id: str,
+) -> str | None:
+    """Allow any member user or same-workspace agent; returns membership role if user."""
+    if ctx.principal is not None and ctx.principal.principal_type == "user":
+        mem = await require_membership(
+            db, workspace_id=workspace_id, user_id=ctx.principal.principal_id
+        )
+        return mem.role
+    if ctx.workspace_id != workspace_id:
+        raise WorkspaceServiceError(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Token workspace does not match target workspace",
+        )
+    return None
+
+
+async def _require_human_caller(
+    db: AsyncSession,
+    ctx: AuthContext,
+    workspace_id: str,
+) -> str:
+    """Require a human (Role.HUMAN user principal) who is a member of ``workspace_id``."""
+    if (
+        ctx.principal is None
+        or ctx.principal.principal_type != "user"
+        or workflow_role_of(ctx.actor) != Role.HUMAN
+    ):
+        raise WorkspaceServiceError(
+            ErrorCode.ROLE_FORBIDDEN,
+            "Human role required to clear workspace halt",
+        )
+    mem = await require_membership(
+        db, workspace_id=workspace_id, user_id=ctx.principal.principal_id
+    )
+    return mem.role
+
+
+async def _require_pm_or_human_caller(
+    db: AsyncSession,
+    ctx: AuthContext,
+    workspace_id: str,
+) -> str | None:
+    """Require PM role or a human workspace member (#199)."""
+    if ctx.principal is not None and ctx.principal.principal_type == "user":
+        mem = await require_membership(
+            db, workspace_id=workspace_id, user_id=ctx.principal.principal_id
+        )
+        return mem.role
+    if ctx.workspace_id != workspace_id:
+        raise WorkspaceServiceError(
+            ErrorCode.WORKSPACE_FORBIDDEN,
+            "Token workspace does not match target workspace",
+        )
+    if ctx.principal is not None and ctx.principal.workflow_role.value == "pm":
+        return None
+    raise WorkspaceServiceError(
+        ErrorCode.ROLE_FORBIDDEN,
+        "PM or human role required to manage workspace freeze",
+    )
+
+
 async def _load_user(db: AsyncSession, user_id: str) -> User:
     user = await db.get(User, user_id)
     if user is None:
@@ -119,13 +228,8 @@ async def post_workspace(
         user = await _load_user(db, principal.principal_id)
         ws, inbox_id = await create_workspace(db, name=body.name, owner=user)
         await db.commit()
-        return WorkspaceOut(
-            workspace_id=ws.workspace_id,
-            name=ws.name,
-            policy=parse_policy(ws.policy),
-            inbox_board_id=inbox_id,
-            membership_role="owner",
-        )
+        _ = ws.workspace_id
+        return _to_workspace_out(ws, inbox_board_id=inbox_id, membership_role="owner")
     except WorkspaceServiceError as exc:
         return _err(exc)
 
@@ -143,14 +247,7 @@ async def get_workspaces(
             mem = await require_membership(
                 db, workspace_id=ws.workspace_id, user_id=principal.principal_id
             )
-            out.append(
-                WorkspaceOut(
-                    workspace_id=ws.workspace_id,
-                    name=ws.name,
-                    policy=parse_policy(ws.policy),
-                    membership_role=mem.role,
-                )
-            )
+            out.append(_to_workspace_out(ws, membership_role=mem.role))
         return out
     except WorkspaceServiceError as exc:
         return _err(exc)
@@ -192,10 +289,8 @@ async def get_workspace(
         ws = await db.get(Workspace, workspace_id)
         if ws is None:
             raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
-        return WorkspaceOut(
-            workspace_id=ws.workspace_id,
-            name=ws.name,
-            policy=parse_policy(ws.policy),
+        return _to_workspace_out(
+            ws,
             inbox_board_id=inbox_board_id_for(ws.workspace_id),
             membership_role=mem.role,
         )
@@ -231,12 +326,131 @@ async def patch_workspace(
         mem = await require_membership(
             db, workspace_id=workspace_id, user_id=principal.principal_id
         )
-        return WorkspaceOut(
-            workspace_id=ws.workspace_id,
-            name=ws.name,
-            policy=parse_policy(ws.policy),
+        return _to_workspace_out(
+            ws,
             inbox_board_id=inbox_board_id_for(ws.workspace_id),
             membership_role=mem.role,
+        )
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.get("/{workspace_id}/state", response_model=None)
+async def get_workspace_state(
+    workspace_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> WorkspaceStateOut | JSONResponse:
+    """Return halt/freeze state for ``workspace_id`` (users and same-workspace agents)."""
+    try:
+        await _require_workspace_caller(db, ctx, workspace_id)
+        ws = await db.get(Workspace, workspace_id)
+        if ws is None:
+            raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
+        return _to_workspace_state_out(ws)
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.post("/{workspace_id}/halt", response_model=None)
+async def post_workspace_halt(
+    workspace_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    body: WorkspaceStateRequest | None = None,
+) -> WorkspaceOut | JSONResponse:
+    """Halt the workspace (#199). Any workspace member or agent may set halt."""
+    try:
+        role = await _require_workspace_caller(db, ctx, workspace_id)
+        ws = await db.get(Workspace, workspace_id)
+        if ws is None:
+            raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
+        ws = await set_workspace_halt(
+            db,
+            workspace=ws,
+            actor_id=ctx.actor.actor_id,
+            reason=body.reason if body else None,
+        )
+        await db.commit()
+        return _to_workspace_out(
+            ws,
+            inbox_board_id=inbox_board_id_for(ws.workspace_id),
+            membership_role=role,
+        )
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.delete("/{workspace_id}/halt", response_model=None)
+async def delete_workspace_halt(
+    workspace_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> WorkspaceOut | JSONResponse:
+    """Clear workspace halt (#199). Only a human may clear halt."""
+    try:
+        role = await _require_human_caller(db, ctx, workspace_id)
+        ws = await db.get(Workspace, workspace_id)
+        if ws is None:
+            raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
+        ws = await clear_workspace_halt(db, workspace=ws, actor_id=ctx.actor.actor_id)
+        await db.commit()
+        return _to_workspace_out(
+            ws,
+            inbox_board_id=inbox_board_id_for(ws.workspace_id),
+            membership_role=role,
+        )
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.post("/{workspace_id}/freeze", response_model=None)
+async def post_workspace_freeze(
+    workspace_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    body: WorkspaceStateRequest | None = None,
+) -> WorkspaceOut | JSONResponse:
+    """Freeze the workspace (#199). PM or human may set freeze."""
+    try:
+        role = await _require_pm_or_human_caller(db, ctx, workspace_id)
+        ws = await db.get(Workspace, workspace_id)
+        if ws is None:
+            raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
+        ws = await set_workspace_freeze(
+            db,
+            workspace=ws,
+            actor_id=ctx.actor.actor_id,
+            reason=body.reason if body else None,
+        )
+        await db.commit()
+        return _to_workspace_out(
+            ws,
+            inbox_board_id=inbox_board_id_for(ws.workspace_id),
+            membership_role=role,
+        )
+    except WorkspaceServiceError as exc:
+        return _err(exc)
+
+
+@router.delete("/{workspace_id}/freeze", response_model=None)
+async def delete_workspace_freeze(
+    workspace_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> WorkspaceOut | JSONResponse:
+    """Clear workspace freeze (#199). PM or human may clear freeze."""
+    try:
+        role = await _require_pm_or_human_caller(db, ctx, workspace_id)
+        ws = await db.get(Workspace, workspace_id)
+        if ws is None:
+            raise WorkspaceServiceError(ErrorCode.NOT_FOUND, "Workspace not found")
+        ws = await clear_workspace_freeze(db, workspace=ws, actor_id=ctx.actor.actor_id)
+        await db.commit()
+        return _to_workspace_out(
+            ws,
+            inbox_board_id=inbox_board_id_for(ws.workspace_id),
+            membership_role=role,
         )
     except WorkspaceServiceError as exc:
         return _err(exc)
