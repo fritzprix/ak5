@@ -4,8 +4,8 @@ Migrates existing ``blocked_kind = 'needs_human'`` rows to
 ``attention_flag = true`` and clears their blocking overlay so
 non-blocking attention never stops work from being pulled or reviewed.
 
-Revision ID: 0009_attention_flag
-Revises: 0008_widen_session_token_hash
+Revision ID: 0010_attention_flag
+Revises: 0009_rls_memberships
 Create Date: 2026-11-15
 """
 
@@ -14,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0009_attention_flag"
-down_revision = "0008_widen_session_token_hash"
+revision = "0010_attention_flag"
+down_revision = "0009_rls_memberships"
 branch_labels = None
 depends_on = None
 
