@@ -237,6 +237,7 @@ async def test_mcp_claim_submit_verdict_flow(
             "criteria_self_check": [
                 {"criterion": "users can log in", "pass": True, "note": "ok"}
             ],
+            "refutation": {"method": "check login endpoint"},
         }
     )
     submit_res = await ak5_ticket_submit(
@@ -295,6 +296,7 @@ async def test_mcp_claim_token_cache_allows_omission(
             "summary": "done",
             "artifacts": [],
             "criteria_self_check": [{"criterion": "ok", "pass": True, "note": "n"}],
+            "refutation": {"method": "check"},
         }
     )
     submit_body = _parse(await ak5_ticket_submit(ticket_id=tid, deliverable=deliverable))
@@ -318,7 +320,12 @@ async def test_mcp_error_code_exposed_on_invalid_transition(
 
     _bind_mcp(anon_client, monkeypatch, "agent_worker")
     deliverable = Deliverable.model_validate(
-        {"summary": "nope", "artifacts": [], "criteria_self_check": []}
+        {
+            "summary": "nope",
+            "artifacts": [],
+            "criteria_self_check": [],
+            "refutation": {"method": "check"},
+        }
     )
     res = await ak5_ticket_submit(
         ticket_id=tid, claim_token="bogus-token", deliverable=deliverable

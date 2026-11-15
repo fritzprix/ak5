@@ -126,6 +126,7 @@ async def test_gatekeeper_claim_checklist_differs_by_template(
                     "summary": "done",
                     "artifacts": [],
                     "criteria_self_check": [],
+                    "refutation": {"method": "check template"},
                 },
             },
         )

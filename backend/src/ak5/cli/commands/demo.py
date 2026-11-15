@@ -245,6 +245,9 @@ async def run_collaboration_simulation(
                             "ref": "Benchmark: 12ms/image, 78% compression ratio, CVE-2023-4863 guard enabled.",
                         }
                     ],
+                    "refutation": {
+                        "method": "Re-run Pillow WebP benchmark with a 5000px image and verify rejection",
+                    },
                 },
             },
             headers={"Authorization": f"Bearer {worker_token}"},

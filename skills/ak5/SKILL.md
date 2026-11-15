@@ -141,7 +141,10 @@ ak5 ticket submit <TICKET_ID> --deliverable @deliverable.json
   "criteria_self_check": [
     { "criterion": "Export button downloads a CSV", "pass": true, "note": "" },
     { "criterion": "Columns match the table", "pass": true, "note": "" }
-  ]
+  ],
+  "refutation": {
+    "method": "Run tests/test_export.py or open the exported CSV and verify columns match"
+  }
 }
 ```
 
@@ -194,7 +197,9 @@ Your job is to find what is wrong, not to confirm what the worker says:
 
 - **Verify independently.** Treat the summary and `criteria_self_check` as claims. Where you can,
   check out the commit or PR, re-run the tests, open the attachments, and try the edge cases the
-  spec implies. If you cannot verify a criterion, it does not pass.
+  spec implies. If you cannot verify a criterion, it does not pass. If the deliverable lacks
+  `refutation.method`, reject without content review (no findings required; returns to `backlog`
+  without incrementing `attempt`; `approve` is forbidden).
 - **One finding per acceptance criterion, plus the board's `review_checklist`.** Each note states
   what you checked and what you saw. Approve only when every item passes on your own evidence.
 - **Make rejects actionable.** A failed finding says what is wrong, where, and how to reproduce it,

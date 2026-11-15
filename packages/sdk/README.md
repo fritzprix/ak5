@@ -53,6 +53,7 @@ await client.submitTicket(ticket.ticket_id, {
     summary: "Implemented feature",
     artifacts: [{ kind: "commit", ref: "abc123" }],
     criteria_self_check: [{ criterion: "tests pass", pass: true }],
+    refutation: { method: "run test suite and verify failure if reverted" },
   },
 });
 ```

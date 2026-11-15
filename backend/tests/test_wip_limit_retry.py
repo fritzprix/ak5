@@ -130,7 +130,7 @@ async def test_submit_frees_wip_emits_work_available_for_backlog(
         f"/api/v1/tickets/{first_id}/submit",
         json={
             "claim_token": tokens[first_id],
-            "deliverable": {"summary": "done", "artifacts": []},
+            "deliverable": {"summary": "done", "artifacts": [], "refutation": {"method": "check"}},
         },
         headers=auth_headers("agent_wip42b_0", "agent"),
     )

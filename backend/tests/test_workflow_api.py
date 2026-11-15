@@ -183,6 +183,7 @@ async def test_happy_path_t1_through_t15(client: AsyncClient, roles, test_db: As
                 "summary": "Done",
                 "artifacts": [{"kind": "commit", "ref": "abc"}],
                 "criteria_self_check": [{"criterion": "users can log in", "pass": True}],
+                "refutation": {"method": "verify login test fails when auth is disabled"},
             },
         },
         headers=worker,
@@ -243,7 +244,12 @@ async def test_gatekeeper_approve_requires_findings(client: AsyncClient, roles):
         f"/api/v1/tickets/{tid}/submit",
         json={
             "claim_token": wtoken,
-            "deliverable": {"summary": "x", "artifacts": [], "criteria_self_check": []},
+            "deliverable": {
+                "summary": "x",
+                "artifacts": [],
+                "criteria_self_check": [],
+                "refutation": {"method": "check"},
+            },
         },
         headers=worker,
     )
@@ -270,7 +276,12 @@ async def test_separation_of_duties(client: AsyncClient, roles, test_db: AsyncSe
         f"/api/v1/tickets/{tid}/submit",
         json={
             "claim_token": wtoken,
-            "deliverable": {"summary": "x", "artifacts": [], "criteria_self_check": []},
+            "deliverable": {
+                "summary": "x",
+                "artifacts": [],
+                "criteria_self_check": [],
+                "refutation": {"method": "check"},
+            },
         },
         headers=worker,
     )
@@ -307,7 +318,12 @@ async def test_reject_escalation_e1(client: AsyncClient, roles):
             f"/api/v1/tickets/{tid}/submit",
             json={
                 "claim_token": wtoken,
-                "deliverable": {"summary": "try", "artifacts": [], "criteria_self_check": []},
+                "deliverable": {
+                    "summary": "try",
+                    "artifacts": [],
+                    "criteria_self_check": [],
+                    "refutation": {"method": "check"},
+                },
             },
             headers=worker,
         )
@@ -477,7 +493,12 @@ async def test_release_bounce_block_unblock_reopen_reroute(client: AsyncClient, 
         f"/api/v1/tickets/{tid3}/submit",
         json={
             "claim_token": wtoken3,
-            "deliverable": {"summary": "x", "artifacts": [], "criteria_self_check": []},
+            "deliverable": {
+                "summary": "x",
+                "artifacts": [],
+                "criteria_self_check": [],
+                "refutation": {"method": "check"},
+            },
         },
         headers=worker,
     )
@@ -522,7 +543,12 @@ async def test_postmortem_and_misrouted(client: AsyncClient, roles):
         f"/api/v1/tickets/{tid}/submit",
         json={
             "claim_token": wtoken,
-            "deliverable": {"summary": "x", "artifacts": [], "criteria_self_check": []},
+            "deliverable": {
+                "summary": "x",
+                "artifacts": [],
+                "criteria_self_check": [],
+                "refutation": {"method": "check"},
+            },
         },
         headers=worker,
     )
@@ -572,7 +598,12 @@ async def test_postmortem_and_misrouted(client: AsyncClient, roles):
         f"/api/v1/tickets/{tid2}/submit",
         json={
             "claim_token": wtoken2,
-            "deliverable": {"summary": "x", "artifacts": [], "criteria_self_check": []},
+            "deliverable": {
+                "summary": "x",
+                "artifacts": [],
+                "criteria_self_check": [],
+                "refutation": {"method": "check"},
+            },
         },
         headers=worker,
     )
@@ -1240,6 +1271,129 @@ async def test_triage_route_requires_refined_plan(client: AsyncClient, roles):
 
 
 @pytest.mark.asyncio
+async def test_submit_requires_refutation_method(client: AsyncClient, roles, test_db: AsyncSession):
+    """#196: Deliverable requires refutation.method; extra keys allowed."""
+    human = _h(roles, "user_pm", "human")
+    worker = _h(roles, "agent_worker")
+
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Refutation req"), headers=human)
+    ).json()["ticket_id"]
+    wtoken = (await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)).json()["claim_token"]
+
+    for bad_deliverable in (
+        {"summary": "Done", "artifacts": [], "criteria_self_check": []},
+        {
+            "summary": "Done",
+            "artifacts": [],
+            "criteria_self_check": [],
+            "refutation": {"method": "   "},
+        },
+    ):
+        resp = await client.post(
+            f"/api/v1/tickets/{tid}/submit",
+            json={"claim_token": wtoken, "deliverable": bad_deliverable},
+            headers=worker,
+        )
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["error"]["code"] == ErrorCode.PAYLOAD_INVALID.value
+        current_ticket = (await client.get(f"/api/v1/tickets/{tid}", headers=worker)).json()
+        assert current_ticket["stage"] == "in_progress"
+
+    ok = await client.post(
+        f"/api/v1/tickets/{tid}/submit",
+        json={
+            "claim_token": wtoken,
+            "deliverable": {
+                "summary": "Done",
+                "artifacts": [{"kind": "commit", "ref": "abc123"}],
+                "criteria_self_check": [{"criterion": "works", "pass": True}],
+                "refutation": {"method": "Run pytest and see it fail", "extra_key": "allowed"},
+            },
+        },
+        headers=worker,
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["stage"] == "agent_review"
+    stored = ok.json()["execution_context"]["deliverable"]
+    assert stored["refutation"] == {
+        "method": "Run pytest and see it fail",
+        "extra_key": "allowed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gatekeeper_rejects_stored_deliverable_without_refutation_no_attempt_increment(
+    client: AsyncClient, roles, test_db: AsyncSession
+):
+    """#196: Gatekeeper rejects deliverable lacking refutation.method without content findings or attempt bump."""
+    human = _h(roles, "user_pm", "human")
+    worker = _h(roles, "agent_worker")
+    gk = _h(roles, "agent_gk")
+
+    tid = (
+        await client.post("/api/v1/tickets", json=board_ticket("Legacy deliverable"), headers=human)
+    ).json()["ticket_id"]
+    wtoken = (await client.post(f"/api/v1/tickets/{tid}/claim", headers=worker)).json()["claim_token"]
+    submitted = await client.post(
+        f"/api/v1/tickets/{tid}/submit",
+        json={
+            "claim_token": wtoken,
+            "deliverable": {
+                "summary": "Done",
+                "artifacts": [],
+                "criteria_self_check": [],
+                "refutation": {"method": "temp"},
+            },
+        },
+        headers=worker,
+    )
+    assert submitted.status_code == 200, submitted.text
+
+    # Simulate a legacy stored deliverable in agent_review without refutation
+    ticket_row = await test_db.get(Ticket, tid)
+    assert ticket_row is not None
+    ctx = dict(ticket_row.execution_context_dict or {})
+    ctx["deliverable"] = {"summary": "Legacy", "artifacts": [], "criteria_self_check": []}
+    ticket_row.execution_context_dict = ctx
+    initial_attempt = ticket_row.attempt
+    await test_db.commit()
+
+    gtoken = (await client.post(f"/api/v1/tickets/{tid}/claim", headers=gk)).json()["claim_token"]
+
+    bad_approve = await client.post(
+        f"/api/v1/tickets/{tid}/verdict",
+        json={
+            "claim_token": gtoken,
+            "verdict": {
+                "decision": "approve",
+                "findings": [{"criterion": "c", "pass": True}],
+            },
+        },
+        headers=gk,
+    )
+    assert bad_approve.status_code == 422, bad_approve.text
+    assert bad_approve.json()["error"]["code"] == ErrorCode.PAYLOAD_INVALID.value
+
+    rejected = await client.post(
+        f"/api/v1/tickets/{tid}/verdict",
+        json={
+            "claim_token": gtoken,
+            "verdict": {
+                "decision": "reject",
+                "reason": "deliverable missing refutation.method",
+                "findings": [],
+            },
+        },
+        headers=gk,
+    )
+    assert rejected.status_code == 200, rejected.text
+    body = rejected.json()
+    assert body["stage"] == "backlog"
+    assert body["attempt"] == initial_attempt
+
+
+@pytest.mark.asyncio
 async def test_attention_flag_does_not_block_next_claim_or_verdict(client: AsyncClient, roles):
     """#200: Attention flag never blocks next_ticket, claim_ticket, or verdict()."""
     human = _h(roles, "user_pm", "human")
@@ -1258,6 +1412,7 @@ async def test_attention_flag_does_not_block_next_claim_or_verdict(client: Async
                 "summary": "Done",
                 "artifacts": [],
                 "criteria_self_check": [],
+                "refutation": {"method": "test"},
             },
         },
         headers=worker,
@@ -1332,6 +1487,7 @@ async def test_escalation_remains_blocking_and_attention_does_not_clear_it(
                 "summary": "try",
                 "artifacts": [],
                 "criteria_self_check": [],
+                "refutation": {"method": "test"},
             },
         },
         headers=worker,

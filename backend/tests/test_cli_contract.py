@@ -313,6 +313,7 @@ async def test_claim_submit_happy_path_asgi(cli_asgi, client: AsyncClient, claim
         "summary": "done via CLI",
         "artifacts": [{"kind": "text", "ref": "ok"}],
         "criteria_self_check": [{"criterion": "done", "pass": True, "note": ""}],
+        "refutation": {"method": "check output"},
     }
     submit = runner.invoke(
         cli,
